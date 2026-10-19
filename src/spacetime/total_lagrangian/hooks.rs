@@ -413,3 +413,63 @@ pub(super) fn record_own(own: (u32, f64)) {
 pub(crate) fn take_gmres_replay() -> Replay {
     GMRES_REPLAY.lock().expect("replay lock").take()
 }
+
+/// The preconditioned condition probe: per Newton iteration of the next
+/// `samples` ones, `kappa_inf(P(c)^-1 A)` and `kappa_inf(P(c/4)^-1 A)`, `A` the
+/// step's Jacobian and `P(c)` the band preconditioner built for the
+/// system's own coefficient `c` or for a quarter of it (the whole step's,
+/// reused on the halves), assembled dense column by column.
+static PRECONDITIONED: std::sync::Mutex<(usize, Vec<(f64, f64)>)> =
+    std::sync::Mutex::new((0, Vec::new()));
+
+pub(crate) fn watch_preconditioned(samples: usize) {
+    *PRECONDITIONED.lock().expect("preconditioned lock") = (samples, Vec::new());
+}
+
+pub(super) fn preconditioned_wanted() -> bool {
+    PRECONDITIONED.lock().expect("preconditioned lock").0 > 0
+}
+
+pub(crate) fn take_preconditioned() -> Vec<(f64, f64)> {
+    std::mem::take(&mut PRECONDITIONED.lock().expect("preconditioned lock").1)
+}
+
+pub(super) fn record_preconditioned(
+    jacobian: &dyn Fn(&[f64]) -> Vec<f64>,
+    grid: &super::Grid,
+    (own, quarter): (&super::Band, &super::Band),
+) {
+    let unknowns: Vec<usize> = (0..grid.len).filter(|&k| grid.active[k]).collect();
+    let n = unknowns.len();
+    let (mut a_own, mut a_quarter) = (vec![0.0; n * n], vec![0.0; n * n]);
+    for (c, &column) in unknowns.iter().enumerate() {
+        let mut unit = vec![0.0; grid.len];
+        unit[column] = 1.0;
+        let a = jacobian(&unit);
+        let (z_own, z_quarter) = (own.solve(&a), quarter.solve(&a));
+        for (r, &row) in unknowns.iter().enumerate() {
+            a_own[r * n + c] = z_own[row];
+            a_quarter[r * n + c] = z_quarter[row];
+        }
+    }
+    let row = (condition_inf(a_own, n), condition_inf(a_quarter, n));
+    let mut state = PRECONDITIONED.lock().expect("preconditioned lock");
+    if state.0 > 0 {
+        state.0 -= 1;
+        state.1.push(row);
+    }
+}
+
+/// The probes' split of the step controller's tries (`controlled_step`,
+/// Acary's doubling) by class and outcome: smooth (eq. 63) or switching
+/// (a point reaching a wall, eqs. 67-70), each kept, rejected on its error,
+/// or rejected unconverged; indexed `2 * outcome + switching`.
+static TRIES: std::sync::Mutex<[u32; 6]> = std::sync::Mutex::new([0; 6]);
+
+pub(super) fn add_try(switching: bool, outcome: usize) {
+    TRIES.lock().expect("tries lock")[2 * outcome + usize::from(switching)] += 1;
+}
+
+pub(crate) fn take_tries() -> [u32; 6] {
+    std::mem::take(&mut *TRIES.lock().expect("tries lock"))
+}

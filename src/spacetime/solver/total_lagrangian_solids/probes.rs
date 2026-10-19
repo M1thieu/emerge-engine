@@ -512,6 +512,11 @@ fn probe_norton_block_flow_and_returns() {
                 r.sort_by(f64::total_cmp);
                 r.get(r.len() / 2).copied().unwrap_or(1.0)
             };
+            let tries = crate::spacetime::total_lagrangian::hooks::take_tries();
+            println!(
+                "  frame {k:2} tries (smooth/switching): kept {}/{}, rejected on the error {}/{}, unconverged {}/{}",
+                tries[0], tries[1], tries[2], tries[3], tries[4], tries[5]
+            );
             println!(
                 "  frame {k:2} solver: {} kept steps, {} rejected tries, {} Newton, {} GMRES ({:.1} per Newton), {} factors built ({} distinct coefficients, median ratio between consecutive builds {median_ratio:.3}), {:.0} ms",
                 f.steps,
@@ -720,6 +725,132 @@ fn probe_factor_reuse_replay() {
         println!(
             "per solve: reused took more iterations in {worse}, fewer in {better}, as many in {}",
             reused.len() - worse - better
+        );
+    });
+}
+
+/// Why the whole step's band factor preconditions the halves better than
+/// their own (`solve`'s reuse, measured by `probe_factor_reuse_replay`):
+/// `kappa_inf(P(c)^-1 A)` against `kappa_inf(P(c/4)^-1 A)` on the dense
+/// matrices, per Newton iteration, on the Norton block's impact and flight
+/// frames and on E2's clay drop. Report only.
+#[test]
+#[ignore = "diagnostic probe: run with --ignored --nocapture"]
+fn probe_preconditioned_condition() {
+    super::cap::capped("probe_preconditioned_condition", 3000, || {
+        use crate::matter::materials::solid::viscoplastic_records::ViscoplasticRecord;
+        let block = |norton: bool| {
+            let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
+            config.total_lagrangian =
+                Some(TotalLagrangianConfig::new(if norton { 1e-2 } else { 1e-1 }));
+            let mut sim = Simulation::empty(config);
+            let props = if norton {
+                let record = ViscoplasticRecord::technical_plasticine_sapozhnikov_2014();
+                let rho = 119.0 * 0.453_592_37 / (0.3048f64 * 0.3048 * 0.3048);
+                let id = sim
+                    .register_material(Box::new(record.material((record.e_pa, rho), &config)))
+                    .0;
+                (
+                    id,
+                    ElasticProps {
+                        e_pa: record.e_pa as f32,
+                        nu: record.nu as f32,
+                        rho_kg_m3: rho as f32,
+                    },
+                )
+            } else {
+                let clay = ElasticProps {
+                    e_pa: 1.125e7,
+                    nu: 0.3,
+                    rho_kg_m3: 1700.0,
+                };
+                let id = sim
+                    .register_material(Box::new(CorotatedMaterial::from_physical(&clay, &config)))
+                    .0;
+                (id, clay)
+            };
+            let floor = config.boundary_thickness as f32;
+            let _block = sim.add_body(
+                SpawnRegion::for_sim(&config)
+                    .box_of(IVec2::new(8, 4))
+                    .at(Vec2::new(20.0, floor + 12.0))
+                    .spacing(0.5)
+                    .material(props.0)
+                    .mass_from(&props.1, &config),
+            );
+            sim
+        };
+        for (name, norton) in [("Norton block", true), ("E2 clay", false)] {
+            let mut sim = block(norton);
+            for _ in 0..9 {
+                sim.step();
+            }
+            crate::spacetime::total_lagrangian::hooks::watch_preconditioned(60);
+            for _ in 0..2 {
+                sim.step();
+            }
+            let rows = crate::spacetime::total_lagrangian::hooks::take_preconditioned();
+            let stats = |pick: &dyn Fn(&(f64, f64)) -> f64| {
+                let mut v: Vec<f64> = rows.iter().map(pick).collect();
+                v.sort_by(f64::total_cmp);
+                (v[0], v[v.len() / 2], v[v.len() - 1])
+            };
+            let (own, quarter) = (stats(&|r| r.0), stats(&|r| r.1));
+            let better = rows.iter().filter(|r| r.1 < r.0).count();
+            println!(
+                "{name}: {} Newton iterations; kappa_inf(P(c)^-1 A) least {:.3e}, median {:.3e}, largest {:.3e}; kappa_inf(P(c/4)^-1 A) least {:.3e}, median {:.3e}, largest {:.3e}; the quarter's smaller in {better}",
+                rows.len(),
+                own.0,
+                own.1,
+                own.2,
+                quarter.0,
+                quarter.1,
+                quarter.2
+            );
+        }
+    });
+}
+
+/// Which of the Norton block's tries build a band factor, one flight frame
+/// (frame 11) traced (`hooks::set_control_trace`): each try's line and each
+/// build's line with the nearest kept factor's coefficient ratio. A probe.
+#[test]
+#[ignore = "diagnostic probe: run with --ignored --nocapture"]
+fn probe_factor_builds_traced() {
+    super::cap::capped("probe_factor_builds_traced", 3000, || {
+        use crate::matter::materials::solid::viscoplastic_records::ViscoplasticRecord;
+        let record = ViscoplasticRecord::technical_plasticine_sapozhnikov_2014();
+        let rho = 119.0 * 0.453_592_37 / (0.3048f64 * 0.3048 * 0.3048);
+        let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
+        config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-2));
+        let props = ElasticProps {
+            e_pa: record.e_pa as f32,
+            nu: record.nu as f32,
+            rho_kg_m3: rho as f32,
+        };
+        let mut sim = Simulation::empty(config);
+        let id = sim
+            .register_material(Box::new(record.material((record.e_pa, rho), &config)))
+            .0;
+        let floor = config.boundary_thickness as f32;
+        let _block = sim.add_body(
+            SpawnRegion::for_sim(&config)
+                .box_of(IVec2::new(8, 4))
+                .at(Vec2::new(20.0, floor + 12.0))
+                .spacing(0.5)
+                .material(id)
+                .mass_from(&props, &config),
+        );
+        for _ in 0..10 {
+            sim.step();
+        }
+        crate::spacetime::total_lagrangian::hooks::set_control_trace(true);
+        sim.step();
+        crate::spacetime::total_lagrangian::hooks::set_control_trace(false);
+        let f = sim.total_lagrangian_frame().expect("on");
+        println!(
+            "traced frame: {} kept steps, {} rejected tries",
+            f.steps, f.rejected
         );
     });
 }

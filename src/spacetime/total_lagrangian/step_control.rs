@@ -192,6 +192,19 @@ fn combine(a: f64, s: &State, b: f64, t: &State) -> State {
     }
 }
 
+/// A rejected pair's band factors kept in the step's cache (`Factors::
+/// absorb`), so the next try, which starts from it, reuses them instead of
+/// building its own again.
+fn keep_factors(start: &mut State, tries: [&State; 2]) {
+    if let Some(cache) = start.cache.as_mut() {
+        for tried in tries {
+            if let Some(other) = tried.cache.as_ref() {
+                cache.factors.absorb(&other.factors);
+            }
+        }
+    }
+}
+
 /// One controlled step of the total Lagrangian contact step from the
 /// particles' state, starting with the step `tau` (s) and setting it to
 /// the next step's length; `scale` is the start's energy norm, `sqrt(E0)`.
@@ -216,7 +229,7 @@ pub fn controlled_step(
             timing.add(&r.timing);
         }
     };
-    let start = State {
+    let mut start = State {
         x: x.to_vec(),
         v: v.to_vec(),
         f: f.to_vec(),
@@ -262,7 +275,7 @@ pub fn controlled_step(
         (kinetic.max(0.0).sqrt(), elastic.max(0.0).sqrt())
     };
     let mut solves = 0u32;
-    let mut run = |pieces: usize, dt: f64| -> (State, Vec<StepReport>, bool) {
+    let mut run = |start: &State, pieces: usize, dt: f64| -> (State, Vec<StepReport>, bool) {
         let tried = std::time::Instant::now();
         let mut s = start.clone();
         let mut reports = Vec::with_capacity(pieces);
@@ -381,10 +394,10 @@ pub fn controlled_step(
         if control.estimator == Estimator::Acary {
             #[cfg(all(test, feature = "experimental"))]
             let returns_before = crate::matter::materials::solid::j2_hencky::returns_seen();
-            let (whole, whole_reports, _) = run(1, dt);
+            let (whole, whole_reports, _) = run(&start, 1, dt);
             #[cfg(all(test, feature = "experimental"))]
             let returns_whole = crate::matter::materials::solid::j2_hencky::returns_seen();
-            let (halves, halves_reports, _) = run(2, dt);
+            let (halves, halves_reports, _) = run(&start, 2, dt);
             // The pair's returns, whole then halves (`hooks::add_return_split`).
             #[cfg(all(test, feature = "experimental"))]
             let returns = (
@@ -467,6 +480,9 @@ pub fn controlled_step(
             if failed && dt > floor {
                 #[cfg(all(test, feature = "experimental"))]
                 hooks::add_return_split(returns.0, returns.1, false);
+                #[cfg(all(test, feature = "experimental"))]
+                hooks::add_try(reaching, 2);
+                keep_factors(&mut start, [&whole, &halves]);
                 rejected += 1;
                 unconverged += 1;
                 *tau = (0.5 * dt).max(floor);
@@ -475,6 +491,8 @@ pub fn controlled_step(
             if error <= target || at_floor {
                 #[cfg(all(test, feature = "experimental"))]
                 hooks::add_return_split(returns.0, returns.1, true);
+                #[cfg(all(test, feature = "experimental"))]
+                hooks::add_try(reaching, 0);
                 x.copy_from_slice(&halves.x);
                 solids.copy_from_slice(&halves.solids);
                 v.copy_from_slice(&halves.v);
@@ -507,12 +525,15 @@ pub fn controlled_step(
             }
             #[cfg(all(test, feature = "experimental"))]
             hooks::add_return_split(returns.0, returns.1, false);
+            #[cfg(all(test, feature = "experimental"))]
+            hooks::add_try(reaching, 1);
+            keep_factors(&mut start, [&whole, &halves]);
             rejected += 1;
             *tau = next.min(dt).max(floor);
             continue;
         }
-        let (first, first_reports, contact_first) = run(control.substeps[0], dt);
-        let (second, second_reports, contact_second) = run(control.substeps[1], dt);
+        let (first, first_reports, contact_first) = run(&start, control.substeps[0], dt);
+        let (second, second_reports, contact_second) = run(&start, control.substeps[1], dt);
         account(&first_reports, &mut timing);
         account(&second_reports, &mut timing);
         // The factors the tries built, for the kept one's cache.
@@ -531,7 +552,7 @@ pub fn controlled_step(
             let parts = split(&difference, dt);
             (second, second_reports, error, ratio, false, parts)
         } else {
-            let (third, third_reports, _) = run(control.substeps[2], dt);
+            let (third, third_reports, _) = run(&start, control.substeps[2], dt);
             account(&third_reports, &mut timing);
             // Eqs. 36-38: the next pair's extrapolation and the
             // combination that cancels the `tau^(1/2)` term.

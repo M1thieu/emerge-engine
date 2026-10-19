@@ -122,34 +122,49 @@ pub(crate) struct Inputs<'a> {
 pub(crate) struct Factors {
     pub(crate) mass: Option<Band>,
     /// The Jacobian's band factors by the system each factors, its
-    /// inertia coefficient `2 / dt^2` and its held springs, the most
-    /// recent first: one per try length the step controller makes in a
-    /// step (`JACOBIAN_FACTORS`), so a run of equal steps factors each
-    /// once instead of at every try (`solve`).
-    pub(crate) jacobian: Vec<(f64, Vec<Spring>, Band)>,
+    /// inertia coefficient `2 / dt^2` and its held springs, with the
+    /// `clock` reading of its last use, the most recent first: one per try
+    /// length the step controller makes in a step (`JACOBIAN_FACTORS`), so
+    /// a run of equal steps factors each once instead of at every try
+    /// (`solve`).
+    pub(crate) jacobian: Vec<(f64, Vec<Spring>, Band, u64)>,
+    /// Counts the factors' uses (`solve`), so that `absorb` keeps the
+    /// most recently used whatever cache they come from.
+    pub(crate) clock: u64,
     /// The last responses computed, by contact key and direction: each
     /// next response's GMRES starts from its own (`gmres_from`).
     pub(crate) responses: Vec<(ContactKey, bool, Vec<f64>)>,
 }
 
 impl Factors {
-    /// Takes in `other`'s Jacobian factors this one lacks, after its own,
-    /// up to `JACOBIAN_FACTORS`: the step controller keeps one try's cache,
-    /// and the other tries' factors (their own lengths') would otherwise be
-    /// lost and rebuilt at the next step.
+    /// Takes in `other`'s Jacobian factors, keeping the `JACOBIAN_FACTORS`
+    /// most recently used of both: the step controller keeps one try's
+    /// cache, and the other tries' factors (their own lengths') would
+    /// otherwise be lost and rebuilt at the next try. Every try of a step
+    /// starts from the step's cache, so both caches' clocks start from the
+    /// same reading and a factor used in any of the step's tries is more
+    /// recent than one none of them used; those are the ones evicted
+    /// (measured before: a full cache of factors no try used, with the
+    /// impact's springs, kept a block's whole steps building a factor at
+    /// every try, `probe_factor_builds_traced`).
     pub(crate) fn absorb(&mut self, other: &Factors) {
-        for (c, springs, band) in &other.jacobian {
-            if self.jacobian.len() >= JACOBIAN_FACTORS {
-                break;
-            }
-            if !self
+        for (c, springs, band, used) in &other.jacobian {
+            match self
                 .jacobian
-                .iter()
-                .any(|(mine, held, _)| mine == c && held == springs)
+                .iter_mut()
+                .find(|(mine, held, _, _)| mine == c && held == springs)
             {
-                self.jacobian.push((*c, springs.clone(), band.clone()));
+                Some(entry) => entry.3 = entry.3.max(*used),
+                None => self
+                    .jacobian
+                    .push((*c, springs.clone(), band.clone(), *used)),
             }
         }
+        self.clock = self.clock.max(other.clock);
+        // Stable: on a tie this cache's own entries stay first.
+        self.jacobian
+            .sort_by_key(|entry| std::cmp::Reverse(entry.3));
+        self.jacobian.truncate(JACOBIAN_FACTORS);
     }
 }
 
@@ -504,14 +519,14 @@ pub(crate) fn solve(
     let exact = factors
         .jacobian
         .iter()
-        .position(|(c, built, _)| *c == coefficient && *built == springs);
+        .position(|(c, built, _, _)| *c == coefficient && *built == springs);
     let near = || {
         factors
             .jacobian
             .iter()
             .enumerate()
-            .filter(|(_, (_, built, _))| *built == springs)
-            .map(|(i, (c, _, _))| (i, (c / coefficient).max(coefficient / c)))
+            .filter(|(_, (_, built, _, _))| *built == springs)
+            .map(|(i, (c, _, _, _))| (i, (c / coefficient).max(coefficient / c)))
             .filter(|&(_, ratio)| ratio <= 4.0 * (1.0 + 4.0 * f64::EPSILON))
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(i, _)| i)
@@ -525,10 +540,18 @@ pub(crate) fn solve(
         None => {
             #[cfg(all(test, feature = "experimental"))]
             if hooks::control_trace() {
-                let same_springs = factors.jacobian.iter().any(|(_, b, _)| *b == springs);
-                let same_coefficient = factors.jacobian.iter().any(|(c, _, _)| *c == coefficient);
+                let same_springs = factors.jacobian.iter().any(|(_, b, _, _)| *b == springs);
+                let same_coefficient = factors
+                    .jacobian
+                    .iter()
+                    .any(|(c, _, _, _)| *c == coefficient);
+                let nearest = factors
+                    .jacobian
+                    .iter()
+                    .map(|(c, _, _, _)| (c / coefficient).max(coefficient / c))
+                    .fold(f64::INFINITY, f64::min);
                 println!(
-                    "  factor: coefficient {coefficient:.6e} (seen {same_coefficient}), springs {} (seen {same_springs}), kept {}",
+                    "  factor: coefficient {coefficient:.6e} (seen {same_coefficient}), springs {} (seen {same_springs}), kept {}, nearest kept ratio {nearest:.3e}",
                     springs.len(),
                     factors.jacobian.len()
                 );
@@ -537,10 +560,12 @@ pub(crate) fn solve(
             #[cfg(all(test, feature = "experimental"))]
             hooks::record_factor(coefficient);
             factorizations += 1;
-            factors.jacobian.insert(0, (coefficient, springs, band));
+            factors.jacobian.insert(0, (coefficient, springs, band, 0));
             factors.jacobian.truncate(JACOBIAN_FACTORS);
         }
     }
+    factors.clock += 1;
+    factors.jacobian[0].3 = factors.clock;
     let band = &factors.jacobian[0].2;
     #[cfg(all(test, feature = "experimental"))]
     let exact_band = exact_candidate.filter(|_| factors.jacobian[0].0 != coefficient);
@@ -1117,6 +1142,14 @@ pub(crate) fn solve(
         let jacobian = |d: &[f64]| jacobian_at(&u, (&held, lin.as_deref()), d);
         #[cfg(all(test, feature = "experimental"))]
         hooks::record_condition(&jacobian, grid, mass);
+        #[cfg(all(test, feature = "experimental"))]
+        if hooks::preconditioned_wanted() {
+            let built = &factors.jacobian[0].1;
+            let own = grid.approximate_jacobian((mass, v0, solids), eps, coefficient, built);
+            let quarter =
+                grid.approximate_jacobian((mass, v0, solids), eps, 0.25 * coefficient, built);
+            hooks::record_preconditioned(&jacobian, grid, (&own, &quarter));
+        }
         let minus_r: Vec<f64> = r.iter().map(|e| -e).collect();
         // A fixed linear tolerance: Eisenstat and Walker's forcing term
         // (choice 2, capped at 0.1) left Newton short of convergence on 14
