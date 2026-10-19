@@ -10,7 +10,7 @@ use glam::IVec2;
 /// The 8 x 4 cm clay block on the floor, placed at its resting
 /// compression with its constrained modes (`rest::Rest::settle`), the
 /// loaded mode given `kick` of its offset as its rate.
-fn settled_block(kick: f64) -> Simulation {
+pub(super) fn settled_block(kick: f64) -> Simulation {
     let props = ElasticProps {
         e_pa: 1.125e7,
         nu: 0.3,

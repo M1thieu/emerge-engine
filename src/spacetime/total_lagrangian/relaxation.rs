@@ -226,6 +226,20 @@ impl Relaxation {
             .sum()
     }
 
+    /// The branches' stress at `C` in their present state, `2 dPsi/dC` of
+    /// `energy`: per branch `S_P'(C)[q] / mu_b`, `q = S_P(C) - mu_b E` (the
+    /// step stress's `s_neq` at one point). For the error estimate's
+    /// accelerations (`estimate`).
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) fn stress(&self, c: DMat2, moduli: (f64, f64)) -> DMat2 {
+        self.each(moduli)
+            .map(|(b, (l, m))| {
+                let q = corotated_second_pk(c, l, m) - b.strain * b.branch.modulus;
+                corotated_second_pk_tangent(c, q, l, m) * b.branch.modulus.recip()
+            })
+            .fold(DMat2::ZERO, |sum, s| sum + s)
+    }
+
     /// The branches' step stress between `C_n` and `C_{n+1}` over `dt`.
     pub(crate) fn step_stress(&self, c0: DMat2, c1: DMat2, dt: f64, moduli: (f64, f64)) -> DMat2 {
         let dc = c1 - c0;

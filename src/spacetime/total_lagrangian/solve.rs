@@ -1386,6 +1386,30 @@ pub(crate) fn solve(
     } else {
         Vec::new()
     };
+    // The measured error estimate of this converged step (`estimate`),
+    // when a probe samples it; it changes nothing here.
+    #[cfg(all(test, feature = "experimental"))]
+    if hooks::lobatto_wanted() {
+        let mut applied = external.clone();
+        if !contacts.is_empty() {
+            applied.iter_mut().zip(push(&u)).for_each(|(a, p)| *a += p);
+        }
+        let mass_factor = factors.mass.as_ref().expect("factored above");
+        hooks::record_lobatto(estimate::lobatto_error(&estimate::Converged {
+            grid,
+            mass,
+            v0,
+            solids,
+            f_start: f_now,
+            lagrangian,
+            dt,
+            eps,
+            mass_factor,
+            applied,
+            u: &u,
+            v_n: &v_n,
+        }));
+    }
     Solution {
         u,
         v_n,

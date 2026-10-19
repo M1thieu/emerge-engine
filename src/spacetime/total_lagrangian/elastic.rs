@@ -660,6 +660,23 @@ impl Elastic {
         self.is_plastic() || self.is_relaxing()
     }
 
+    /// The whole stress at one point, `C` with the Green strain rate
+    /// `e_dot`, in the solid's present state: the law's (`second_pk`), the
+    /// dashpot's at that rate, and the branches' (`Relaxation::stress`).
+    /// For the error estimate's accelerations (`estimate`); the step itself
+    /// uses `step_stress`.
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) fn point_stress(&self, c: DMat2, e_dot: DMat2) -> DMat2 {
+        let mut s = self.second_pk(c);
+        if self.is_viscous() {
+            s += newtonian_viscous_stress(e_dot, self.shear_viscosity, self.bulk_viscosity);
+        }
+        if self.is_relaxing() {
+            s += self.relaxation.stress(c, self.lame());
+        }
+        s
+    }
+
     /// The second Piola-Kirchhoff stress `S(C) = F^-1 tau F^-T` with `F =
     /// sqrt(C)`.
     pub(crate) fn second_pk(&self, c: DMat2) -> DMat2 {

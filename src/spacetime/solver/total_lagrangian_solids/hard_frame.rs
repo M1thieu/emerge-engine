@@ -14,7 +14,7 @@ use glam::IVec2;
 
 /// `tests/realtime_profile.rs`'s E2: the 8 x 4 cm clay block dropped 10
 /// cells, frame 1/60 s, step tolerance 1e-1.
-fn e2() -> Simulation {
+pub(super) fn e2() -> Simulation {
     e2_lifted(0.0)
 }
 

@@ -473,3 +473,111 @@ pub(super) fn add_try(switching: bool, outcome: usize) {
 pub(crate) fn take_tries() -> [u32; 6] {
     std::mem::take(&mut *TRIES.lock().expect("tries lock"))
 }
+
+/// The error estimate's measurement (`estimate`, `step_control`): every
+/// `every`-th pair of the step controller's tries is sampled (0: off; the
+/// default read once from `EMERGE_PROBE_EFFECTIVITY`), and every
+/// `halving`-th sampled pair also runs the step-halving check (0: never).
+static EFFECTIVITY: std::sync::Mutex<Option<(u32, u32, u32)>> = std::sync::Mutex::new(None);
+
+pub(crate) fn set_effectivity(every: u32, halving: u32) {
+    *EFFECTIVITY.lock().expect("effectivity lock") = Some((every, halving, 0));
+}
+
+/// `Some(halving)` when this pair is sampled.
+pub(super) fn effectivity_sample() -> Option<bool> {
+    let mut state = EFFECTIVITY.lock().expect("effectivity lock");
+    let (every, halving, count) = state.get_or_insert_with(|| {
+        let every = std::env::var("EMERGE_PROBE_EFFECTIVITY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        (every, 0, 0)
+    });
+    if *every == 0 {
+        return None;
+    }
+    *count += 1;
+    if *count % *every != 0 {
+        return None;
+    }
+    let sampled = *count / *every;
+    Some(*halving > 0 && sampled % *halving == 0)
+}
+
+/// The last converged solve's estimate, while a sampled whole step runs.
+static LOBATTO: std::sync::Mutex<(bool, Option<super::estimate::ParticleError>)> =
+    std::sync::Mutex::new((false, None));
+
+pub(super) fn want_lobatto(on: bool) {
+    *LOBATTO.lock().expect("lobatto lock") = (on, None);
+}
+
+pub(super) fn lobatto_wanted() -> bool {
+    LOBATTO.lock().expect("lobatto lock").0
+}
+
+pub(super) fn record_lobatto(error: super::estimate::ParticleError) {
+    LOBATTO.lock().expect("lobatto lock").1 = Some(error);
+}
+
+pub(super) fn take_lobatto() -> Option<super::estimate::ParticleError> {
+    let mut state = LOBATTO.lock().expect("lobatto lock");
+    state.0 = false;
+    state.1.take()
+}
+
+/// One sampled pair (`step_control`), every size in the controller's norm:
+/// the step `dt`; whether the pair is switching-class, and whether its
+/// whole step held a contact; the estimate of the
+/// whole step (`estimate`), also with its kinetic part from the velocity
+/// error (Lacoma and Romero's eq. 32 form); the whole step's error against
+/// the 64-substep reference (both forms); the doubling's estimate of the
+/// halves and the halves' error against the reference; and, on halving
+/// samples, `(h, estimate, reference error)` at `dt`, `dt/2`, `dt/4`,
+/// `dt/8`.
+#[derive(Clone, Debug)]
+pub(crate) struct EffectivityRow {
+    pub(crate) dt: f64,
+    pub(crate) switching: bool,
+    /// Whether the whole step held a contact (`StepReport::contacts`).
+    pub(crate) held: bool,
+    /// The whole step's largest particle speeds: start, mean, end
+    /// (`estimate::ParticleError`).
+    pub(crate) speeds: [f64; 3],
+    /// The frame the pair belongs to (`set_effectivity_frame`), the
+    /// controller's target and the error it compared with it (eq. 63's or
+    /// eq. 67's), and the plastic work of the whole step.
+    pub(crate) frame: u32,
+    pub(crate) target: f64,
+    pub(crate) compared: f64,
+    pub(crate) plastic: f64,
+    pub(crate) estimate: f64,
+    pub(crate) estimate_velocity: f64,
+    pub(crate) whole_error: f64,
+    pub(crate) whole_error_velocity: f64,
+    pub(crate) doubling: f64,
+    pub(crate) halves_error: f64,
+    pub(crate) halving: Vec<(f64, f64, f64)>,
+}
+
+static EFFECTIVITY_ROWS: std::sync::Mutex<Vec<EffectivityRow>> = std::sync::Mutex::new(Vec::new());
+
+/// The frame the next sampled pairs belong to (`EffectivityRow::frame`).
+static EFFECTIVITY_FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub(crate) fn set_effectivity_frame(frame: u32) {
+    EFFECTIVITY_FRAME.store(frame, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(super) fn effectivity_frame() -> u32 {
+    EFFECTIVITY_FRAME.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub(super) fn record_effectivity(row: EffectivityRow) {
+    EFFECTIVITY_ROWS.lock().expect("rows lock").push(row);
+}
+
+pub(crate) fn take_effectivity() -> Vec<EffectivityRow> {
+    std::mem::take(&mut *EFFECTIVITY_ROWS.lock().expect("rows lock"))
+}

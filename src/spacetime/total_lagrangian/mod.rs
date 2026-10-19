@@ -63,6 +63,10 @@ mod diagnostics;
 #[cfg(all(test, feature = "experimental"))]
 mod dirichlet;
 mod elastic;
+/// A one-solve local error estimate, measured beside the controller's
+/// doubling, never deciding a step.
+#[cfg(all(test, feature = "experimental"))]
+pub(crate) mod estimate;
 #[cfg(all(test, feature = "experimental"))]
 mod galerkin2;
 /// Probe hooks, off unless a probe turns them on: a per-thread trace of

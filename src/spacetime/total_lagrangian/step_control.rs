@@ -377,6 +377,9 @@ pub fn controlled_step(
     };
     let mut rejected = 0;
     let mut unconverged = 0;
+    // The measurement's solves (`hooks::EffectivityRow`), not the step's.
+    #[cfg(all(test, feature = "experimental"))]
+    let mut extra = 0u32;
     // A point beyond a plane, per particle (the walls' contact status,
     // Acary's `s_k`).
     let beyond = |x: &[DVec2]| -> Vec<bool> {
@@ -394,7 +397,15 @@ pub fn controlled_step(
         if control.estimator == Estimator::Acary {
             #[cfg(all(test, feature = "experimental"))]
             let returns_before = crate::matter::materials::solid::j2_hencky::returns_seen();
+            // A sampled pair's measured error estimate (`estimate`): the
+            // whole step's, recorded by its solve (`hooks::want_lobatto`).
+            #[cfg(all(test, feature = "experimental"))]
+            let sampled = hooks::effectivity_sample();
+            #[cfg(all(test, feature = "experimental"))]
+            hooks::want_lobatto(sampled.is_some());
             let (whole, whole_reports, _) = run(&start, 1, dt);
+            #[cfg(all(test, feature = "experimental"))]
+            let lobatto = hooks::take_lobatto();
             #[cfg(all(test, feature = "experimental"))]
             let returns_whole = crate::matter::materials::solid::j2_hencky::returns_seen();
             let (halves, halves_reports, _) = run(&start, 2, dt);
@@ -446,6 +457,70 @@ pub fn controlled_step(
             let reaching = [beyond(&whole.x), beyond(&halves.x)]
                 .iter()
                 .any(|end| end.iter().zip(&start_beyond).any(|(&e, &s)| e && !s));
+            // The measurement (`hooks::EffectivityRow`), from the same start
+            // and discarded: it decides nothing. Its solves are taken out of
+            // the step's count (`extra`).
+            #[cfg(all(test, feature = "experimental"))]
+            if let (Some(halving), Some((dx, df, dv, speeds))) = (sampled, lobatto) {
+                let state_of = |dx: Vec<DVec2>, df: Vec<DMat2>, dv: Vec<DVec2>| State {
+                    x: dx,
+                    v: dv,
+                    f: df,
+                    solids: start.solids.clone(),
+                    cache: None,
+                };
+                // The kinetic part from the velocity error instead of the
+                // displacement's (Lacoma and Romero's eq. 32).
+                let velocity_form = |d: &State, dt: f64| -> f64 {
+                    let kinetic: f64 = (0..d.x.len())
+                        .map(|p| 0.5 * mass[p] * d.v[p].length_squared())
+                        .sum();
+                    (kinetic + split(d, dt).1.powi(2)).sqrt()
+                };
+                let estimate = state_of(dx, df, dv);
+                let (reference, _, _) = run(&start, 64, dt);
+                extra += 64;
+                let whole_off = combine(1.0, &whole, -1.0, &reference);
+                let halving_rows = if halving {
+                    (0..4)
+                        .map(|k| {
+                            let h = dt / f64::from(1u32 << k);
+                            hooks::want_lobatto(true);
+                            let (step, _, _) = run(&start, 1, h);
+                            let guess = hooks::take_lobatto()
+                                .map_or(f64::NAN, |(dx, df, dv, _)| norm(&state_of(dx, df, dv), h));
+                            let (fine, _, _) = run(&start, 64, h);
+                            extra += 65;
+                            (h, guess, norm(&combine(1.0, &step, -1.0, &fine), h))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let row = hooks::EffectivityRow {
+                    dt,
+                    switching: reaching,
+                    held: whole_reports.iter().any(|r| r.contacts > 0),
+                    speeds,
+                    frame: hooks::effectivity_frame(),
+                    target,
+                    compared: if reaching {
+                        parts.1
+                    } else {
+                        norm(&difference, dt) / 3.0
+                    },
+                    plastic: whole_reports.iter().map(|r| r.plastic).sum(),
+                    estimate: norm(&estimate, dt),
+                    estimate_velocity: velocity_form(&estimate, dt),
+                    whole_error: norm(&whole_off, dt),
+                    whole_error_velocity: velocity_form(&whole_off, dt),
+                    doubling: norm(&difference, dt) / 3.0,
+                    halves_error: norm(&combine(1.0, &halves, -1.0, &reference), dt),
+                    halving: halving_rows,
+                };
+                println!("  effectivity: {row:?}");
+                hooks::record_effectivity(row);
+            }
             // Eq. 67 at order 0 (positions only), else eq. 63 at order 2.
             let (error, order) = if reaching {
                 (parts.1, 0.0)
@@ -507,6 +582,8 @@ pub fn controlled_step(
                     .any(|r| r.push > 0.0 || r.contacts > 0);
                 let stalled = halves_reports.iter().filter(|r| r.stagnated).count() as u32;
                 timing.controller = controlling.elapsed().as_secs_f64() - trying.get();
+                #[cfg(all(test, feature = "experimental"))]
+                let solves = solves - extra;
                 return ControlledStep {
                     timing,
                     dt,
