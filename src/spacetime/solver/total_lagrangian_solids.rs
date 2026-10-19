@@ -195,12 +195,20 @@ pub struct TotalLagrangianFrame {
     pub modal_rest_frames: u64,
     pub rest_hand_backs: u64,
     /// Since the start, the frames a lone body was free to fly
-    /// (`TotalLagrangianConfig::modal_flight`) but had no modes to fly by: a
-    /// law the modes do not carry (a dashpot, J2, relaxation branches that do
-    /// not decouple on them: two spectra in one body, a record whose shear
-    /// and P weights differ), or a damped flight whose strain could pass its
-    /// record's limit; the step took the frame.
+    /// (`TotalLagrangianConfig::modal_flight`) but had no modes to fly by; the
+    /// step took the frame. The sum of the three causes below.
     pub modal_refused: u64,
+    /// Of those, a law the modes do not carry: a dashpot, Norton's flow,
+    /// J2 with relaxation branches, relaxation branches that do not
+    /// decouple on them (two spectra in one body, a record whose shear and
+    /// P weights differ).
+    pub modal_refused_law: u64,
+    /// Of those, a J2 body that has yielded (its stress-free configuration
+    /// is no longer the modes' reference).
+    pub modal_refused_yielded: u64,
+    /// Of those, a flight whose strain bound could pass a damped record's
+    /// strain limit or a J2 particle's yield (`HenckyJ2::elastic_within`).
+    pub modal_refused_bound: u64,
     /// Since the start, the damped frames whose computed propagator
     /// lengthened a mode's state (the exact one never does; `flight`), handed
     /// to the step.
@@ -257,7 +265,7 @@ pub(crate) struct TotalLagrangianState {
     last_held: Vec<ContactKey>,
     modal_rest_frames: u64,
     rest_hand_backs: u64,
-    modal_refused: u64,
+    modal_refused: [u64; 3],
     modal_check_failed: u64,
     modal_rest_refused: u64,
     pub(crate) frame: TotalLagrangianFrame,
@@ -547,7 +555,7 @@ impl Simulation {
             last_held: Vec::new(),
             modal_rest_frames: 0,
             rest_hand_backs: 0,
-            modal_refused: 0,
+            modal_refused: [0; 3],
             modal_check_failed: 0,
             modal_rest_refused: 0,
             frame: TotalLagrangianFrame::default(),
@@ -828,7 +836,12 @@ impl Simulation {
         (frame.modal_frames, frame.hand_backs) = (state.modal_frames, state.hand_backs);
         (frame.modal_rest_frames, frame.rest_hand_backs) =
             (state.modal_rest_frames, state.rest_hand_backs);
-        frame.modal_refused = state.modal_refused;
+        [
+            frame.modal_refused_law,
+            frame.modal_refused_yielded,
+            frame.modal_refused_bound,
+        ] = state.modal_refused;
+        frame.modal_refused = state.modal_refused.iter().sum();
         frame.modal_check_failed = state.modal_check_failed;
         frame.modal_rest_refused = state.modal_rest_refused;
         frame.tolerance_energy = state.tolerance_energy;
@@ -878,15 +891,16 @@ impl Simulation {
                 state.modes = Some(modes);
             }
             let Some(Some(modes)) = &state.modes else {
-                state.modal_refused += 1;
+                state.modal_refused[0] += 1;
                 return false;
             };
             let started = Flight::start(state, modes, (t0, length));
-            // Refused only when damped, beyond the record's strain limit.
-            if started.is_none() && !modes.memory.is_empty() {
-                state.modal_refused += 1;
+            match started {
+                Err(flight::Refusal::Yielded) => state.modal_refused[1] += 1,
+                Err(flight::Refusal::Bound) => state.modal_refused[2] += 1,
+                _ => {}
             }
-            state.flight = started;
+            state.flight = started.ok();
         }
         let Some(mut flight) = state.flight.take() else {
             return false;

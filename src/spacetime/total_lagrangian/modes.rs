@@ -109,15 +109,25 @@ pub(crate) struct System {
 /// `particles` points carry mass on `grid`, with the relaxed moduli of a
 /// body that carries relaxation branches (its memory is then the
 /// caller's, `damped_system`); `None` when a law is not the corotated
-/// solid's or carries a dashpot.
+/// solid's or carries a dashpot. With `below_yield`, also the J2 law on
+/// Hencky without Norton's flow and without branches: below its yield it
+/// is Hencky's elasticity, whose tangent at rest is the corotated one with
+/// the same `mu` and `lambda = bulk - mu` (plane strain), so the modes are
+/// the same; the caller checks that the motion stays below yield
+/// (`HenckyJ2::elastic_within`).
 fn relaxed_system(
     grid: &Grid,
     (mass, v0, solids): (&[f64], &[f64], &[Elastic]),
-    particles: usize,
+    (particles, below_yield): (usize, bool),
 ) -> Option<System> {
+    let carried = |s: &Elastic| match s.law {
+        ElasticLaw::Corotated => true,
+        ElasticLaw::HenckyJ2(law, _) => below_yield && law.norton.is_none() && !s.is_relaxing(),
+        _ => false,
+    };
     if solids[..particles]
         .iter()
-        .any(|s| s.law != ElasticLaw::Corotated || s.is_viscous())
+        .any(|s| !carried(s) || s.is_viscous())
     {
         return None;
     }
@@ -207,7 +217,7 @@ pub(crate) fn damped_system(
 ) -> Option<DampedSystem> {
     let (memory, limit) = common_memory(&solids[..particles])?;
     Some((
-        relaxed_system(grid, (mass, v0, solids), particles)?,
+        relaxed_system(grid, (mass, v0, solids), (particles, false))?,
         memory,
         limit,
     ))
@@ -236,16 +246,17 @@ fn common_memory(solids: &[Elastic]) -> Option<(Vec<(f64, f64)>, f64)> {
 
 /// The modes of the body whose `particles` points carry mass on `grid`
 /// (its contact points after them carry none). `None` when a law is not
-/// the corotated solid's or carries a dashpot (another law's modes are not
-/// built), when its relaxation does not decouple on them
-/// (`common_memory`), or when the mass is not definite.
+/// the corotated solid's or J2's below yield (`relaxed_system`) or carries
+/// a dashpot (another law's modes are not built), when its relaxation does
+/// not decouple on them (`common_memory`), or when the mass is not
+/// definite.
 pub(crate) fn body_modes(
     grid: &Grid,
     (mass, v0, solids): (&[f64], &[f64], &[Elastic]),
     (particles, points): (usize, usize),
 ) -> Option<Modes> {
     let (memory, strain_limit) = common_memory(&solids[..particles])?;
-    let System { unknowns, n, m, k } = relaxed_system(grid, (mass, v0, solids), particles)?;
+    let System { unknowns, n, m, k } = relaxed_system(grid, (mass, v0, solids), (particles, true))?;
     if n <= RIGID_MODES {
         return None;
     }

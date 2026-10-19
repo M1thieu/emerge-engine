@@ -63,9 +63,18 @@
 //! adaptation, by each particle's branch energy at the frame's start and
 //! end. Removal criterion: the per-particle closed-form integral of the
 //! dissipation, measured for cost.
+//!
+//! A J2 body (`HenckyJ2` without Norton's flow) flies while it has never
+//! yielded and provably cannot over the flight: below yield it is Hencky's
+//! elasticity, with the corotated law's modes (`total_lagrangian::
+//! body_modes`), and `start` refuses it unless every particle stays
+//! elastic for every gradient its bound allows (`HenckyJ2::
+//! elastic_within`). A body that has yielded stays refused (`Refusal::
+//! Yielded`).
 
+use crate::matter::materials::solid::j2_hencky::PlasticMetric;
 use crate::spacetime::total_lagrangian::{
-    CarriedMemory, Modes, Plane, RIGID_MODES, damped_propagator,
+    CarriedMemory, ElasticLaw, Modes, Plane, RIGID_MODES, damped_propagator,
 };
 use glam::{DMat2, DVec2};
 
@@ -128,21 +137,45 @@ fn colon(a: DMat2, b: DMat2) -> f64 {
     a.x_axis.dot(b.x_axis) + a.y_axis.dot(b.y_axis)
 }
 
+/// Why a flight was not started (`Flight::start`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Refusal {
+    /// The body carries no mass: nothing to fly.
+    Massless,
+    /// A J2 particle has yielded: its stress-free configuration is no
+    /// longer the reference the modes are built about. Removal criterion:
+    /// modes about the current plastic state.
+    Yielded,
+    /// The flight's strain bound could pass a damped record's strain limit,
+    /// or a J2 particle's yield (`HenckyJ2::elastic_within`).
+    Bound,
+}
+
 impl Flight {
     /// The flight from the state at time `t`, its frames `length` long.
-    /// `None` for a damped flight whose strain could pass its record's
-    /// limit: `|grad u| <= b = max_p sum_i |grad phi_i(X_p)| |y_i| /
-    /// omega_i` over the whole flight (no mode's energy grows), so the
-    /// Green strain stays below `b + b^2 / 2`, which must not exceed it.
+    /// Refused (`Refusal`) when the body has no mass, when a J2 particle
+    /// has yielded, or when the strain could pass a limit: over the whole
+    /// flight (no mode's energy grows) `|grad u| <= b_p = sum_i |grad
+    /// phi_i(X_p)| |y_i| / omega_i` at each particle, so a damped flight's
+    /// Green strain stays below `b + b^2 / 2` (`b` the largest `b_p`),
+    /// which must not exceed its record's limit, and a J2 particle must
+    /// stay elastic for every `|grad u| <= b_p`.
     pub(crate) fn start(
         state: &TotalLagrangianState,
         modes: &Modes,
         (t, length): (f64, f64),
-    ) -> Option<Self> {
+    ) -> Result<Self, Refusal> {
         let n = state.particles;
         let total: f64 = state.mass[..n].iter().sum();
         if total <= 0.0 {
-            return None;
+            return Err(Refusal::Massless);
+        }
+        let plastic = |p: usize| match state.solids[p].law {
+            ElasticLaw::HenckyJ2(law, metric) => Some((law, metric)),
+            _ => None,
+        };
+        if (0..n).any(|p| plastic(p).is_some_and(|(_, m)| m != PlasticMetric::unstrained())) {
+            return Err(Refusal::Yielded);
         }
         let (sum_x, sum_v, sum_reference) =
             (0..n).fold((DVec2::ZERO, DVec2::ZERO, DVec2::ZERO), |(a, b, c), p| {
@@ -211,21 +244,26 @@ impl Flight {
             Some(m) => squared(&m.y[i]).sqrt(),
             None => z[i].length(),
         };
-        if memory.is_some() {
-            let bound = (0..n)
-                .map(|p| {
-                    (RIGID_MODES..modes.omega.len())
-                        .filter(|&i| modes.omega[i] > 0.0)
-                        .map(|i| {
-                            let g = modes.gradients[i][p];
-                            colon(g, g).sqrt() * size(i) / modes.omega[i]
-                        })
-                        .sum::<f64>()
+        let gradient_bound = |p: usize| -> f64 {
+            (RIGID_MODES..modes.omega.len())
+                .filter(|&i| modes.omega[i] > 0.0)
+                .map(|i| {
+                    let g = modes.gradients[i][p];
+                    colon(g, g).sqrt() * size(i) / modes.omega[i]
                 })
-                .fold(0.0, f64::max);
+                .sum()
+        };
+        if memory.is_some() {
+            let bound = (0..n).map(gradient_bound).fold(0.0, f64::max);
             if bound + 0.5 * bound * bound > modes.strain_limit {
-                return None;
+                return Err(Refusal::Bound);
             }
+        }
+        let leaves_elastic = (0..n).any(|p| {
+            plastic(p).is_some_and(|(law, metric)| !law.elastic_within(&metric, gradient_bound(p)))
+        });
+        if leaves_elastic {
+            return Err(Refusal::Bound);
         }
         let arms = state
             .outlines
@@ -239,7 +277,7 @@ impl Flight {
                 (state.reference[o] - origin, bound)
             })
             .collect();
-        Some(Self {
+        Ok(Self {
             t,
             centre,
             velocity,

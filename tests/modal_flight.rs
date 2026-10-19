@@ -9,8 +9,13 @@ extern crate emerge_engine as emerge;
 mod cap;
 
 use emerge::materials::physical_props::Elastic;
-use emerge::spacetime::solver::total_lagrangian_solids::TotalLagrangianConfig;
-use emerge::{CorotatedMaterial, FromSI, SimConfig, Simulation, SpawnRegion};
+use emerge::spacetime::solver::total_lagrangian_solids::{
+    TotalLagrangianConfig, TotalLagrangianFrame,
+};
+use emerge::{
+    CorotatedMaterial, DuctileProps, FromSI, MaterialModel, SimConfig, Simulation, SpawnRegion,
+    VonMisesMaterial,
+};
 use glam::{IVec2, Vec2};
 
 /// Medium clay, as the path's tests use it.
@@ -24,12 +29,17 @@ fn clay() -> Elastic {
 
 /// The 8 x 4 cm block dropped `lift` cells, its flights modal.
 fn drop(lift: f32) -> Simulation {
+    drop_of(lift, &|config| {
+        Box::new(CorotatedMaterial::from_physical(&clay(), config))
+    })
+}
+
+/// The same block made of the material `made` builds.
+fn drop_of(lift: f32, made: &dyn Fn(&SimConfig) -> Box<dyn MaterialModel>) -> Simulation {
     let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
     config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1).with_modal_flight());
     let mut sim = Simulation::empty(config);
-    let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
-        .0;
+    let id = sim.register_material(made(&config)).0;
     let floor = config.boundary_thickness as f32;
     let _block = sim.add_body(
         SpawnRegion::for_sim(&config)
@@ -44,7 +54,46 @@ fn drop(lift: f32) -> Simulation {
 
 #[test]
 fn a_dropped_block_flies_by_its_modes_between_impacts() {
-    let mut sim = drop(10.0);
+    let flown = flown(&mut drop(10.0), 30);
+    let Flown {
+        modal,
+        stepped,
+        handed_back,
+        modal_wall,
+        stepped_wall,
+        worst_rigid,
+        ..
+    } = flown;
+    println!(
+        "modal flight: {modal} modal frames ({:.3} ms each), {stepped} stepped ({:.0} ms each), {handed_back} hand-backs to the step; the modal frames' momentum off M g dt by at most {worst_rigid:.2e} of it",
+        1e3 * modal_wall / modal.max(1) as f64,
+        1e3 * stepped_wall / stepped.max(1) as f64
+    );
+    assert!(
+        modal >= 10,
+        "the flights were not modal: {modal} modal frames"
+    );
+    assert!(handed_back >= 1, "no flight ended at a contact");
+}
+
+/// What `flown` saw.
+struct Flown {
+    modal: usize,
+    stepped: usize,
+    handed_back: usize,
+    modal_wall: f64,
+    stepped_wall: f64,
+    worst_rigid: f64,
+    /// The frames flown after the first frame that held a contact.
+    modal_after_impact: usize,
+    last: TotalLagrangianFrame,
+}
+
+/// `frames` frames of `sim`, each checked as the flight's gate checks
+/// them: no modal frame holds a contact, every frame's balance within what
+/// the solves and the modes allow, and a modal frame's momentum changed by
+/// `M g dt` (relative 1e-9) when the frame before was modal too.
+fn flown(sim: &mut Simulation, frames: usize) -> Flown {
     let unit = f64::from(sim.config().grid_mass_unit_kg_per_m());
     let mass: f64 = sim
         .particles()
@@ -60,10 +109,9 @@ fn a_dropped_block_flies_by_its_modes_between_impacts() {
     let (mut modal_wall, mut stepped_wall) = (0.0f64, 0.0f64);
     let mut allowed = 0.0f64;
     let mut worst_rigid = 0.0f64;
-    let mut previous: Option<
-        emerge::spacetime::solver::total_lagrangian_solids::TotalLagrangianFrame,
-    > = None;
-    for _ in 0..30 {
+    let mut previous: Option<TotalLagrangianFrame> = None;
+    let (mut touched, mut modal_after_impact) = (false, 0usize);
+    for _ in 0..frames {
         sim.step();
         let frame = sim.total_lagrangian_frame().expect("the path is on");
         // A frame that held a contact is never modal.
@@ -86,6 +134,7 @@ fn a_dropped_block_flies_by_its_modes_between_impacts() {
         if frame.modal {
             modal += 1;
             modal_wall += frame.wall;
+            modal_after_impact += usize::from(touched);
             // No contact acts: the momentum changes by `M g dt`, the elastic
             // modes carrying none. They do so to the eigen-solve's accuracy
             // (their mass-orthogonality to the translations, about 5e-14),
@@ -107,18 +156,92 @@ fn a_dropped_block_flies_by_its_modes_between_impacts() {
                 handed_back += 1;
             }
         }
+        touched |= frame.contacts > 0;
         previous = Some(frame);
     }
+    Flown {
+        modal,
+        stepped,
+        handed_back,
+        modal_wall,
+        stepped_wall,
+        worst_rigid,
+        modal_after_impact,
+        last: previous.expect("frames run"),
+    }
+}
+
+/// The clay block as a J2 solid (`VonMisesMaterial`, on Hencky elasticity on
+/// this path) with the uniaxial yield stress `yield_pa`.
+fn ductile_drop(yield_pa: f32) -> Simulation {
+    drop_of(10.0, &|config| {
+        Box::new(VonMisesMaterial::from_physical(
+            &DuctileProps {
+                elastic: clay(),
+                yield_stress_pa: yield_pa,
+            },
+            config,
+        ))
+    })
+}
+
+/// The refusals by cause, which sum to the total.
+fn refusals(f: &TotalLagrangianFrame) -> [u64; 3] {
+    let causes = [
+        f.modal_refused_law,
+        f.modal_refused_yielded,
+        f.modal_refused_bound,
+    ];
+    assert_eq!(causes.iter().sum::<u64>(), f.modal_refused);
+    causes
+}
+
+/// A J2 block that never yields flies by its modes between impacts, as the
+/// corotated block does (`flown`'s checks), with no plastic heat: below
+/// its yield, Hencky's elasticity, and the flight refused wherever its
+/// strain bound could reach the yield (`HenckyJ2::elastic_within`). The
+/// yield stress, 5 MPa, is the scene's choice, set far above the impact's
+/// stresses (a 10 cm drop, `rho c v` about 2e5 Pa) and declared.
+#[test]
+fn a_j2_block_below_yield_flies_by_its_modes() {
+    let flown = flown(&mut ductile_drop(5.0e6), 30);
+    let f = &flown.last;
+    let [law, yielded, bound] = refusals(f);
     println!(
-        "modal flight: {modal} modal frames ({:.3} ms each), {stepped} stepped ({:.0} ms each), {handed_back} hand-backs to the step; the modal frames' momentum off M g dt by at most {worst_rigid:.2e} of it",
-        1e3 * modal_wall / modal.max(1) as f64,
-        1e3 * stepped_wall / stepped.max(1) as f64
+        "J2 below yield: {} modal frames, {} stepped, {} hand-backs, {} flown after the first impact; refusals: law {law}, yielded {yielded}, bound {bound}; heat {:.3e} J/m; momentum off M g dt by at most {:.2e}",
+        flown.modal,
+        flown.stepped,
+        flown.handed_back,
+        flown.modal_after_impact,
+        f.heat,
+        flown.worst_rigid
     );
+    assert_eq!(f.heat, 0.0, "the block yielded");
+    assert_eq!((law, yielded), (0, 0));
     assert!(
-        modal >= 10,
-        "the flights were not modal: {modal} modal frames"
+        flown.modal_after_impact >= 5,
+        "the flights after impact were not modal: {}",
+        flown.modal_after_impact
     );
-    assert!(handed_back >= 1, "no flight ended at a contact");
+    assert!(flown.handed_back >= 1, "no flight ended at a contact");
+}
+
+/// A J2 block that yields at its first impact flies before it and never
+/// after: each later free frame refused as yielded and counted.
+#[test]
+fn a_yielded_j2_block_stays_refused() {
+    let flown = flown(&mut ductile_drop(2.0e4), 30);
+    let f = &flown.last;
+    let [law, yielded, bound] = refusals(f);
+    println!(
+        "J2 yielded: {} modal frames, {} flown after the first impact; refusals: law {law}, yielded {yielded}, bound {bound}; heat {:.3e} J/m",
+        flown.modal, flown.modal_after_impact, f.heat
+    );
+    assert!(f.heat > 0.0, "the block did not yield");
+    assert!(flown.modal >= 5, "the fall was not modal: {}", flown.modal);
+    assert_eq!(flown.modal_after_impact, 0, "a yielded body flew");
+    assert!(yielded >= 1, "no refusal counted as yielded");
+    assert_eq!(law, 0);
 }
 
 /// The same scene with or without modal flight.
@@ -336,4 +459,41 @@ fn probe_modal_rest_against_stepped() {
             f.modal_rest_frames, f.rest_hand_backs, modal_wall, stepped_wall
         );
     });
+}
+
+/// A J2 block whose flight's strain bound reaches its yield, although its
+/// stresses do not: never flown after its impact, each free frame refused
+/// for the bound and counted, and no heat. The bound is conservative by a
+/// factor of 4 to 8 on this scene (`probe_j2_yield_sweep`: no yield from 4e5
+/// Pa, flights from 3.2e6 Pa); 8e5 Pa sits inside that range.
+#[test]
+fn a_j2_block_whose_bound_reaches_yield_is_stepped() {
+    let flown = flown(&mut ductile_drop(8.0e5), 30);
+    let f = &flown.last;
+    let [law, yielded, bound] = refusals(f);
+    println!(
+        "J2 bound refused: {} modal frames, {} flown after the first impact; refusals: law {law}, yielded {yielded}, bound {bound}; heat {:.3e} J/m",
+        flown.modal, flown.modal_after_impact, f.heat
+    );
+    assert_eq!(f.heat, 0.0, "the block yielded");
+    assert_eq!(flown.modal_after_impact, 0, "a flight crossed its bound");
+    assert!(bound >= 1, "no refusal counted for the bound");
+    assert_eq!((law, yielded), (0, 0));
+}
+
+/// The J2 block over a range of yield stresses: where it yields (heat),
+/// and where it does not but its flight's strain bound refuses (the bound's
+/// conservatism, measured). A probe.
+#[test]
+#[ignore = "probe: run with --ignored --nocapture"]
+fn probe_j2_yield_sweep() {
+    for yield_pa in [5.0e4f32, 1.0e5, 2.0e5, 4.0e5, 8.0e5, 1.6e6, 3.2e6] {
+        let flown = flown(&mut ductile_drop(yield_pa), 30);
+        let f = &flown.last;
+        let [law, yielded, bound] = refusals(f);
+        println!(
+            "yield {yield_pa:.1e} Pa: heat {:.3e} J/m, {} modal ({} after the first impact), refusals law {law} yielded {yielded} bound {bound}",
+            f.heat, flown.modal, flown.modal_after_impact
+        );
+    }
 }
