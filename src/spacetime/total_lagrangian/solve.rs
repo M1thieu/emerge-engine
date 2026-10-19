@@ -483,13 +483,40 @@ pub(crate) fn solve(
     // This system's own factor, kept if a recent step built it: a
     // preconditioner changes the iterations to the solution, never the
     // solution (Chen and Chacon eqs. 15-16).
+    //
+    // Or a kept factor of a coefficient `c'` within `rho = 4` of this one's
+    // `c`, the nearest. Derived on the page (elementary, this engine's own):
+    // the band is `P(c) = c M_b + K_0` with `M_b` definite and `K_0`
+    // semidefinite, so `x^T P(c) x / x^T P(c') x = (c m + k) / (c' m + k)` lies
+    // between `min(1, c/c')` and `max(1, c/c')`, and `kappa(P(c')^-1 P(c)) <=
+    // max(c/c', c'/c)`; with the step's tangent `A`, `kappa(P(c')^-1 A) <=
+    // max(c/c', c'/c) kappa(P(c)^-1 A)`. `rho = 4` is the controller's own
+    // structure (a step and its halves, `step_control`): one factor per
+    // accepted step size. What it costs in GMRES iterations is measured, not
+    // bounded here.
     let coefficient = inertia / (dt * dt);
     let mut factorizations = 0;
-    match factors
+    // The probes' replay (`hooks::watch_gmres_replay`): this system's own
+    // exact factor, kept below only if the one in use is reused.
+    #[cfg(all(test, feature = "experimental"))]
+    let exact_candidate = hooks::gmres_replay()
+        .then(|| grid.approximate_jacobian((mass, v0, solids), eps, coefficient, &springs));
+    let exact = factors
         .jacobian
         .iter()
-        .position(|(c, built, _)| *c == coefficient && *built == springs)
-    {
+        .position(|(c, built, _)| *c == coefficient && *built == springs);
+    let near = || {
+        factors
+            .jacobian
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, built, _))| *built == springs)
+            .map(|(i, (c, _, _))| (i, (c / coefficient).max(coefficient / c)))
+            .filter(|&(_, ratio)| ratio <= 4.0 * (1.0 + 4.0 * f64::EPSILON))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
+    };
+    match exact.or_else(near) {
         Some(0) => {}
         Some(found) => {
             let entry = factors.jacobian.remove(found);
@@ -507,12 +534,16 @@ pub(crate) fn solve(
                 );
             }
             let band = grid.approximate_jacobian((mass, v0, solids), eps, coefficient, &springs);
+            #[cfg(all(test, feature = "experimental"))]
+            hooks::record_factor(coefficient);
             factorizations += 1;
             factors.jacobian.insert(0, (coefficient, springs, band));
             factors.jacobian.truncate(JACOBIAN_FACTORS);
         }
     }
     let band = &factors.jacobian[0].2;
+    #[cfg(all(test, feature = "experimental"))]
+    let exact_band = exact_candidate.filter(|_| factors.jacobian[0].0 != coefficient);
     let banded_at = clock.elapsed().as_secs_f64();
     // No particle inverted: the iterates the line search may take. Li et
     // al. 2020 (section 4.4, after Smith and Schaefer 2015) bound the step
@@ -1100,6 +1131,45 @@ pub(crate) fn solve(
         );
         report.timing.gmres += start.elapsed().as_secs_f64();
         report.gmres += iterations;
+        // The replay: the true residual `|b - J delta| / |b|` at GMRES's exit,
+        // and, with a reused factor, the same system solved with the exact one.
+        #[cfg(all(test, feature = "experimental"))]
+        if hooks::gmres_replay() {
+            let size = |y: &[f64]| y.iter().map(|e| e * e).sum::<f64>().sqrt();
+            let true_residual = |d: &[f64]| {
+                let jd = jacobian(d);
+                let gap: Vec<f64> = jd
+                    .iter()
+                    .zip(&minus_r)
+                    .zip(&grid.active)
+                    .map(|((a, b), &on)| if on { b - a } else { 0.0 })
+                    .collect();
+                size(&gap) / size(&minus_r).max(f64::MIN_POSITIVE)
+            };
+            let used = (iterations, true_residual(&delta));
+            match &exact_band {
+                Some(exact) => {
+                    let precondition_exact = |y: &[f64]| -> Vec<f64> {
+                        let mut z = exact.solve(y);
+                        for (value, &on) in z.iter_mut().zip(&grid.active) {
+                            if !on {
+                                *value = 0.0;
+                            }
+                        }
+                        z
+                    };
+                    let (d2, i2) = gmres(
+                        &jacobian,
+                        &minus_r,
+                        (&precondition_exact, &grid.active),
+                        settings.gmres_tolerance,
+                        settings,
+                    );
+                    hooks::record_reused(used, (i2, true_residual(&d2)));
+                }
+                None => hooks::record_own(used),
+            }
+        }
         // What GMRES reached: `|J delta + R| / |R|`.
         #[cfg(all(test, feature = "experimental"))]
         let reached = if hooks::on() {

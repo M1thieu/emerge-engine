@@ -336,3 +336,80 @@ pub(super) fn record_condition(
         state.1.push(row);
     }
 }
+
+/// Where Norton's returns are spent in the step controller (`controlled_step`,
+/// Acary's estimator): in the whole step of a kept pair of tries, in its kept
+/// halves, and in rejected pairs. Counted from `j2_hencky::returns_seen`
+/// while the probes watch the returns.
+static RETURN_SPLIT: std::sync::Mutex<[u64; 3]> = std::sync::Mutex::new([0; 3]);
+
+pub(crate) fn add_return_split(whole: u64, halves: u64, kept: bool) {
+    let mut split = RETURN_SPLIT.lock().expect("return split lock");
+    if kept {
+        split[0] += whole;
+        split[1] += halves;
+    } else {
+        split[2] += whole + halves;
+    }
+}
+
+pub(crate) fn take_return_split() -> [u64; 3] {
+    std::mem::take(&mut *RETURN_SPLIT.lock().expect("return split lock"))
+}
+
+/// The probes' record of the band factorizations (`solve`): the
+/// coefficient `inertia / dt^2` of each factor built, in order.
+static FACTORS_BUILT: std::sync::Mutex<Option<Vec<f64>>> = std::sync::Mutex::new(None);
+
+pub(crate) fn watch_factors(on: bool) {
+    *FACTORS_BUILT.lock().expect("factors lock") = on.then(Vec::new);
+}
+
+pub(super) fn record_factor(coefficient: f64) {
+    if let Some(list) = FACTORS_BUILT.lock().expect("factors lock").as_mut() {
+        list.push(coefficient);
+    }
+}
+
+pub(crate) fn take_factors() -> Vec<f64> {
+    std::mem::take(
+        FACTORS_BUILT
+            .lock()
+            .expect("factors lock")
+            .as_mut()
+            .unwrap_or(&mut Vec::new()),
+    )
+}
+
+/// The probes' replay of Newton's linear solves (`solve`): for a solve whose
+/// band factor was reused from another coefficient, the same system solved
+/// again with its own exact factor; per solve `(iterations, true residual /
+/// |b|)` with the reused factor and with the exact one. And for the solves
+/// that used their own factor, `(iterations, true residual / |b|)`.
+type Replay = Option<(Vec<(u32, f64, u32, f64)>, Vec<(u32, f64)>)>;
+
+static GMRES_REPLAY: std::sync::Mutex<Replay> = std::sync::Mutex::new(None);
+
+pub(crate) fn watch_gmres_replay(on: bool) {
+    *GMRES_REPLAY.lock().expect("replay lock") = on.then(|| (Vec::new(), Vec::new()));
+}
+
+pub(super) fn gmres_replay() -> bool {
+    GMRES_REPLAY.lock().expect("replay lock").is_some()
+}
+
+pub(super) fn record_reused(reused: (u32, f64), exact: (u32, f64)) {
+    if let Some((list, _)) = GMRES_REPLAY.lock().expect("replay lock").as_mut() {
+        list.push((reused.0, reused.1, exact.0, exact.1));
+    }
+}
+
+pub(super) fn record_own(own: (u32, f64)) {
+    if let Some((_, list)) = GMRES_REPLAY.lock().expect("replay lock").as_mut() {
+        list.push(own);
+    }
+}
+
+pub(crate) fn take_gmres_replay() -> Replay {
+    GMRES_REPLAY.lock().expect("replay lock").take()
+}

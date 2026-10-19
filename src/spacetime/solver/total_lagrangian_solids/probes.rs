@@ -466,7 +466,10 @@ fn probe_norton_block_flow_and_returns() {
             _ => 0.0,
         };
         crate::matter::materials::solid::j2_hencky::watch_returns(true);
+        crate::spacetime::total_lagrangian::hooks::watch_factors(true);
         let mut previous: Option<Vec<f64>> = None;
+        let mut timing = crate::spacetime::total_lagrangian::Timing::default();
+        let mut wall = 0.0;
         let mut mass_total = 0.0;
         for k in 1..=20 {
             sim.step();
@@ -495,6 +498,32 @@ fn probe_norton_block_flow_and_returns() {
                 set.map(|p| v[p]).fold(0.0f64, f64::max)
             };
             let f = sim.total_lagrangian_frame().expect("on");
+            timing.add(&f.timing);
+            let built = crate::spacetime::total_lagrangian::hooks::take_factors();
+            let mut distinct = built.clone();
+            distinct.sort_by(f64::total_cmp);
+            distinct.dedup();
+            let ratios: Vec<f64> = built
+                .windows(2)
+                .map(|w| (w[1] / w[0]).max(w[0] / w[1]))
+                .collect();
+            let median_ratio = {
+                let mut r = ratios.clone();
+                r.sort_by(f64::total_cmp);
+                r.get(r.len() / 2).copied().unwrap_or(1.0)
+            };
+            println!(
+                "  frame {k:2} solver: {} kept steps, {} rejected tries, {} Newton, {} GMRES ({:.1} per Newton), {} factors built ({} distinct coefficients, median ratio between consecutive builds {median_ratio:.3}), {:.0} ms",
+                f.steps,
+                f.rejected,
+                f.newton,
+                f.gmres,
+                f64::from(f.gmres) / f64::from(f.newton.max(1)),
+                built.len(),
+                distinct.len(),
+                1e3 * f.wall
+            );
+            wall += f.wall;
             let vy = (0..n).map(|p| state.mass[p] * state.v[p].y).sum::<f64>() / mass_total;
             println!(
                 "frame {k:2}: contacts {:2}, centre vy {vy:+.4} m/s; alpha max {:.3e} (bottom {:.3e}); frame rate max {:.3e} 1/s (bottom {:.3e}); particles: rate < 4e-4 {below}, in range {}, > 80 {above}; tensile {tension} of {n}; heat {:.4e} J/m",
@@ -508,8 +537,83 @@ fn probe_norton_block_flow_and_returns() {
             );
             previous = Some(now);
         }
-        if let Some((counts, slowest)) = crate::matter::materials::solid::j2_hencky::take_returns()
+        // Where the frames' time goes (the step's own clocks, summed over
+        // the frames and the controller's tries).
+        let share = |t: f64| 100.0 * t / wall;
+        println!(
+            "time over 20 frames: wall {wall:.1} s; residual {:.1} s ({:.1} %), linearisation (the law's tangents) {:.1} s ({:.1} %), Jacobian products {:.1} s ({:.1} %), preconditioner build {:.1} s + solve {:.1} s, GMRES in all {:.1} s ({:.1} %), contact {:.1} s, grid {:.1} s, controller {:.1} s; internal force evaluations {}",
+            timing.residual,
+            share(timing.residual),
+            timing.linearisation,
+            share(timing.linearisation),
+            timing.jacobian,
+            share(timing.jacobian),
+            timing.preconditioner_build,
+            timing.preconditioner_solve,
+            timing.gmres,
+            share(timing.gmres),
+            timing.contact,
+            timing.grid,
+            timing.controller,
+            timing.internal_evaluations
+        );
+        let split = crate::spacetime::total_lagrangian::hooks::take_return_split();
+        // Taken before the timing below, whose calls would be recorded.
+        let recorded = crate::matter::materials::solid::j2_hencky::take_returns();
+        let kept_total = split[0] + split[1] + split[2];
+        println!(
+            "returns by try: kept pairs' whole steps {} ({:.1} %), kept halves {} ({:.1} %), rejected pairs {} ({:.1} %); per particle per frame {:.0}",
+            split[0],
+            100.0 * split[0] as f64 / kept_total.max(1) as f64,
+            split[1],
+            100.0 * split[1] as f64 / kept_total.max(1) as f64,
+            split[2],
+            100.0 * split[2] as f64 / kept_total.max(1) as f64,
+            kept_total as f64 / (128.0 * 20.0)
+        );
+        // The cost of one return and of one law step, timed alone on one
+        // thread: a flowing state of the impact (sigma_tr 3.4e5 Pa, dt 5e-4
+        // s) and a strained C.
         {
+            use crate::matter::materials::solid::j2_hencky::{
+                HenckyJ2, PlasticMetric, norton_return,
+            };
+            let law = record.law;
+            let shear = record.e_pa / (2.0 * (1.0 + record.nu));
+            let calls = 1_000_000;
+            let clock = std::time::Instant::now();
+            let mut sink = 0.0;
+            for k in 0..calls {
+                sink += norton_return(3.4e5 * (1.0 + 1e-9 * k as f64), shear, &law, 5e-4).0;
+            }
+            let per_return = clock.elapsed().as_secs_f64() / calls as f64;
+            let j2 = HenckyJ2 {
+                shear,
+                bulk: record.e_pa / (3.0 * (1.0 - 2.0 * record.nu)),
+                yield_stress: 0.0,
+                hardening: 0.0,
+                viscosity: 0.0,
+                norton: Some(law),
+            };
+            let (c0, c1) = (
+                DMat2::from_cols(DVec2::new(1.002, 0.001), DVec2::new(0.001, 0.997)),
+                DMat2::from_cols(DVec2::new(1.004, 0.002), DVec2::new(0.002, 0.995)),
+            );
+            let clock = std::time::Instant::now();
+            for k in 0..calls {
+                let c = c1 + DMat2::IDENTITY * (1e-12 * k as f64);
+                sink += j2
+                    .step(c0, c, &PlasticMetric::unstrained(), 5e-4)
+                    .dissipated;
+            }
+            let per_step = clock.elapsed().as_secs_f64() / calls as f64;
+            println!(
+                "one Norton return {:.0} ns, one J2 law step with it {:.0} ns (one thread; checksum {sink:.3e})",
+                per_return * 1e9,
+                per_step * 1e9
+            );
+        }
+        if let Some((counts, slowest)) = recorded {
             let total: u64 = counts.iter().sum();
             let quantile = |q: f64| {
                 let target = (q * total as f64).ceil() as u64;
@@ -534,5 +638,88 @@ fn probe_norton_block_flow_and_returns() {
                 slowest.2 / slowest.3
             );
         }
+    });
+}
+
+/// Whether the reused band factors (`solve`, `rho = 4`) change GMRES's
+/// stopping point: the Norton block's impact frame and one flight frame,
+/// every Newton linear solve whose factor was reused solved again on the
+/// same state with its own exact factor; the iterations and the TRUE residual
+/// `|b - J delta| / |b|` at exit for both, and for the solves that used their
+/// own factor. A probe.
+#[test]
+#[ignore = "diagnostic probe: run with --ignored --nocapture"]
+fn probe_factor_reuse_replay() {
+    super::cap::capped("probe_factor_reuse_replay", 3000, || {
+        use crate::matter::materials::solid::viscoplastic_records::ViscoplasticRecord;
+        let record = ViscoplasticRecord::technical_plasticine_sapozhnikov_2014();
+        let rho = 119.0 * 0.453_592_37 / (0.3048f64 * 0.3048 * 0.3048);
+        let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
+        config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-2));
+        let props = ElasticProps {
+            e_pa: record.e_pa as f32,
+            nu: record.nu as f32,
+            rho_kg_m3: rho as f32,
+        };
+        let mut sim = Simulation::empty(config);
+        let id = sim
+            .register_material(Box::new(record.material((record.e_pa, rho), &config)))
+            .0;
+        let floor = config.boundary_thickness as f32;
+        let _block = sim.add_body(
+            SpawnRegion::for_sim(&config)
+                .box_of(IVec2::new(8, 4))
+                .at(Vec2::new(20.0, floor + 12.0))
+                .spacing(0.5)
+                .material(id)
+                .mass_from(&props, &config),
+        );
+        for _ in 0..9 {
+            sim.step();
+        }
+        crate::spacetime::total_lagrangian::hooks::watch_gmres_replay(true);
+        for _ in 0..2 {
+            sim.step();
+        }
+        let (reused, own) =
+            crate::spacetime::total_lagrangian::hooks::take_gmres_replay().expect("watched");
+        let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
+        let largest = |v: &[f64]| v.iter().copied().fold(0.0f64, f64::max);
+        let (ir, rr, ie, re): (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) = (
+            reused.iter().map(|r| f64::from(r.0)).collect(),
+            reused.iter().map(|r| r.1).collect(),
+            reused.iter().map(|r| f64::from(r.2)).collect(),
+            reused.iter().map(|r| r.3).collect(),
+        );
+        let (io, ro): (Vec<f64>, Vec<f64>) = (
+            own.iter().map(|r| f64::from(r.0)).collect(),
+            own.iter().map(|r| r.1).collect(),
+        );
+        println!(
+            "reused-factor solves {}: iterations mean {:.2} (max {:.0}) against their own exact factor {:.2} (max {:.0}); true residual at exit, largest {:.3e} against {:.3e}, mean {:.3e} against {:.3e}",
+            reused.len(),
+            mean(&ir),
+            largest(&ir),
+            mean(&ie),
+            largest(&ie),
+            largest(&rr),
+            largest(&re),
+            mean(&rr),
+            mean(&re)
+        );
+        println!(
+            "own-factor solves {}: iterations mean {:.2} (max {:.0}); true residual at exit, largest {:.3e}, mean {:.3e}",
+            own.len(),
+            mean(&io),
+            largest(&io),
+            largest(&ro),
+            mean(&ro)
+        );
+        let worse = reused.iter().filter(|r| r.0 > r.2).count();
+        let better = reused.iter().filter(|r| r.0 < r.2).count();
+        println!(
+            "per solve: reused took more iterations in {worse}, fewer in {better}, as many in {}",
+            reused.len() - worse - better
+        );
     });
 }

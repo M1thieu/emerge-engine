@@ -379,8 +379,18 @@ pub fn controlled_step(
     loop {
         let dt = *tau;
         if control.estimator == Estimator::Acary {
+            #[cfg(all(test, feature = "experimental"))]
+            let returns_before = crate::matter::materials::solid::j2_hencky::returns_seen();
             let (whole, whole_reports, _) = run(1, dt);
+            #[cfg(all(test, feature = "experimental"))]
+            let returns_whole = crate::matter::materials::solid::j2_hencky::returns_seen();
             let (halves, halves_reports, _) = run(2, dt);
+            // The pair's returns, whole then halves (`hooks::add_return_split`).
+            #[cfg(all(test, feature = "experimental"))]
+            let returns = (
+                returns_whole - returns_before,
+                crate::matter::materials::solid::j2_hencky::returns_seen() - returns_whole,
+            );
             account(&whole_reports, &mut timing);
             account(&halves_reports, &mut timing);
             let difference = combine(1.0, &halves, -1.0, &whole);
@@ -455,12 +465,16 @@ pub fn controlled_step(
             // solution: it is never kept, the step is halved.
             let failed = halves_reports.iter().any(|r| !r.converged && !r.stagnated);
             if failed && dt > floor {
+                #[cfg(all(test, feature = "experimental"))]
+                hooks::add_return_split(returns.0, returns.1, false);
                 rejected += 1;
                 unconverged += 1;
                 *tau = (0.5 * dt).max(floor);
                 continue;
             }
             if error <= target || at_floor {
+                #[cfg(all(test, feature = "experimental"))]
+                hooks::add_return_split(returns.0, returns.1, true);
                 x.copy_from_slice(&halves.x);
                 solids.copy_from_slice(&halves.solids);
                 v.copy_from_slice(&halves.v);
@@ -491,6 +505,8 @@ pub fn controlled_step(
                     reaching,
                 };
             }
+            #[cfg(all(test, feature = "experimental"))]
+            hooks::add_return_split(returns.0, returns.1, false);
             rejected += 1;
             *tau = next.min(dt).max(floor);
             continue;

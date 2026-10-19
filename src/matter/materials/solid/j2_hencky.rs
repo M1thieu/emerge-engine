@@ -89,6 +89,16 @@ pub(crate) fn watch_returns(on: bool) {
     *RETURNS.lock().expect("returns lock") = on.then(|| (vec![0; 202], (0, 0.0, 0.0, 0.0)));
 }
 
+/// The returns recorded so far (`watch_returns`), zero when not watching.
+#[cfg(all(test, feature = "experimental"))]
+pub(crate) fn returns_seen() -> u64 {
+    RETURNS
+        .lock()
+        .expect("returns lock")
+        .as_ref()
+        .map_or(0, |(counts, _)| counts.iter().sum())
+}
+
 #[cfg(all(test, feature = "experimental"))]
 pub(crate) fn take_returns() -> Returns {
     RETURNS.lock().expect("returns lock").take()
