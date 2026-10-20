@@ -60,6 +60,9 @@ pub enum ElasticLaw {
     /// own terms and bulk modulus (`mu`, `bulk` hold its small-strain
     /// moduli, for the preconditioner and the controller's norm).
     Ogden(crate::matter::materials::solid::ogden::Ogden),
+    /// A barotropic liquid, `W = K/2 (J - 1)^2` with `K = bulk` and no shear
+    /// stiffness (`mu = 0`), `matter`'s `liquid::barotropic`.
+    Barotropic,
 }
 
 impl Elastic {
@@ -130,6 +133,19 @@ impl Elastic {
             mu,
             bulk: law.bulk + mu / 3.0,
             law: ElasticLaw::Ogden(law),
+            shear_viscosity: 0.0,
+            bulk_viscosity: 0.0,
+            relaxation: Relaxation::none(),
+        }
+    }
+
+    /// A barotropic liquid of modulus `bulk` (`ElasticLaw::Barotropic`):
+    /// `mu = 0`, and in plane strain `lambda = bulk`.
+    pub fn barotropic(bulk: f64) -> Self {
+        Self {
+            mu: 0.0,
+            bulk,
+            law: ElasticLaw::Barotropic,
             shear_viscosity: 0.0,
             bulk_viscosity: 0.0,
             relaxation: Relaxation::none(),
@@ -255,6 +271,12 @@ impl Elastic {
         if let ElasticLaw::Ogden(law) = &self.law {
             return crate::matter::materials::solid::ogden::ogden_energy(f.transpose() * f, law);
         }
+        if self.law == ElasticLaw::Barotropic {
+            return crate::matter::materials::liquid::barotropic::barotropic_energy(
+                f.transpose() * f,
+                self.bulk,
+            );
+        }
         if self.law == ElasticLaw::NeoHookean {
             return crate::matter::materials::solid::neo_hookean::neo_hookean_energy(
                 f.transpose() * f,
@@ -284,6 +306,11 @@ impl Elastic {
         }
         if let ElasticLaw::Ogden(law) = &self.law {
             return crate::matter::materials::solid::ogden::ogden_kirchhoff(f, law);
+        }
+        if self.law == ElasticLaw::Barotropic {
+            return crate::matter::materials::liquid::barotropic::barotropic_kirchhoff(
+                f, self.bulk,
+            );
         }
         if self.law == ElasticLaw::NeoHookean {
             return crate::matter::materials::solid::neo_hookean::neo_hookean_kirchhoff(
@@ -512,6 +539,11 @@ impl Elastic {
             ElasticLaw::Ogden(law) => {
                 crate::matter::materials::solid::ogden::ogden_energy_increment(c0, c1, &law)
             }
+            ElasticLaw::Barotropic => {
+                crate::matter::materials::liquid::barotropic::barotropic_energy_increment(
+                    c0, c1, self.bulk,
+                )
+            }
             ElasticLaw::Isochoric => self.energy_of_c(c1) - self.energy_of_c(c0),
             // Its own exact increment, the return's included (the step's
             // length enters only through the viscoplastic rate).
@@ -587,7 +619,8 @@ impl Elastic {
             ElasticLaw::Ogden(law) => Some(law),
             _ => None,
         };
-        if !(self.law == ElasticLaw::Corotated || neo_hookean || ogden.is_some())
+        let barotropic = self.law == ElasticLaw::Barotropic;
+        if !(self.law == ElasticLaw::Corotated || neo_hookean || barotropic || ogden.is_some())
             || self.is_relaxing()
         {
             return self.step_stress_tangent_by_differences(c0, c1, dt, dc);
@@ -596,6 +629,12 @@ impl Elastic {
         let tangent = |c: DMat2, d: DMat2| {
             if let Some(law) = &ogden {
                 crate::matter::materials::solid::ogden::ogden_second_pk_tangent(c, d, law)
+            } else if barotropic {
+                crate::matter::materials::liquid::barotropic::barotropic_second_pk_tangent(
+                    c,
+                    d,
+                    lambda + mu,
+                )
             } else if neo_hookean {
                 crate::matter::materials::solid::neo_hookean::neo_hookean_second_pk_tangent(
                     c, d, lambda, mu,
@@ -718,6 +757,11 @@ impl Elastic {
     pub(crate) fn second_pk(&self, c: DMat2) -> DMat2 {
         if let ElasticLaw::Ogden(law) = &self.law {
             return crate::matter::materials::solid::ogden::ogden_second_pk(c, law);
+        }
+        if self.law == ElasticLaw::Barotropic {
+            return crate::matter::materials::liquid::barotropic::barotropic_second_pk(
+                c, self.bulk,
+            );
         }
         if self.law == ElasticLaw::NeoHookean {
             return crate::matter::materials::solid::neo_hookean::neo_hookean_second_pk(

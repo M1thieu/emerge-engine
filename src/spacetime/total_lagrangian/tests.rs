@@ -415,3 +415,100 @@ fn a_released_ogden_block_keeps_its_energy() {
     );
     assert!(largest_kinetic > 0.1 * start.1, "the block rings");
 }
+
+/// Water's modulus at 20 C (IAPWS SR6-08, `LiquidWater`), Pa.
+fn water_solid() -> Elastic {
+    let water =
+        crate::matter::materials::liquid::liquid_water::LiquidWater::at(293.15).expect("in range");
+    Elastic::barotropic(water.isentropic_bulk())
+}
+
+/// The barotropic law on the step: `S : dC / 2` is exactly the energy's
+/// change at a step of the size water sees (0.3 % volume change), and the
+/// analytic tangent agrees with central differences to 1e-6 (the criteria
+/// of the other laws' gates).
+#[test]
+fn the_barotropic_step_stress_carries_the_energy_change_and_its_tangent() {
+    let solid = water_solid();
+    let f0 = DMat2::from_cols(DVec2::new(1.001, 0.0005), DVec2::new(-0.0004, 0.9985));
+    let f1 = DMat2::from_cols(DVec2::new(0.998, 0.001), DVec2::new(0.0006, 1.0015));
+    let (c0, c1) = (f0.transpose() * f0, f1.transpose() * f1);
+    let s = solid.algorithmic_stress(c0, c1);
+    let dc = c1 - c0;
+    let colon = |a: DMat2, b: DMat2| a.x_axis.dot(b.x_axis) + a.y_axis.dot(b.y_axis);
+    let work = 0.5 * colon(s, dc);
+    let change = solid.energy(f1) - solid.energy(f0);
+    assert!(
+        (work - change).abs() < 1e-10 * change.abs().max(1.0),
+        "{work} vs {change}"
+    );
+    let direction = DMat2::from_cols(DVec2::new(0.2, -0.1), DVec2::new(-0.1, 0.4));
+    let exact = solid.step_stress_tangent(c0, c1, 1e-6, direction);
+    let fd = solid.step_stress_tangent_by_differences(c0, c1, 1e-6, direction);
+    let off = colon(exact - fd, exact - fd).sqrt();
+    assert!(off <= 1e-6 * colon(exact, exact).sqrt(), "off {off:e}");
+}
+
+/// A water block released from a uniform 0.5 % compression in free space
+/// rings acoustically with its energy kept: over 20 steps of 1e-4 s the
+/// kinetic plus stored energy stays the start's within the solves' bound
+/// and the sums' round-off (the criterion of the other laws' gates).
+#[test]
+fn a_released_water_block_keeps_its_energy() {
+    let (layout, reference, v0) = cut_block();
+    let n = reference.len();
+    let solids = vec![water_solid(); n];
+    let centre = reference.iter().copied().sum::<DVec2>() / n as f64;
+    let squeeze = DMat2::from_diagonal(DVec2::splat(0.995f64.sqrt()));
+    let mut x: Vec<DVec2> = reference
+        .iter()
+        .map(|&q| centre + squeeze * (q - centre))
+        .collect();
+    let mut v = vec![DVec2::ZERO; n];
+    let mut f = vec![squeeze; n];
+    let mass: Vec<f64> = v0.iter().map(|&volume| 998.2 * volume).collect();
+    let energy = |v: &[DVec2], f: &[DMat2]| -> (f64, f64) {
+        let kinetic: f64 = (0..n).map(|p| 0.5 * mass[p] * v[p].length_squared()).sum();
+        let stored: f64 = (0..n).map(|p| v0[p] * solids[p].energy(f[p])).sum();
+        (kinetic, stored)
+    };
+    let start = energy(&v, &f);
+    let settings = ConservingSettings::default();
+    let free = |_: usize, _: usize, _: usize| None;
+    let mut cache = None;
+    let mut allowed = 0.0;
+    let mut largest_kinetic = 0.0f64;
+    for k in 0..20 {
+        let report = step_total_lagrangian(
+            &layout,
+            Particles {
+                x: &mut x,
+                v: &mut v,
+                f: &mut f,
+                mass: &mass,
+                v0: &v0,
+            },
+            &reference,
+            &solids,
+            (DVec2::ZERO, None, 1e-4),
+            (&free, &settings),
+            &mut cache,
+        );
+        assert!(report.converged, "step {k} did not converge");
+        allowed += report.residual_work;
+        let now = energy(&v, &f);
+        largest_kinetic = largest_kinetic.max(now.0);
+        let round_off = n as f64 * f64::EPSILON * (now.0 + now.1 + start.1);
+        let balance = now.0 + now.1 - start.0 - start.1;
+        assert!(
+            balance.abs() <= allowed + round_off,
+            "step {k}: balance {balance:e} beyond {:e}",
+            allowed + round_off
+        );
+    }
+    println!(
+        "water block: stored at the start {:.6e}, largest kinetic {largest_kinetic:.6e}",
+        start.1
+    );
+    assert!(largest_kinetic > 0.01 * start.1, "the block rings");
+}
