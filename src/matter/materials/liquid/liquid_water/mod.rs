@@ -187,6 +187,9 @@ impl LiquidWater {
     }
 }
 
+mod material;
+pub use material::LiquidWaterMaterial;
+
 /// IAPWS-IF97 region 1, for the tests that bound the moduli's validity
 /// under pressure.
 #[cfg(test)]

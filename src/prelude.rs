@@ -56,6 +56,7 @@ pub use crate::{
     // Kinematically driven moving obstacle (not a rigid body), with two-way
     // momentum exchange; see its doc.
     KinematicCircleBoundary,
+    LiquidWaterMaterial,
     // Creature locomotion controller
     Lnn,
     MaterialCountPlugin,

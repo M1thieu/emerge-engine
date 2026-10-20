@@ -22,14 +22,31 @@ fn colon(a: DMat2, b: DMat2) -> f64 {
     a.x_axis.dot(b.x_axis) + a.y_axis.dot(b.y_axis)
 }
 
-/// The stored energy per reference volume, `K/2 (J - 1)^2`; infinite where
-/// `det C <= 0`.
+/// The stored energy per reference volume, `K/2 (J - 1)^2`, from `C`;
+/// infinite where `det C <= 0`. The tests' reference: the path takes it from
+/// `F` (`barotropic_energy_of_f`), without the cancellation of `sqrt(det C)
+/// - 1`.
+#[cfg(test)]
 pub(crate) fn barotropic_energy(c: DMat2, bulk: f64) -> f64 {
     let det = c.determinant();
     if det <= 0.0 {
         return f64::INFINITY;
     }
     0.5 * bulk * (det.sqrt() - 1.0).powi(2)
+}
+
+/// The same energy from `F`, its round-off relative to the energy: `J -
+/// 1 = (F_11 - 1) + (F_22 - 1) + (F_11 - 1)(F_22 - 1) - F_12 F_21`, each
+/// `F_ii - 1` exact near 1 (Sterbenz), where `sqrt(det C) - 1` loses
+/// `eps / |J - 1|` of it to cancellation (measured: 3e-11 of a ringing
+/// block's energy at strains of 1e-5).
+pub(crate) fn barotropic_energy_of_f(f: DMat2, bulk: f64) -> f64 {
+    if f.determinant() <= 0.0 {
+        return f64::INFINITY;
+    }
+    let (a, d) = (f.x_axis.x - 1.0, f.y_axis.y - 1.0);
+    let j_minus_one = a + d + a * d - f.y_axis.x * f.x_axis.y;
+    0.5 * bulk * j_minus_one * j_minus_one
 }
 
 /// The second Piola-Kirchhoff stress `S = K J (J - 1) C^-1`.
@@ -149,6 +166,32 @@ mod tests {
                     "step {step}: {inc:e} against {work:e}"
                 );
             }
+        }
+    }
+
+    /// The energy from `F` is the energy from `C`, and near `J = 1` it
+    /// keeps its relative accuracy: at `F = diag(1 + d, 1)`, `K/2 d^2` to
+    /// 4 eps where the `C` form is off by about `eps / d` (criterion fixed
+    /// before running).
+    #[test]
+    fn the_energy_from_f_keeps_its_accuracy_near_the_rest_state() {
+        let f = DMat2::from_cols(DVec2::new(1.002, 0.001), DVec2::new(-0.0005, 0.997));
+        let (from_f, from_c) = (
+            barotropic_energy_of_f(f, BULK),
+            barotropic_energy(f.transpose() * f, BULK),
+        );
+        assert!(
+            (from_f - from_c).abs() <= 1e-10 * from_c,
+            "{from_f} vs {from_c}"
+        );
+        for d in [1e-5, 1e-7, 1e-9] {
+            let f = DMat2::from_diagonal(DVec2::new(1.0 + d, 1.0));
+            let exact = 0.5 * BULK * (f.x_axis.x - 1.0).powi(2);
+            let got = barotropic_energy_of_f(f, BULK);
+            assert!(
+                (got - exact).abs() <= 4.0 * f64::EPSILON * exact,
+                "d {d}: {got:e} against {exact:e}"
+            );
         }
     }
 

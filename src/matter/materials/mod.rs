@@ -35,6 +35,7 @@ pub use granular::sand_mui::MuIRheologyMaterial;
 pub use lame_parameters::lame_from_young;
 pub use liquid::bingham::BinghamFluidMaterial;
 pub use liquid::fluid::NewtonianFluidMaterial;
+pub use liquid::liquid_water::LiquidWaterMaterial;
 pub use mixture::boiling_mixture::BoilingMixtureMaterial;
 pub use mixture::cavitating_eos::{CavitatingEosParams, CavitatingEosTable};
 pub use mixture::cavitating_fluid::{

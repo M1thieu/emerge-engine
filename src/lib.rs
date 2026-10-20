@@ -90,12 +90,13 @@ pub use materials::{
     CorotatedMaterial, DruckerPragerMaterial, DuctileProps, Elastic, Elastoplastic, Fluid,
     FluidGranular, FromSI, GranularFluidMaterial, GranularProps, IdealGasMaterial,
     IdealGasPhysicalParams, IsothermalCavitatingFluidMaterial,
-    IsothermalCavitatingFluidMaterialParams, MAX_MATERIAL_SLOTS, MaterialModel, MaterialParams,
-    MaterialRegistry, MixturePhase, MuIRheologyMaterial, NaccMaterial, NaccMaterialParams,
-    NaccProps, NeoHookeanMaterial, NewtonianFluidMaterial, NoCompression, NoCompressionMaterial,
-    ParticleMass, PlasticityModel, Pressurized, RankineMaterial, StomakhinMaterial, Viscoelastic,
-    ViscoelasticMaterial, VonMisesMaterial, WithLatentHeat, WithLatentHeatTable, WithMixturePhase,
-    WithPreStress, lame_from_young, rankine_damage_estimate,
+    IsothermalCavitatingFluidMaterialParams, LiquidWaterMaterial, MAX_MATERIAL_SLOTS,
+    MaterialModel, MaterialParams, MaterialRegistry, MixturePhase, MuIRheologyMaterial,
+    NaccMaterial, NaccMaterialParams, NaccProps, NeoHookeanMaterial, NewtonianFluidMaterial,
+    NoCompression, NoCompressionMaterial, ParticleMass, PlasticityModel, Pressurized,
+    RankineMaterial, StomakhinMaterial, Viscoelastic, ViscoelasticMaterial, VonMisesMaterial,
+    WithLatentHeat, WithLatentHeatTable, WithMixturePhase, WithPreStress, lame_from_young,
+    rankine_damage_estimate,
 };
 pub use solver::config::gravity_to_grid;
 

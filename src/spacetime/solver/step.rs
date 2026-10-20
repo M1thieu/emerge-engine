@@ -133,6 +133,16 @@ impl Simulation {
                 !norton,
                 "material {id} carries Norton's power-law flow, which only the total Lagrangian solid path carries"
             );
+            let water = self
+                .materials
+                .get(id)
+                .as_any()
+                .downcast_ref::<crate::LiquidWaterMaterial>()
+                .is_some();
+            assert!(
+                !water,
+                "material {id} is the barotropic liquid water, which only the total Lagrangian solid path carries"
+            );
         }
         // Adaptive substep loop: step() always advances exactly config.dt of simulation time,
         // but uses smaller sub-steps when CFL requires it (stiff materials, high velocities).

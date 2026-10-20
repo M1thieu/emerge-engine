@@ -268,6 +268,10 @@ impl Simulation {
             };
             return law.with_viscosity(units.stress(m.elastic_viscosity), 0.0);
         }
+        // Liquid water's record is SI (Pa), as the path is.
+        if let Some(m) = any.downcast_ref::<crate::LiquidWaterMaterial>() {
+            return Elastic::barotropic(m.bulk_modulus());
+        }
         match any.downcast_ref::<CorotatedMaterial>() {
             Some(m) => {
                 // Viscosities in Pa s: time is the second on both sides,
@@ -873,3 +877,6 @@ mod probes;
 
 #[cfg(all(test, feature = "experimental"))]
 mod effectivity;
+
+#[cfg(all(test, feature = "experimental"))]
+mod water;

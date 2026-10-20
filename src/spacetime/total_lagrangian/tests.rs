@@ -512,3 +512,96 @@ fn a_released_water_block_keeps_its_energy() {
     );
     assert!(largest_kinetic > 0.01 * start.1, "the block rings");
 }
+
+/// The released water block's 20 steps with every value multiplied by its
+/// unit factor, lengths `s_l`, times `s_t`, masses `s_m` (positions and the
+/// cell `s_l`, velocities `s_l / s_t`, mass per depth `s_m / s_l`, areas
+/// `s_l^2`, the modulus `s_m / (s_l s_t^2)`, the step `s_t`), and the end
+/// state divided back: positions, velocities, `F`, and the steps' residual
+/// work over `s_m s_l / s_t^2` (energy per depth).
+fn scaled_water_block(
+    (s_l, s_t, s_m): (f64, f64, f64),
+) -> (Vec<DVec2>, Vec<DVec2>, Vec<DMat2>, f64) {
+    let (layout, reference, v0) = cut_block();
+    // The cell is `f32`: a power of two scales it exactly.
+    let layout = GridLayout::new(layout.nx, layout.ny, layout.dx * s_l as f32);
+    let reference: Vec<DVec2> = reference.iter().map(|&q| q * s_l).collect();
+    let v0: Vec<f64> = v0.iter().map(|&a| a * s_l * s_l).collect();
+    let n = reference.len();
+    let bulk = crate::matter::materials::liquid::liquid_water::LiquidWater::at(293.15)
+        .expect("in range")
+        .isentropic_bulk();
+    let solids = vec![Elastic::barotropic(bulk * s_m / (s_l * s_t * s_t)); n];
+    let centre = reference.iter().copied().sum::<DVec2>() / n as f64;
+    let squeeze = DMat2::from_diagonal(DVec2::splat(0.995f64.sqrt()));
+    let mut x: Vec<DVec2> = reference
+        .iter()
+        .map(|&q| centre + squeeze * (q - centre))
+        .collect();
+    let mut v = vec![DVec2::ZERO; n];
+    let mut f = vec![squeeze; n];
+    let mass: Vec<f64> = v0
+        .iter()
+        .map(|&volume| 998.2 * s_m / (s_l * s_l * s_l) * volume)
+        .collect();
+    let settings = ConservingSettings::default();
+    let free = |_: usize, _: usize, _: usize| None;
+    let mut cache = None;
+    let mut residual = 0.0;
+    for k in 0..20 {
+        let report = step_total_lagrangian(
+            &layout,
+            Particles {
+                x: &mut x,
+                v: &mut v,
+                f: &mut f,
+                mass: &mass,
+                v0: &v0,
+            },
+            &reference,
+            &solids,
+            (DVec2::ZERO, None, 1e-6 * s_t),
+            (&free, &settings),
+            &mut cache,
+        );
+        assert!(report.converged, "step {k} did not converge");
+        residual += report.residual_work;
+    }
+    (
+        x.iter().map(|&q| q / s_l).collect(),
+        v.iter().map(|&q| q * s_t / s_l).collect(),
+        f,
+        residual * s_t * s_t / (s_m * s_l),
+    )
+}
+
+/// The unit-scaling test: with length, time and mass units rescaled by
+/// powers of two, every rounding of the step is the same unless a
+/// unit-carrying constant enters it, so the dimensionless end state is
+/// bit-identical (criterion fixed before running; a difference is a unit
+/// error, not a tolerance question). Factors `2^-3, 2^5, 2^9`, so the
+/// modulus scales by `2^2` and mass per depth by `2^12`. The same with
+/// factors that are not powers of two is printed, not held.
+#[test]
+fn the_water_step_is_unit_scale_invariant() {
+    let si = scaled_water_block((1.0, 1.0, 1.0));
+    let scaled = scaled_water_block((0.125, 32.0, 512.0));
+    assert_eq!(si.0, scaled.0, "positions");
+    assert_eq!(si.1, scaled.1, "velocities");
+    assert_eq!(si.2, scaled.2, "F");
+    assert_eq!(si.3, scaled.3, "residual work");
+    let other = scaled_water_block((0.37, 3.1, 7.3));
+    let worst = |a: &[DVec2], b: &[DVec2]| {
+        let size = a.iter().map(|q| q.length()).fold(0.0, f64::max);
+        a.iter()
+            .zip(b)
+            .map(|(p, q)| (*p - *q).length())
+            .fold(0.0, f64::max)
+            / size
+    };
+    println!(
+        "unit factors 0.37, 3.1, 7.3: largest relative difference of positions {:.2e}, of velocities {:.2e}",
+        worst(&si.0, &other.0),
+        worst(&si.1, &other.1)
+    );
+}

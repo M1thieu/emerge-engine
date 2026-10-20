@@ -272,9 +272,8 @@ impl Elastic {
             return crate::matter::materials::solid::ogden::ogden_energy(f.transpose() * f, law);
         }
         if self.law == ElasticLaw::Barotropic {
-            return crate::matter::materials::liquid::barotropic::barotropic_energy(
-                f.transpose() * f,
-                self.bulk,
+            return crate::matter::materials::liquid::barotropic::barotropic_energy_of_f(
+                f, self.bulk,
             );
         }
         if self.law == ElasticLaw::NeoHookean {
