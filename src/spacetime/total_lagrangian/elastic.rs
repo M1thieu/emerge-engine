@@ -56,6 +56,10 @@ pub enum ElasticLaw {
     /// The compressible neo-Hookean solid in plane strain (Simo and
     /// Pister's form), `matter`'s `neo_hookean`, with `lambda = bulk - mu`.
     NeoHookean,
+    /// Ogden's solid in principal stretches, `matter`'s `ogden`, with its
+    /// own terms and bulk modulus (`mu`, `bulk` hold its small-strain
+    /// moduli, for the preconditioner and the controller's norm).
+    Ogden(crate::matter::materials::solid::ogden::Ogden),
 }
 
 impl Elastic {
@@ -115,6 +119,21 @@ impl Elastic {
         j2.norton = Some(law);
         self.law = ElasticLaw::HenckyJ2(j2, state);
         self
+    }
+
+    /// Ogden's law (`ElasticLaw::Ogden`): its small-strain shear modulus
+    /// `mu = 1/2 sum_i mu_i alpha_i` and, in plane strain, `bulk = lambda +
+    /// mu` with `lambda = K - 2 mu / 3`.
+    pub fn ogden(law: crate::matter::materials::solid::ogden::Ogden) -> Self {
+        let mu = law.shear();
+        Self {
+            mu,
+            bulk: law.bulk + mu / 3.0,
+            law: ElasticLaw::Ogden(law),
+            shear_viscosity: 0.0,
+            bulk_viscosity: 0.0,
+            relaxation: Relaxation::none(),
+        }
     }
 
     /// The neo-Hookean law (`ElasticLaw::NeoHookean`) with its Lame moduli.
@@ -233,6 +252,9 @@ impl Elastic {
         if let ElasticLaw::HenckyJ2(law, state) = &self.law {
             return law.energy_at(f.transpose() * f, state);
         }
+        if let ElasticLaw::Ogden(law) = &self.law {
+            return crate::matter::materials::solid::ogden::ogden_energy(f.transpose() * f, law);
+        }
         if self.law == ElasticLaw::NeoHookean {
             return crate::matter::materials::solid::neo_hookean::neo_hookean_energy(
                 f.transpose() * f,
@@ -259,6 +281,9 @@ impl Elastic {
     pub(crate) fn kirchhoff(&self, f: DMat2) -> DMat2 {
         if let ElasticLaw::HenckyJ2(law, state) = &self.law {
             return f * law.second_pk_at(f.transpose() * f, state).0 * f.transpose();
+        }
+        if let ElasticLaw::Ogden(law) = &self.law {
+            return crate::matter::materials::solid::ogden::ogden_kirchhoff(f, law);
         }
         if self.law == ElasticLaw::NeoHookean {
             return crate::matter::materials::solid::neo_hookean::neo_hookean_kirchhoff(
@@ -484,6 +509,9 @@ impl Elastic {
                     self.mu,
                 )
             }
+            ElasticLaw::Ogden(law) => {
+                crate::matter::materials::solid::ogden::ogden_energy_increment(c0, c1, &law)
+            }
             ElasticLaw::Isochoric => self.energy_of_c(c1) - self.energy_of_c(c0),
             // Its own exact increment, the return's included (the step's
             // length enters only through the viscoplastic rate).
@@ -555,12 +583,20 @@ impl Elastic {
             return self.step_stress_tangent_by_differences(c0, c1, dt, dc);
         }
         let neo_hookean = self.law == ElasticLaw::NeoHookean;
-        if !(self.law == ElasticLaw::Corotated || neo_hookean) || self.is_relaxing() {
+        let ogden = match self.law {
+            ElasticLaw::Ogden(law) => Some(law),
+            _ => None,
+        };
+        if !(self.law == ElasticLaw::Corotated || neo_hookean || ogden.is_some())
+            || self.is_relaxing()
+        {
             return self.step_stress_tangent_by_differences(c0, c1, dt, dc);
         }
         let (lambda, mu) = (self.bulk - self.mu, self.mu);
         let tangent = |c: DMat2, d: DMat2| {
-            if neo_hookean {
+            if let Some(law) = &ogden {
+                crate::matter::materials::solid::ogden::ogden_second_pk_tangent(c, d, law)
+            } else if neo_hookean {
                 crate::matter::materials::solid::neo_hookean::neo_hookean_second_pk_tangent(
                     c, d, lambda, mu,
                 )
@@ -680,6 +716,9 @@ impl Elastic {
     /// The second Piola-Kirchhoff stress `S(C) = F^-1 tau F^-T` with `F =
     /// sqrt(C)`.
     pub(crate) fn second_pk(&self, c: DMat2) -> DMat2 {
+        if let ElasticLaw::Ogden(law) = &self.law {
+            return crate::matter::materials::solid::ogden::ogden_second_pk(c, law);
+        }
         if self.law == ElasticLaw::NeoHookean {
             return crate::matter::materials::solid::neo_hookean::neo_hookean_second_pk(
                 c,

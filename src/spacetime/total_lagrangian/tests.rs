@@ -317,3 +317,101 @@ fn a_released_neo_hookean_block_keeps_its_energy() {
     );
     assert!(largest_kinetic > 0.1 * start.1, "the block rings");
 }
+
+/// Meunier et al. 2008's RTV 141 Ogden set (MPa), with a bulk modulus of
+/// 1e3 times its shear modulus chosen for these gates (no measured `K`).
+fn ogden_solid() -> Elastic {
+    use crate::matter::materials::solid::ogden::Ogden;
+    let law = Ogden::new(&[(0.46, 1.4), (0.00027, 10.0), (-0.0074, -3.3)], 0.0);
+    Elastic::ogden(Ogden::new(&law.terms[..law.count], 1e3 * law.shear()))
+}
+
+/// Ogden's law on the step: the discrete gradient makes `S : dC / 2`
+/// exactly the energy's change at a large step, and the analytic step
+/// tangent agrees with central differences of the step stress to 1e-6 (the
+/// neo-Hookean gate's criteria).
+#[test]
+fn the_ogden_step_stress_carries_the_energy_change_and_its_tangent() {
+    let solid = ogden_solid();
+    let f0 = DMat2::from_cols(DVec2::new(1.1, 0.05), DVec2::new(-0.2, 0.95));
+    let f1 = DMat2::from_cols(DVec2::new(1.4, 0.3), DVec2::new(0.1, 0.7));
+    let (c0, c1) = (f0.transpose() * f0, f1.transpose() * f1);
+    let s = solid.algorithmic_stress(c0, c1);
+    let dc = c1 - c0;
+    let colon = |a: DMat2, b: DMat2| a.x_axis.dot(b.x_axis) + a.y_axis.dot(b.y_axis);
+    let work = 0.5 * colon(s, dc);
+    let change = solid.energy(f1) - solid.energy(f0);
+    assert!(
+        (work - change).abs() < 1e-12 * change.abs().max(1.0),
+        "{work} vs {change}"
+    );
+    let direction = DMat2::from_cols(DVec2::new(0.2, -0.1), DVec2::new(-0.1, 0.4));
+    let exact = solid.step_stress_tangent(c0, c1, 1e-3, direction);
+    let fd = solid.step_stress_tangent_by_differences(c0, c1, 1e-3, direction);
+    let off = colon(exact - fd, exact - fd).sqrt();
+    assert!(off <= 1e-6 * colon(exact, exact).sqrt(), "off {off:e}");
+}
+
+/// An Ogden block released from a planar stretch of 1.3 in free space rings
+/// with its energy kept: over 20 steps the kinetic plus stored energy stays
+/// the start's within what the solves allow and the sums' round-off (the
+/// neo-Hookean gate's criterion).
+#[test]
+fn a_released_ogden_block_keeps_its_energy() {
+    let (layout, reference, v0) = cut_block();
+    let n = reference.len();
+    let solids = vec![ogden_solid(); n];
+    let centre = reference.iter().copied().sum::<DVec2>() / n as f64;
+    let stretch = DMat2::from_diagonal(DVec2::new(1.3, 1.0 / 1.3));
+    let mut x: Vec<DVec2> = reference
+        .iter()
+        .map(|&q| centre + stretch * (q - centre))
+        .collect();
+    let mut v = vec![DVec2::ZERO; n];
+    let mut f = vec![stretch; n];
+    let mass = v0.clone();
+    let energy = |v: &[DVec2], f: &[DMat2]| -> (f64, f64) {
+        let kinetic: f64 = (0..n).map(|p| 0.5 * mass[p] * v[p].length_squared()).sum();
+        let stored: f64 = (0..n).map(|p| v0[p] * solids[p].energy(f[p])).sum();
+        (kinetic, stored)
+    };
+    let start = energy(&v, &f);
+    let settings = ConservingSettings::default();
+    let free = |_: usize, _: usize, _: usize| None;
+    let mut cache = None;
+    let mut allowed = 0.0;
+    let mut largest_kinetic = 0.0f64;
+    for k in 0..20 {
+        let report = step_total_lagrangian(
+            &layout,
+            Particles {
+                x: &mut x,
+                v: &mut v,
+                f: &mut f,
+                mass: &mass,
+                v0: &v0,
+            },
+            &reference,
+            &solids,
+            (DVec2::ZERO, None, 0.2),
+            (&free, &settings),
+            &mut cache,
+        );
+        assert!(report.converged, "step {k} did not converge");
+        allowed += report.residual_work;
+        let now = energy(&v, &f);
+        largest_kinetic = largest_kinetic.max(now.0);
+        let round_off = n as f64 * f64::EPSILON * (now.0 + now.1 + start.1);
+        let balance = now.0 + now.1 - start.0 - start.1;
+        assert!(
+            balance.abs() <= allowed + round_off,
+            "step {k}: balance {balance:e} beyond {:e}",
+            allowed + round_off
+        );
+    }
+    println!(
+        "Ogden block: stored at the start {:.6e}, largest kinetic {largest_kinetic:.6e}",
+        start.1
+    );
+    assert!(largest_kinetic > 0.1 * start.1, "the block rings");
+}

@@ -249,13 +249,16 @@ mod tests {
     /// points). Expected before running: the neo-Hookean law misses
     /// Treloar's upturn above a stretch of about 2 to 3. Report only.
     ///
-    /// Measured: `mu = 0.4045` MPa (the Ogden fits' small-strain modulus is
-    /// 0.39 to 0.41); within 5 % up to a stretch of 1.45 (14 % low at the
-    /// first point, 1.04, where the sources disagree most); 11 to 21 % HIGH
-    /// from 1.8 to 4.0 (the rubber softens there, which this law cannot); the
-    /// upturn closes the gap to 6 % at 4.94; rms 0.146 MPa over the 13 points
-    /// (the published Ogden fits: 0.03 to 0.08). A measured gap of the law,
-    /// not of the solver.
+    /// Measured, as the relative error `|P_nh - P_exp| / P_exp` per point:
+    /// `mu = 0.4045` MPa fitted on the five points with `a <= 1.5` (the Ogden
+    /// fits' small-strain modulus is 0.39 to 0.41); in sample, within 5 %
+    /// but at the first point (13.9 % at 1.04, where the sources disagree
+    /// most); OUT of sample (1.85 to 4.94), 11.1 to 21.3 % high (worst at
+    /// 2.97: the rubber softens there, which this law cannot), back to 6.0 %
+    /// at 4.94 with the upturn; rms 0.146 MPa over the 13 points (the
+    /// published Ogden fits: 0.03 to 0.08). `lambda = 1e4 mu` is a declared
+    /// choice, no bulk modulus being measured; its check, `J` within 1e-4 of
+    /// 1 at every point. A measured gap of the law, not of the solver.
     #[test]
     #[ignore = "real-experiment report: run with --ignored --nocapture"]
     fn probe_treloar_planar_tension() {
@@ -298,8 +301,10 @@ mod tests {
             let incompressible = mu * shape(a);
             rms += (p11 - measured).powi(2);
             println!(
-                "  a {a:.4}: measured {measured:.4} MPa, neo-Hookean {p11:.4} (incompressible {incompressible:.4}), ratio {:.3}, J {:.6}",
+                "  a {a:.4}{}: measured {measured:.4} MPa, neo-Hookean {p11:.4} (incompressible {incompressible:.4}), ratio {:.3}, relative error {:.1} %, J {:.6}",
+                if a <= 1.5 { " (fitted)" } else { "" },
                 p11 / measured,
+                100.0 * (p11 - measured).abs() / measured,
                 a * b
             );
         }

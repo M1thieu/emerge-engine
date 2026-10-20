@@ -16,6 +16,7 @@ pub(crate) mod j2_hencky;
 pub mod nacc;
 pub(crate) mod neo_hookean;
 pub mod no_compression;
+pub(crate) mod ogden;
 pub mod rankine;
 pub mod snow;
 pub mod viscoelastic;
