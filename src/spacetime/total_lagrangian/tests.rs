@@ -605,3 +605,42 @@ fn the_water_step_is_unit_scale_invariant() {
         worst(&si.1, &other.1)
     );
 }
+
+/// The consistent mass assembled once (`Grid::consistent_mass_times`) is the
+/// particle pass's `sum_p m_p N_k sum_m N_m y_m` up to the sums' order: on
+/// the cut block, against the pass written out here, to 64 eps of the
+/// product's size (criterion fixed before running); and a second mass
+/// vector reassembles it (the kept matrix is never stale).
+#[test]
+fn the_assembled_mass_is_the_particle_pass() {
+    let (layout, x, volume) = cut_block();
+    let open = |_: usize, _: usize, _: usize| None;
+    let grid = Grid::new(&layout, &x, (&volume, &volume), &open, Some(0.75));
+    let y: Vec<f64> = (0..grid.len)
+        .map(|k| ((k * 7 % 13) as f64 - 6.0) / 6.0)
+        .collect();
+    let pass = |mass: &[f64]| -> Vec<f64> {
+        let mut out = vec![0.0; grid.len];
+        for (p, &m) in mass.iter().enumerate() {
+            for a in 0..2 {
+                let (value, _) = grid.read(&y, p, a);
+                grid.visit(p, a, |k, w, _| out[k] += w * m * value);
+            }
+        }
+        out
+    };
+    let heavier: Vec<f64> = volume
+        .iter()
+        .enumerate()
+        .map(|(p, v)| v * (1.0 + 0.1 * (p % 3) as f64))
+        .collect();
+    for mass in [&volume, &heavier, &volume] {
+        let (expected, got) = (pass(mass), grid.consistent_mass_times(&y, mass));
+        let size = expected.iter().fold(0.0f64, |m, e| m.max(e.abs()));
+        let off = expected
+            .iter()
+            .zip(&got)
+            .fold(0.0f64, |m, (e, g)| m.max((e - g).abs()));
+        assert!(off <= 64.0 * f64::EPSILON * size, "off {off:e} of {size:e}");
+    }
+}

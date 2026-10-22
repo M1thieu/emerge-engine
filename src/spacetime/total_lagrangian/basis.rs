@@ -125,6 +125,12 @@ pub(crate) struct Grid {
     /// coefficient is extrapolated from and their weights (`Grid::new`).
     pub(crate) extension: Vec<Option<Extension>>,
     pub(crate) lumped: Vec<f64>,
+    /// The consistent mass `M_c`, assembled at its first product and kept
+    /// with the masses it was built from (`Grid::consistent_mass_times`):
+    /// the grid stays on the reference configuration, so the matrix does
+    /// not change while the masses do not. Shared by the grid's clones (the
+    /// controller's tries), which are the same grid.
+    pub(crate) mass_matrix: std::sync::Arc<std::sync::Mutex<Option<MassMatrix>>>,
     /// Per particle, per lattice, the weight function of the web-splines
     /// and its gradient at the particle's reference position, when the
     /// basis is weighted (`LagrangianCache::weighted`).
@@ -138,6 +144,17 @@ pub(crate) struct Grid {
 /// The unknowns a degenerate face's coefficient is extrapolated from, with
 /// their weights.
 pub(crate) type Extension = Box<[(usize, f64)]>;
+
+/// The consistent mass in compressed rows, `M_c[k][m] = sum_p m_p N_k(X_p)
+/// N_m(X_p)` over each lattice (the two components do not couple), and the
+/// particle masses it was assembled from.
+#[derive(Debug, Default)]
+pub(crate) struct MassMatrix {
+    mass: Vec<f64>,
+    start: Vec<usize>,
+    column: Vec<usize>,
+    value: Vec<f64>,
+}
 
 impl Grid {
     /// The grid of one step. With `occupation` the basis is the extended
@@ -203,6 +220,7 @@ impl Grid {
             axis_of: Vec::new(),
             extension: vec![None; len],
             lumped: Vec::new(),
+            mass_matrix: Default::default(),
             #[cfg(all(test, feature = "experimental"))]
             weights: None,
             #[cfg(all(test, feature = "experimental"))]
@@ -364,6 +382,60 @@ impl Grid {
         grid
     }
 
+    /// `M_c y`, the consistent mass's product: the same sums as a pass over
+    /// the particles (`sum_p m_p N_k(X_p) sum_m N_m(X_p) y_m`), from the
+    /// matrix assembled once for these masses; a different `mass` assembles
+    /// it again. Only the summation order differs from the pass: its
+    /// round-off, not its value.
+    pub(crate) fn consistent_mass_times(&self, y: &[f64], mass: &[f64]) -> Vec<f64> {
+        let mut kept = self.mass_matrix.lock().expect("the mass matrix's lock");
+        if kept.as_ref().is_none_or(|m| m.mass != mass) {
+            let mut entries: Vec<(usize, usize, f64)> = Vec::new();
+            for (p, &mp) in mass.iter().enumerate() {
+                for a in 0..2 {
+                    let mut reach: Vec<(usize, f64)> = Vec::with_capacity(9);
+                    self.visit(p, a, |k, w, _| reach.push((k, w)));
+                    for &(k, wk) in &reach {
+                        for &(m, wm) in &reach {
+                            entries.push((k, m, mp * wk * wm));
+                        }
+                    }
+                }
+            }
+            entries.sort_unstable_by_key(|&(k, m, _)| (k, m));
+            // Compressed rows: each row's entries in column order, a
+            // repeated column summed.
+            let mut matrix = MassMatrix {
+                mass: mass.to_vec(),
+                start: Vec::with_capacity(self.len + 1),
+                ..MassMatrix::default()
+            };
+            let mut next = entries.iter().peekable();
+            for k in 0..self.len {
+                let row = matrix.value.len();
+                matrix.start.push(row);
+                while let Some(&(_, m, value)) = next.next_if(|e| e.0 == k) {
+                    if matrix.value.len() > row && matrix.column.last() == Some(&m) {
+                        *matrix.value.last_mut().expect("a row entry") += value;
+                    } else {
+                        matrix.column.push(m);
+                        matrix.value.push(value);
+                    }
+                }
+            }
+            matrix.start.push(matrix.value.len());
+            *kept = Some(matrix);
+        }
+        let matrix = kept.as_ref().expect("assembled above");
+        (0..self.len)
+            .map(|k| {
+                (matrix.start[k]..matrix.start[k + 1])
+                    .map(|e| matrix.value[e] * y[matrix.column[e]])
+                    .sum()
+            })
+            .collect()
+    }
+
     /// Each unknown's lumped mass, through the current basis.
     pub(crate) fn relump(&mut self, mass: &[f64]) {
         let mut lumped = vec![0.0; self.len];
@@ -458,13 +530,9 @@ impl Grid {
             None => y,
         };
         let mut out = if eps < 1.0 {
-            parallel_scatter(self.len, mass.len(), |p, acc| {
-                for a in 0..2 {
-                    let (value, _) = self.read(y, p, a);
-                    let s = (1.0 - eps) * mass[p] * value;
-                    self.visit(p, a, |k, w, _| acc[k] += w * s);
-                }
-            })
+            let mut product = self.consistent_mass_times(y, mass);
+            product.iter_mut().for_each(|e| *e *= 1.0 - eps);
+            product
         } else {
             vec![0.0; self.len]
         };

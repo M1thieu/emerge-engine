@@ -58,6 +58,8 @@ impl LagrangianCache {
                 .collect(),
         );
         grid.relump(mass);
+        // The weights change the basis: no mass matrix assembled before them.
+        *grid.mass_matrix.lock().expect("the mass matrix's lock") = None;
         Self {
             grid,
             factors: Factors::default(),
