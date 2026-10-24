@@ -59,6 +59,7 @@ use crate::{
 /// doc for what each argument is for.
 pub type ScalarFieldSource = fn(&Particle, f32, &dyn MaterialModel) -> f32;
 
+#[derive(Debug)]
 pub struct ScalarDiffusionField {
     pub config: ScalarDiffusionConfig,
     /// Read the scalar value φ from a particle.

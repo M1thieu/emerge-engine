@@ -112,7 +112,7 @@ pub fn travel_limited_dt(max_speed: f32, gravity: f32, dx: f32, max_cells: f32) 
 /// (`curl(rho g) = grad rho x g`), so the column convected: face currents
 /// of 0.5 to 1.6 cells/s after one frame, particles 44 cells from their
 /// start after 5 s.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Liquid<'a> {
     pub phi: &'a Field2,
     pub face_mass: &'a transfer::FaceMass,
@@ -126,6 +126,15 @@ pub struct Walls<'a> {
     pub weights: &'a FaceWeights,
     pub image: &'a dyn Fn(Vec2) -> (Vec2, Vec2),
     pub open: &'a [bool],
+}
+
+impl std::fmt::Debug for Walls<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Walls")
+            .field("weights", &self.weights)
+            .field("open", &self.open)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One projection of the face velocity: equations, solve, update, then

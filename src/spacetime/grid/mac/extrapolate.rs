@@ -83,6 +83,7 @@ pub fn extrapolate_velocity(vel: &mut MacVelocity, valid: &mut FaceFlags, layers
 /// (1 - k / theta)`, averaged over the axes that reach material. Cells in
 /// a solid are never a source: their unknowns only hold `u . n = 0` at the
 /// wall (`pressure` module doc).
+#[derive(Debug)]
 pub struct GhostPressure {
     nx: usize,
     value: Vec<Option<f32>>,

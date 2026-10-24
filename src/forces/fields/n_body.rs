@@ -398,6 +398,18 @@ pub struct NBodyGravityField {
     snapshot: Vec<(usize, Vec2, f32)>,
 }
 
+impl std::fmt::Debug for NBodyGravityField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NBodyGravityField")
+            .field("gravitational_constant", &self.gravitational_constant)
+            .field("softening", &self.softening)
+            .field("theta", &self.theta)
+            .field("max_depth", &self.max_depth)
+            .field("max_bodies_per_node", &self.max_bodies_per_node)
+            .finish_non_exhaustive()
+    }
+}
+
 impl NBodyGravityField {
     pub fn new(gravitational_constant: f32, softening: f32, theta: f32) -> Self {
         assert!(

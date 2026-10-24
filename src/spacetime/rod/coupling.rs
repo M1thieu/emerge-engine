@@ -262,6 +262,7 @@ pub(crate) fn push_acceleration(
 /// for clippy::too_many_arguments rather than suppressing the lint.
 /// Deliberately does NOT include `gravity` (unlike
 /// `implicit::RodImplicitStepParams`): see above.
+#[derive(Debug)]
 pub struct RodForceParams {
     pub wind_velocity: Vec2,
     pub wind_drag_coeff: f32,

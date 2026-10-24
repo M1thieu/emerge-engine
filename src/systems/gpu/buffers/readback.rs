@@ -10,6 +10,7 @@ use crate::particle::Particle;
 
 /// What the GPU's own time accounting says about the last stepped frame, read
 /// from `adaptive_dt` (see that buffer's slot layout).
+#[derive(Debug)]
 pub struct FrameStats {
     /// Simulated time the frame's substeps actually advanced.
     pub executed_time: f32,

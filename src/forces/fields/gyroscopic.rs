@@ -70,6 +70,7 @@ pub(crate) fn boris_step(v: Vec2, acceleration: Vec2, omega: f32, dt: f32) -> Ve
 /// Charge enters as the specific charge `q/m` (C/kg) of each material, a
 /// measured property; materials not in the map are neutral. `(q/m) B_z` is a
 /// rate in 1/s whatever the grid's length unit, so no unit conversion is needed.
+#[derive(Debug)]
 pub struct UniformMagneticField {
     /// Out-of-plane magnetic field, tesla. Positive points out of the page.
     pub b_z_tesla: f32,

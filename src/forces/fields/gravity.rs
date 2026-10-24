@@ -29,6 +29,7 @@ pub const EARTH_GRAVITY_M_S2: f32 = 9.81;
 /// Intended for macro-scale bodies (celestial bodies, large terrain features) that
 /// exert gravity on MPM continuum matter. Does **not** model particle-particle N-body --
 /// for that, use `NBodyGravityField`.
+#[derive(Debug)]
 pub struct GravityWellField {
     /// Point mass sources: `(position in grid coords, mass in simulation units)`.
     pub sources: Vec<(Vec2, f32)>,

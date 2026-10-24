@@ -192,6 +192,12 @@ pub struct SimPipelines {
     pub impulse_bind_group_layout: wgpu::BindGroupLayout,
 }
 
+impl std::fmt::Debug for SimPipelines {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SimPipelines").finish_non_exhaustive()
+    }
+}
+
 /// MAX_FORCE_FIELDS / MAX_SLEEP_WAKE_TAGS: loop-bound constants -- uses WGSL `override`
 /// (proper pipeline specialization), not a hardcoded literal in the shader.
 const FF_CONSTS: [(&str, f64); 2] = [

@@ -653,6 +653,16 @@ pub struct Renderer {
     luminous_emission: [f32; 16],
 }
 
+impl std::fmt::Debug for Renderer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Renderer")
+            .field("max_particles", &self.max_particles)
+            .field("color_mode", &self.color_mode)
+            .field("surface_res", &self.surface_res)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Renderer {
     pub fn new(
         device: &wgpu::Device,

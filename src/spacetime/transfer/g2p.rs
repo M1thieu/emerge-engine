@@ -96,6 +96,7 @@ impl MutFieldPtrs {
     }
 }
 
+#[derive(Debug)]
 pub struct G2PParams<'a> {
     pub apic_blend: f32,
     pub active_count: usize,

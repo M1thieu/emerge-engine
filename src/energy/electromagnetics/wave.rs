@@ -14,6 +14,7 @@ pub const C: f32 = crate::energy::radiation::SPEED_OF_LIGHT as f32;
 ///
 /// E and B are transverse to the propagation direction.
 /// B_amplitude = E_amplitude / c (vacuum relation).
+#[derive(Debug)]
 pub struct ElectromagneticWave {
     pub frequency: f32,
     pub direction: Vec2,

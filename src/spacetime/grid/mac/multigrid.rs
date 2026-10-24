@@ -232,6 +232,15 @@ pub struct Multigrid {
     pub coarse_sweeps: u32,
 }
 
+impl std::fmt::Debug for Multigrid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Multigrid")
+            .field("sweeps", &self.sweeps)
+            .field("coarse_sweeps", &self.coarse_sweeps)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Multigrid {
     /// Coarsens until either side is at most `coarsest` cells.
     pub fn new(sys: &PressureSystem, coarsest: usize, sweeps: u32, coarse_sweeps: u32) -> Self {

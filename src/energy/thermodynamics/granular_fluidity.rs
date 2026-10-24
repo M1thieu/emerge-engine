@@ -97,6 +97,7 @@ impl GranularFluidityConfig {
 }
 
 /// A persistent, grid-coupled granular fluidity field.
+#[derive(Debug)]
 pub struct GranularFluidityField {
     pub config: GranularFluidityConfig,
     /// Reads a particle's current (pressure in Pa, stress ratio) pair. The

@@ -25,6 +25,7 @@ use crate::fields::Field;
 use crate::particle::Particles;
 
 /// Electrostatic acceleration from external point charges, affecting particles by material.
+#[derive(Debug)]
 pub struct CoulombField {
     /// External charged point sources: `(position in grid coords, charge in sim units)`.
     ///

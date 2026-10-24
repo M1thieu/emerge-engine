@@ -22,6 +22,7 @@ use glam::Vec2;
 /// already took `fiber_dir` as a parameter, so this is a fix, not new
 /// derivation -- no new adjoint math, just plumbing a per-group value
 /// through where a global constant was hardcoded before.
+#[derive(Debug)]
 pub struct BodyPlan {
     pub positions: Vec<Vec2>,
     /// Muscle group per particle; `None` = passive tissue (torso).

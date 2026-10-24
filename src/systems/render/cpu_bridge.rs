@@ -45,6 +45,17 @@ pub struct CpuRenderBridge {
     particles: Vec<Particle>,
 }
 
+impl std::fmt::Debug for CpuRenderBridge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CpuRenderBridge")
+            .field("grid_res", &self.grid_res)
+            .field("carries_temperature", &self.carries_temperature)
+            .field("particle_capacity", &self.particle_capacity)
+            .field("particle_count", &self.particle_count)
+            .finish_non_exhaustive()
+    }
+}
+
 impl CpuRenderBridge {
     /// Buffers for a `grid_res`-cell simulation. The particle buffer starts
     /// empty and grows on the first `upload_particles`.

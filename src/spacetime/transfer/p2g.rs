@@ -658,6 +658,7 @@ pub fn p2g_stress_vjp(x: Vec2, stress_coeff: f32, d_loss_d_momentum: &[[Vec2; 3]
 /// this function differentiates the FULL forward pass, so it needs
 /// all of it, but five-plus-position-plus-two-gradient-array parameters
 /// crossed the project's own no-`#[allow]` line for argument count.
+#[derive(Debug)]
 pub struct P2GParticleState {
     pub mass: f32,
     pub v: Vec2,

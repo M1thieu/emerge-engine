@@ -93,6 +93,8 @@ impl fmt::Display for RelaxationError {
     }
 }
 
+impl std::error::Error for RelaxationError {}
+
 impl RelaxationSpectrum {
     /// The spectrum of these mechanisms, linear up to `strain_limit`.
     pub fn new(mechanisms: &[Mechanism], strain_limit: f64) -> Result<Self, RelaxationError> {

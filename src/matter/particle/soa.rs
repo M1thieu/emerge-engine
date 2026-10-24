@@ -16,7 +16,7 @@ use super::Particle;
 ///
 /// # Invariant
 /// All vecs have the same length at all times. Methods panic on out-of-bounds.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Particles {
     // ── Kinematics -- hot (read every substep) ────────────────────────────────
     pub x: Vec<Vec2>,
@@ -104,6 +104,7 @@ pub struct Particles {
 /// arrays, not just in name), so the borrow checker can prove two different
 /// particles' contexts never alias, even built concurrently on different
 /// threads. Covers the fields the materials' `update_particle` touches.
+#[derive(Debug)]
 pub struct ParticleUpdateCtx<'a> {
     pub x: &'a mut Vec2,
     pub v: &'a mut Vec2,
@@ -504,6 +505,7 @@ impl Default for Particles {
 /// Lazy iterator over [`Particle`] views from a borrowed [`Particles`] store.
 ///
 /// Constructs each `Particle` on demand from SoA storage -- no upfront allocation.
+#[derive(Debug)]
 pub struct ParticlesIter<'a> {
     particles: &'a Particles,
     index: usize,

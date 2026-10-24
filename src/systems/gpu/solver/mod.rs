@@ -216,6 +216,18 @@ pub struct GpuSimulation {
     grip_params: GpuDirectionalGripParams,
 }
 
+impl std::fmt::Debug for GpuSimulation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuSimulation")
+            .field("particle_count", &self.particle_count)
+            .field("particle_capacity", &self.particle_capacity)
+            .field("frame_index", &self.frame_index)
+            .field("readback_stride", &self.readback_stride)
+            .field("readback_error_count", &self.readback_error_count)
+            .finish_non_exhaustive()
+    }
+}
+
 /// One [begin, end] timestamp pair per labeled compute pass in `encode_substep`, written
 /// every substep (later substeps overwrite earlier ones within the same `step_frame()`
 /// call -- fine for finding the dominant cost, since substeps cost about the same each

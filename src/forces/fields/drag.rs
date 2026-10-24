@@ -35,6 +35,7 @@ use crate::fields::{Field, GrainField};
 use crate::particle::{Grain, Particles};
 
 /// Linear-drag acceleration toward a target/ambient flow velocity, masked by material.
+#[derive(Debug)]
 pub struct LinearDragField {
     /// Target/ambient flow velocity in grid-units/time -- the velocity a masked particle's
     /// own velocity relaxes toward. Downstream direction for a river; wind direction for a
@@ -101,6 +102,7 @@ impl GrainField for LinearDragField {
 /// stream + doublet superposition -- Anderson-style fluid dynamics, confirmed against
 /// MIT 16.unified fluid mechanics lecture notes and Caltech's "An Internet Book on Fluid
 /// Dynamics," not invented), not a procedural/noise-based approximation.
+#[derive(Debug)]
 pub struct SpatialDragField {
     /// Position-dependent target flow velocity, evaluated at the particle's own
     /// `x` each substep. A pure function of position -- no time-dependence, no captured

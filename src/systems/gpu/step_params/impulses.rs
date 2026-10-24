@@ -10,7 +10,7 @@ pub const MAX_GPU_IMPULSES: usize = 16;
 /// mode 0 = radial: `v += normalize(p - center) * strength * falloff`
 /// mode 1 = directional: `v += force * falloff`
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuImpulseEntry {
     pub center: [f32; 2], // grid-space origin
     pub radius: f32,
@@ -25,7 +25,7 @@ const _: () = assert!(core::mem::size_of::<GpuImpulseEntry>() == 32);
 /// Uniform data for the apply_impulses compute pass -- 528 bytes.
 /// Matches `struct ImpulseParams` in `apply_impulses.wgsl`.
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuImpulseParams {
     pub count: u32,
     pub vel_limit: f32,

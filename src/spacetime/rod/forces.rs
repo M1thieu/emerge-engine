@@ -92,6 +92,7 @@ pub fn discrete_curvature_gradient(p0: Vec2, p1: Vec2, p2: Vec2) -> [Vec2; 3] {
 /// the point count) that always travel together, one per `RodPoints`. Real
 /// fix for clippy::too_many_arguments on `compute_internal_forces` (was 4
 /// loose slice params) rather than suppressing the lint.
+#[derive(Debug)]
 pub struct RodRestState<'a> {
     pub rest_edge_length: &'a [f32],
     pub rest_curvature: &'a [f32],

@@ -19,7 +19,7 @@ pub const MAX_SLEEP_WAKE_TAGS: usize = 8;
 /// element stride, so a flat u32 array would be rejected by naga at shader-module
 /// creation (same class of gotcha as `vec3<u32>` padding elsewhere in this file).
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuSleepWakeParams {
     pub sleep_count: u32,
     pub wake_count: u32,
