@@ -278,17 +278,30 @@ pub(crate) fn initialize_particles(
     let min = spawn.box_center - half;
     let max = spawn.box_center + half;
 
-    // The lattice at the sub-cells' centres, `min + s/2 + k s`: each
+    // The precise path (`SimConfig::total_lagrangian`) centres the lattice
+    // at the sub-cells' centres, `min + s/2 + k s` (issue #42): each
     // particle's own area `s^2` tiles the requested box exactly, so the
     // body's mass, its volume and its outline describe the same region,
     // centred where it was asked. Laid from `min` itself, every body sat
-    // half a spacing below and left of its centre (issue #42); a flat block
-    // dropped flat on the total Lagrangian path then took the floor's
-    // impulse a quarter cell off its centre of mass and left the bounce
-    // turning (measured: 1.2e-4 then 1.8e-2 kg m^2/s per m).
-    let mut i = min.x + 0.5 * spawn.spacing;
+    // half a spacing below and left of its centre; a flat block dropped
+    // flat on that path then took the floor's impulse a quarter cell off its
+    // centre of mass and left the bounce turning (measured: 1.2e-4 then
+    // 1.8e-2 kg m^2/s per m).
+    //
+    // The explicit path keeps its original lattice, `min + k s`: it is
+    // maintenance only, and its scenes and tests were measured on that
+    // lattice. Centring is not neutral there: at an odd particle count per
+    // cell axis a centred lattice lands on grid nodes, and the explicit
+    // path then under-predicts a column's sag under its own weight (0.352
+    // of analytic at spacing 1, measured in issue #42).
+    let (x0, y0) = if config.total_lagrangian.is_some() {
+        (min.x + 0.5 * spawn.spacing, min.y + 0.5 * spawn.spacing)
+    } else {
+        (min.x, min.y)
+    };
+    let mut i = x0;
     while i < max.x {
-        let mut j = min.y + 0.5 * spawn.spacing;
+        let mut j = y0;
         while j < max.y {
             let pos = Vec2::new(i, j);
 
@@ -360,5 +373,88 @@ impl LcgRng {
 
     pub(crate) fn next_f32(&mut self) -> f32 {
         self.next_u32() as f32 / (u32::MAX as f32 + 1.0)
+    }
+}
+
+#[cfg(test)]
+mod spawn_lattice_tests {
+    use super::total_lagrangian_solids::TotalLagrangianConfig;
+    use super::{LcgRng, SimConfig, SpawnRegion, initialize_particles};
+    use glam::{IVec2, Vec2};
+
+    fn spawns(config: &SimConfig, spacing: f32) -> [SpawnRegion; 2] {
+        let base = SpawnRegion::for_sim(config)
+            .at(Vec2::new(32.0, 20.0))
+            .spacing(spacing);
+        [base.box_of(IVec2::new(12, 6)), base.disk(5.5)]
+    }
+
+    fn positions(config: &SimConfig, spawn: SpawnRegion) -> Vec<Vec2> {
+        let mut rng = LcgRng::new(spawn.rng_seed);
+        initialize_particles(config, spawn, &mut rng)
+            .iter()
+            .map(|p| p.x)
+            .collect()
+    }
+
+    /// Criterion: with `total_lagrangian` `None` (the explicit path) the
+    /// spawn positions are exactly the original lattice
+    /// `x = min + a s`, `y = min + b s` for every integer `a, b >= 0` with
+    /// the point below `max`, column by column, masked by the shape; with
+    /// `total_lagrangian` `Some` (the precise path) the lattice is centred,
+    /// `min + s/2 + k s`, and the mean position equals the box centre to
+    /// 1e-6 (issue #42's criterion). Box and Disk at spacing 0.5, 0.25 and
+    /// 1.0, chosen so every lattice point is exact in `f32`.
+    #[test]
+    fn spawn_lattice_is_centred_only_on_the_precise_path() {
+        let explicit = SimConfig::standard(64, 0.05, Vec2::NEG_Y * 0.3);
+        let mut precise = explicit;
+        precise.total_lagrangian = Some(TotalLagrangianConfig::new(1e-2));
+        for spacing in [0.5_f32, 0.25, 1.0] {
+            for spawn in spawns(&explicit, spacing) {
+                let half = spawn.box_size.as_vec2() * 0.5;
+                let (min, max) = (spawn.box_center - half, spawn.box_center + half);
+                let mut expected = Vec::new();
+                let mut a = 0_u32;
+                while min.x + a as f32 * spacing < max.x {
+                    let mut b = 0_u32;
+                    while min.y + b as f32 * spacing < max.y {
+                        let p = min + Vec2::new(a as f32, b as f32) * spacing;
+                        let inside = match spawn.shape {
+                            crate::solver::config::SpawnShape::Box => true,
+                            crate::solver::config::SpawnShape::Disk { radius } => {
+                                (p - spawn.box_center).length() <= radius
+                            }
+                        };
+                        if inside {
+                            expected.push(p);
+                        }
+                        b += 1;
+                    }
+                    a += 1;
+                }
+                assert!(!expected.is_empty());
+                assert_eq!(
+                    positions(&explicit, spawn),
+                    expected,
+                    "explicit path, spacing {spacing}, {:?}: the original lattice",
+                    spawn.shape
+                );
+
+                let centred = positions(&precise, spawn);
+                assert!(!centred.is_empty());
+                let n = centred.len() as f64;
+                let mean_x = centred.iter().map(|p| f64::from(p.x)).sum::<f64>() / n;
+                let mean_y = centred.iter().map(|p| f64::from(p.y)).sum::<f64>() / n;
+                assert!(
+                    (mean_x - f64::from(spawn.box_center.x)).abs() <= 1e-6
+                        && (mean_y - f64::from(spawn.box_center.y)).abs() <= 1e-6,
+                    "precise path, spacing {spacing}, {:?}: mean ({mean_x}, {mean_y}) \
+                     against the box centre {}",
+                    spawn.shape,
+                    spawn.box_center
+                );
+            }
+        }
     }
 }

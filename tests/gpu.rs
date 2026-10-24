@@ -144,13 +144,17 @@ mod gpu_tests {
     /// mirrored on the GPU backend must match a brute-force k-nearest scan.
     ///
     /// Compared tie-invariantly: the two disks overlap and both lay their
-    /// particles on the same lattice (`min + s/2 + k s`, 5.25 + 0.5 k and
-    /// 9.25 + 0.5 k, exact in `f32`, no jitter), so the overlap holds pairs
-    /// of particles at identical positions, at identical distances from any
-    /// query. Here the nearest squared distances 0.0193, 0.1493, 0.1993 and
-    /// 0.3293 are each such a pair, so the 7th and 8th nearest tie exactly
-    /// and which of the two is "the" 7th is not defined (measured: the GPU
-    /// kept particle 420, the scan 266, at the same point). Asserted: `k`
+    /// particles on the same lattice (the explicit path's `min + k s`, 5.0 +
+    /// 0.5 k and 9.0 + 0.5 k, exact in `f32`, no jitter), so the overlap holds
+    /// pairs of particles at identical positions, at identical distances from
+    /// any query. Measured while the spawn still centred this lattice
+    /// (`min + s/2 + k s`, 5.25 + 0.5 k and 9.25 + 0.5 k; issue #42 now
+    /// centres it on the precise path only): the nearest squared distances
+    /// 0.0193, 0.1493, 0.1993 and 0.3293 were each such a pair, so the 7th and
+    /// 8th nearest tied exactly and which of the two is "the" 7th was not
+    /// defined (the GPU kept particle 420, the scan 266, at the same point).
+    /// The tie holds on either lattice; the values are not re-measured on
+    /// this one. Asserted: `k`
     /// particles, every one no farther than the scan's k-th distance, and
     /// every particle strictly closer than it among them; distances are
     /// recomputed here by the scan's own arithmetic.
