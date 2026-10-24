@@ -152,6 +152,7 @@ impl ThermalConfig {
 ///
 /// Add to `Simulation` via `solver.with_thermal(ThermalDiffusion::new(config, grid_res))`.
 /// Applied once per `step()`, with the time the step advanced.
+#[derive(Debug)]
 pub struct ThermalDiffusion {
     pub config: ThermalConfig,
     /// Fraction of the explicit step's stability limit each pass of `apply`

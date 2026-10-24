@@ -29,7 +29,7 @@ use emerge::{
 // Boundary types kept on their own `use` line (not merged into the material
 // import block above) so this test file's imports don't collide with other
 // branches that also add to that block -- keeps independent PRs conflict-free.
-use emerge::{FrictionBoundary, GripFrictionBoundary, RatchetFrictionBoundary, SlipBoundary};
+use emerge::{FrictionBoundary, RatchetFrictionBoundary, SlipBoundary};
 use glam::{IVec2, Mat2, Vec2};
 // The structural-boundary ledger exists only in a `research-diagnostics` build.
 #[cfg(feature = "research-diagnostics")]
@@ -4350,15 +4350,11 @@ fn muscle_creature_stays_bounded_at_full_activation() {
     }
 }
 
-/// Three locomotion mechanisms compared:
-/// 1. Plain `FrictionBoundary` -- near-zero net drift (scallop theorem: symmetric
-///    muscle cycle against constant friction cancels its own displacement).
-/// 2. `GripFrictionBoundary` (phase-gated grip) -- still only near-zero drift.
-/// 3. `RatchetFrictionBoundary` (directional/setae-style, asymmetric by tangential
-///    velocity sign, phase-independent) -- what actually works, matching SoftZoo and
-///    real-crawler literature (structural asymmetry, not phase-gating).
+/// `RatchetFrictionBoundary` (directional/setae-style, asymmetric by tangential
+/// velocity sign, phase-independent) across a range of anisotropies, symmetric
+/// included: the drift stays physically sane in every case.
 #[test]
-fn grip_friction_locomotion_sweep() {
+fn ratchet_friction_locomotion_sweep() {
     const GRID: usize = 64;
     const DT: f32 = 0.1;
     const MUSCLE_GROUPS: usize = 8;
@@ -4420,24 +4416,15 @@ fn grip_friction_locomotion_sweep() {
     }
 
     for fiber_dir in [Vec2::Y, Vec2::X] {
-        for grip_gain in [0.0, 0.3, 0.6, 0.9] {
-            let drift_x = run(
-                Box::new(GripFrictionBoundary::new(4, 0.65, grip_gain)),
-                fiber_dir,
-            );
-            println!("fiber={fiber_dir:?} grip_gain={grip_gain:.1} drift.x={drift_x:.2}");
-            assert!(
-                drift_x.is_finite() && drift_x.abs() < 20.0,
-                "fiber={fiber_dir:?} grip_gain={grip_gain}: drift.x={drift_x:.2} not physically sane"
-            );
-        }
-    }
-
-    println!("--- RatchetFrictionBoundary (directional/setae-style, no phase gating) ---");
-    for fiber_dir in [Vec2::Y, Vec2::X] {
         for (mu_easy, mu_resist) in [(0.65, 0.65), (0.1, 0.95), (0.02, 1.0)] {
             let drift_x = run(
-                Box::new(RatchetFrictionBoundary::new(4, mu_easy, mu_resist, Vec2::X)),
+                Box::new(RatchetFrictionBoundary::new(
+                    4,
+                    mu_easy,
+                    mu_resist,
+                    Vec2::X,
+                    0.5 * (mu_easy + mu_resist),
+                )),
                 fiber_dir,
             );
             println!(
@@ -4455,8 +4442,7 @@ fn grip_friction_locomotion_sweep() {
 }
 
 /// `RatchetFrictionBoundary` must produce substantial, correctly-directed net
-/// locomotion for a muscle-driven soft body (see `grip_friction_locomotion_sweep` for
-/// the mechanisms that don't). Body is 24 units long; a working crawl should cover a
+/// locomotion for a muscle-driven soft body (see `ratchet_friction_locomotion_sweep`). Body is 24 units long; a working crawl should cover a
 /// meaningful fraction of that, in the commanded `easy_direction`.
 #[test]
 fn ratchet_friction_produces_real_directed_locomotion() {
@@ -4500,6 +4486,9 @@ fn ratchet_friction_produces_real_directed_locomotion() {
             0.1,
             0.95,
             Vec2::X,
+            // Side walls: this scene's former value, the mean of the floor's two
+            // coefficients, which the boundary used to compute internally.
+            0.525,
         )));
 
     let body_range = 0..sim.particles().len();
@@ -4583,7 +4572,9 @@ fn ratchet_easy_direction_is_live_and_reversible() {
         material_id: 0,
         ..SpawnRegion::for_sim(&config)
     };
-    let ratchet = std::sync::Arc::new(RatchetFrictionBoundary::new(4, 0.1, 0.95, Vec2::X));
+    // Side walls keep this scene's former value: the mean of the floor's two
+    // coefficients, which the boundary used to compute internally.
+    let ratchet = std::sync::Arc::new(RatchetFrictionBoundary::new(4, 0.1, 0.95, Vec2::X, 0.525));
     let mut sim = Simulation::new(config, spawn)
         .with_default_material(Box::new(mat))
         .with_boundary(Box::new(std::sync::Arc::clone(&ratchet)));
@@ -4830,7 +4821,9 @@ fn neohookean_viscosity_prevents_compaction_ratchet() {
         material_id: 0,
         ..SpawnRegion::for_sim(&config)
     };
-    let ratchet = std::sync::Arc::new(RatchetFrictionBoundary::new(4, 0.1, 0.95, Vec2::X));
+    // Side walls keep this scene's former value: the mean of the floor's two
+    // coefficients, which the boundary used to compute internally.
+    let ratchet = std::sync::Arc::new(RatchetFrictionBoundary::new(4, 0.1, 0.95, Vec2::X, 0.525));
     let mut sim = Simulation::new(config, spawn)
         .with_default_material(Box::new(mat))
         .with_boundary(Box::new(ratchet));
@@ -6023,9 +6016,13 @@ fn self_weight_strain_is_spacing_independent() {
             box_center: Vec2::new(32.0, 8.0),
             material_id: 0,
             initial_velocity_scale: 0.0,
+            // The column's density lives in its mass: the material is built
+            // from grid units and declares none, and the stress unit is the
+            // same for every material (`SimConfig::grid_mass_unit_kg_per_m`).
+            mass_override: Some(config.density_from_si(rho) * spacing * spacing),
             ..SpawnRegion::for_sim(&config)
         };
-        let (lambda, mu) = config.lame_from_si(E_PA, 0.2, rho);
+        let (lambda, mu) = config.lame_from_si(E_PA, 0.2);
         let mut sim = Simulation::new(config, spawn)
             .with_default_material(Box::new(NeoHookeanMaterial::new(lambda, mu)))
             .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
@@ -6109,7 +6106,7 @@ fn sand_push_leaves_permanent_displacement_not_full_elastic_rebound() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     // Small-strain Kelvin-Voigt damping -- see
     // `small_strain_elastic_viscosity_pa_s`'s doc (Seed & Idriss 1970 +
     // Darendeli 2001, zeta 0.5%-2% for clean sand); the bottom of the range,
@@ -6123,7 +6120,7 @@ fn sand_push_leaves_permanent_displacement_not_full_elastic_rebound() {
         );
     let sand = DruckerPragerMaterial {
         friction_angle: 33.0_f32.to_radians(),
-        elastic_viscosity: config.visc_from_si(elastic_viscosity_pa_s, 1600.0),
+        elastic_viscosity: config.visc_from_si(elastic_viscosity_pa_s),
         ..DruckerPragerMaterial::new(lambda, mu)
     };
     let mut sim = Simulation::new(config, spawn)
@@ -6225,7 +6222,7 @@ fn diag_elastic_viscosity_substep_cost_vs_baseline() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let eta_grid_for = |damping_ratio: f32| {
         let eta_pa_s =
@@ -6233,7 +6230,7 @@ fn diag_elastic_viscosity_substep_cost_vs_baseline() {
                 shear_modulus_pa,
                 damping_ratio,
             );
-        config.visc_from_si(eta_pa_s, 1600.0)
+        config.visc_from_si(eta_pa_s)
     };
 
     let cases = [
@@ -6320,14 +6317,14 @@ fn diag_wet_sand_cohesion_spread_after_realistic_pour() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let cohesion_pa = emerge::matter::materials::granular::sand::capillary_cohesion_stress_pa(
         emerge::matter::materials::granular::sand::GRAIN_DIAMETER_M,
         0.4792,
         0.0,
     );
-    let saturation_cohesion_coeff = config.stress_from_si(cohesion_pa, 1600.0);
+    let saturation_cohesion_coeff = config.stress_from_si(cohesion_pa);
     let elastic_viscosity_pa_s =
         emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
             shear_modulus_pa,
@@ -6337,7 +6334,7 @@ fn diag_wet_sand_cohesion_spread_after_realistic_pour() {
         friction_angle: 33.0_f32.to_radians(),
         saturation_cohesion_coeff,
         pendular_regime_ceiling: 0.3,
-        elastic_viscosity: config.visc_from_si(elastic_viscosity_pa_s, 1600.0),
+        elastic_viscosity: config.visc_from_si(elastic_viscosity_pa_s),
         ..DruckerPragerMaterial::new(lambda, mu)
     };
     let mut sim = Simulation::new(config, spawn)
@@ -6452,7 +6449,7 @@ fn diag_elastic_viscosity_effect_on_active_dry_flow_speed() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let eta_grid_for = |damping_ratio: f32| {
         let eta_pa_s =
@@ -6460,7 +6457,7 @@ fn diag_elastic_viscosity_effect_on_active_dry_flow_speed() {
                 shear_modulus_pa,
                 damping_ratio,
             );
-        config.visc_from_si(eta_pa_s, 1600.0)
+        config.visc_from_si(eta_pa_s)
     };
 
     let mut results = Vec::new();
@@ -6548,7 +6545,7 @@ fn diag_compression_floor_trigger_rate_old_vs_new_threshold_passive_settle() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
 
     for (label, min_j) in [
         ("OLD threshold (0.6)", 0.6f32),
@@ -6629,13 +6626,13 @@ fn diag_stress_test_all_real_interaction_scenarios() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
         shear_modulus_pa,
         0.005,
     );
-    let elastic_viscosity = config.visc_from_si(eta_pa_s, 1600.0);
+    let elastic_viscosity = config.visc_from_si(eta_pa_s);
     let make_sand = || DruckerPragerMaterial {
         friction_angle: 33.0_f32.to_radians(),
         elastic_viscosity,
@@ -6751,14 +6748,14 @@ fn diag_wet_sand_push_combined_never_tested_before() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let cohesion_pa = emerge::matter::materials::granular::sand::capillary_cohesion_stress_pa(
         emerge::matter::materials::granular::sand::GRAIN_DIAMETER_M,
         0.4792,
         0.0,
     );
-    let saturation_cohesion_coeff = config.stress_from_si(cohesion_pa, 1600.0);
+    let saturation_cohesion_coeff = config.stress_from_si(cohesion_pa);
     let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
         shear_modulus_pa,
         0.005,
@@ -6767,7 +6764,7 @@ fn diag_wet_sand_push_combined_never_tested_before() {
         friction_angle: 33.0_f32.to_radians(),
         saturation_cohesion_coeff,
         pendular_regime_ceiling: 0.3,
-        elastic_viscosity: config.visc_from_si(eta_pa_s, 1600.0),
+        elastic_viscosity: config.visc_from_si(eta_pa_s),
         ..DruckerPragerMaterial::new(lambda, mu)
     };
     let mut sim = Simulation::new(config, spawn)
@@ -6884,7 +6881,7 @@ fn diag_lifted_chunk_dispersion_not_just_retained_position() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
         shear_modulus_pa,
@@ -6892,7 +6889,7 @@ fn diag_lifted_chunk_dispersion_not_just_retained_position() {
     );
     let sand = DruckerPragerMaterial {
         friction_angle: 33.0_f32.to_radians(),
-        elastic_viscosity: config.visc_from_si(eta_pa_s, 1600.0),
+        elastic_viscosity: config.visc_from_si(eta_pa_s),
         ..DruckerPragerMaterial::new(lambda, mu)
     };
     let mut sim = Simulation::new(config, spawn)
@@ -7006,7 +7003,7 @@ fn diag_lifted_chunk_dispersion_from_surface_with_strong_pull() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
         shear_modulus_pa,
@@ -7014,7 +7011,7 @@ fn diag_lifted_chunk_dispersion_from_surface_with_strong_pull() {
     );
     let sand = DruckerPragerMaterial {
         friction_angle: 33.0_f32.to_radians(),
-        elastic_viscosity: config.visc_from_si(eta_pa_s, 1600.0),
+        elastic_viscosity: config.visc_from_si(eta_pa_s),
         ..DruckerPragerMaterial::new(lambda, mu)
     };
     let mut sim = Simulation::new(config, spawn)
@@ -7134,7 +7131,7 @@ fn diag_push_weights_sweep_real_lift_within_ui_range() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
         shear_modulus_pa,
@@ -7142,7 +7139,7 @@ fn diag_push_weights_sweep_real_lift_within_ui_range() {
     );
     let make_sand = || DruckerPragerMaterial {
         friction_angle: 33.0_f32.to_radians(),
-        elastic_viscosity: config.visc_from_si(eta_pa_s, 1600.0),
+        elastic_viscosity: config.visc_from_si(eta_pa_s),
         ..DruckerPragerMaterial::new(lambda, mu)
     };
 
@@ -7215,7 +7212,7 @@ fn diag_lmb_push_stability_at_new_stronger_default() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
         shear_modulus_pa,
@@ -7223,7 +7220,7 @@ fn diag_lmb_push_stability_at_new_stronger_default() {
     );
     let sand = DruckerPragerMaterial {
         friction_angle: 33.0_f32.to_radians(),
-        elastic_viscosity: config.visc_from_si(eta_pa_s, 1600.0),
+        elastic_viscosity: config.visc_from_si(eta_pa_s),
         ..DruckerPragerMaterial::new(lambda, mu)
     };
     let mut sim = Simulation::new(config, spawn)
@@ -7334,7 +7331,7 @@ fn diag_phase_transition_under_load_causes_stress_discontinuity() {
         // `::new()` constructor's 7.0 (which `GranularFluidMaterial::saturated_loam`'s
         // doc names as causing "runaway pressure under gravity-settling
         // compression, driving dilation... in an unbounded feedback loop").
-        let (lambda, mu) = emerge::materials::utils::lame_from_young(1.0e5, 0.2);
+        let (lambda, mu) = emerge::materials::lame_parameters::lame_from_young(1.0e5, 0.2);
         const EOS_STIFFNESS: f32 = 200.0;
         let mixture = GranularFluidMaterial {
             mu,
@@ -7444,7 +7441,7 @@ fn diag_repeated_phase_transitions_do_not_cause_cumulative_instability() {
     let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
     // Same construction as the test above: eos_power=2.0, as the scene's
     // `make_mixture`, not the raw ::new() constructor's 7.0.
-    let (lambda, mu) = emerge::materials::utils::lame_from_young(1.0e5, 0.2);
+    let (lambda, mu) = emerge::materials::lame_parameters::lame_from_young(1.0e5, 0.2);
     const EOS_STIFFNESS: f32 = 200.0;
     let mixture = GranularFluidMaterial {
         mu,
@@ -7731,11 +7728,7 @@ fn no_compression_tendon_hangs_taut_survives_pull_and_extreme_impulse() {
         max_substeps_per_step: 20_000,
         ..SimConfig::earth(GRID, 0.02, DT)
     };
-    let (lambda, mu) = config.lame_from_si(
-        TENDON_YOUNG_MODULUS_PA,
-        TENDON_POISSON_RATIO,
-        TENDON_DENSITY_KG_M3,
-    );
+    let (lambda, mu) = config.lame_from_si(TENDON_YOUNG_MODULUS_PA, TENDON_POISSON_RATIO);
     let material = NoCompressionMaterial::new(lambda, mu);
     let mass_grid = (TENDON_DENSITY_KG_M3 / config.reference_density_kg_m3) * SPACING * SPACING;
 
@@ -9494,7 +9487,7 @@ fn shear_wave_energy_ratio(asflip_blend: f32, cundall_damping: f32, frames: usiz
         ..SimConfig::earth(grid, 1.0 / cells, 0.001)
     };
     let rho = 1500.0;
-    let (lambda, mu) = config.lame_from_si(10.0e6, 0.2, rho);
+    let (lambda, mu) = config.lame_from_si(10.0e6, 0.2);
     let mid = grid as f32 * 0.5;
     let spawn = SpawnRegion {
         spacing: 0.5,

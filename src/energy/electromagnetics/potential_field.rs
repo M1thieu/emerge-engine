@@ -16,7 +16,7 @@
 
 use glam::Vec2;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ElectricPotentialField {
     width: usize,
     height: usize,

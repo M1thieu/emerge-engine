@@ -1,12 +1,13 @@
 use glam::{Mat2, Vec2};
 
-use crate::materials::physical_props::{FromSI, NaccProps, scale_lame, scale_stress};
-use crate::materials::svd::svd2;
-use crate::materials::utils::{
-    MIN_J, advance_deformation_gradient, elastic_wave_dt, lame_from_young,
-};
+use crate::materials::lame_parameters::lame_from_young;
+use crate::materials::physical_props::{FromSI, NaccProps};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
+use crate::matter::kinematics::volume_ratio::MIN_J;
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
+use crate::spacetime::solver::cfl::elastic_wave_dt;
+use crate::tensor_algebra::svd::svd2;
 
 /// Non-Associated Cam-Clay (NACC) elastoplastic solid.
 ///
@@ -493,12 +494,7 @@ impl NaccMaterial {
 /// unconverted, as in `from_young_modulus`.
 impl FromSI<NaccProps> for NaccMaterial {
     fn from_physical(props: &NaccProps, config: &crate::SimConfig) -> Self {
-        let (lambda, mu) = scale_lame(
-            props.elastic.e_pa,
-            props.elastic.nu,
-            props.elastic.rho_kg_m3,
-            config,
-        );
+        let (lambda, mu) = config.lame_from_si(props.elastic.e_pa, props.elastic.nu);
         // Same 2D plane-strain bulk modulus relation as every other
         // constructor in this file (kappa = lambda + mu, NOT the 3D
         // lambda + 2*mu/3) -- applied here to the now-correctly-SI-scaled
@@ -515,8 +511,7 @@ impl FromSI<NaccProps> for NaccMaterial {
         let hardening = (1.0 + props.void_ratio) / (props.compression_index - props.swelling_index);
         let mut material = Self::new(mu, kappa, props.friction, props.cohesion, hardening);
         material.rest_density = Some(props.elastic.rho_kg_m3 / config.reference_density_kg_m3);
-        material.initial_preconsolidation =
-            scale_stress(props.preconsolidation_pa, props.elastic.rho_kg_m3, config);
+        material.initial_preconsolidation = config.stress_from_si(props.preconsolidation_pa);
         material
     }
 }
@@ -1188,12 +1183,7 @@ mod from_si_tests {
         };
         let config = SimConfig::earth(64, 0.01, 0.05);
         let mat = NaccMaterial::from_physical(&props, &config);
-        let (lambda, mu) = scale_lame(
-            props.elastic.e_pa,
-            props.elastic.nu,
-            props.elastic.rho_kg_m3,
-            &config,
-        );
+        let (lambda, mu) = config.lame_from_si(props.elastic.e_pa, props.elastic.nu);
         assert_eq!(mat.mu, mu);
         assert_eq!(mat.kappa, lambda + mu);
     }

@@ -54,11 +54,7 @@ mod gpu_probe {
             gravity: Vec2::new(0.0, -0.08),
             ..SimConfig::earth(GRID, 0.01, DT)
         };
-        let (lambda, mu) = config.lame_from_si(
-            SNOW_YOUNG_MODULUS_PA,
-            SNOW_POISSON_RATIO,
-            SNOW_DENSITY_KG_M3,
-        );
+        let (lambda, mu) = config.lame_from_si(SNOW_YOUNG_MODULUS_PA, SNOW_POISSON_RATIO);
         println!("[snow-gpu-probe] lambda={lambda} mu={mu}");
         let mass_grid = (SNOW_DENSITY_KG_M3 / config.reference_density_kg_m3) * 0.5 * 0.5;
         let spawn_ball = |center: Vec2, mat: u32, seed: u32| SpawnRegion {

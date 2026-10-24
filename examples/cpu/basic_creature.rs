@@ -183,7 +183,9 @@ fn make_sim() -> (
     // Arc'd so this exact instance is shared between the solver (which drives
     // physics through it) and the app (which steers it live from input) --
     // set_easy_direction takes effect immediately, no boundary swap needed.
-    let ratchet = Arc::new(RatchetFrictionBoundary::new(4, 0.1, 0.95, Vec2::X));
+    // Side walls keep this scene's former value: the mean of the floor's two
+    // coefficients, which the boundary used to compute internally.
+    let ratchet = Arc::new(RatchetFrictionBoundary::new(4, 0.1, 0.95, Vec2::X, 0.525));
     let mut solver = Simulation::new(config, spawn)
         .with_default_material(Box::new(mat))
         .with_boundary(Box::new(Arc::clone(&ratchet)));

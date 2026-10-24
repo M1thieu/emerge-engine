@@ -13,8 +13,7 @@
 
 use glam::Vec2;
 
-use super::cutoff::smooth_cutoff;
-use crate::fields::{FADE_ONSET_RATIO, Field};
+use crate::fields::Field;
 use crate::particle::Particles;
 
 /// Earth's surface gravitational acceleration in m/s², the value
@@ -30,6 +29,7 @@ pub const EARTH_GRAVITY_M_S2: f32 = 9.81;
 /// Intended for macro-scale bodies (celestial bodies, large terrain features) that
 /// exert gravity on MPM continuum matter. Does **not** model particle-particle N-body --
 /// for that, use `NBodyGravityField`.
+#[derive(Debug)]
 pub struct GravityWellField {
     /// Point mass sources: `(position in grid coords, mass in simulation units)`.
     pub sources: Vec<(Vec2, f32)>,
@@ -45,23 +45,14 @@ pub struct GravityWellField {
 
     /// Plummer softening length ε in grid coordinates.
     ///
-    /// Prevents force divergence as r → 0.
-    /// Rule of thumb: ε ≈ mean inter-particle spacing (typically 0.5–2.0 grid cells).
+    /// A regularization of the point-mass singularity at r → 0, not a property
+    /// of the source: its value is the caller's choice and is declared as
+    /// such. A real source has a physical size; replacing ε by it is open.
     pub softening: f32,
-
-    /// Cutoff radius in grid coordinates. Gravity is zero beyond this distance.
-    ///
-    /// Default: `f32::INFINITY` (IRL -- no cutoff).
-    /// Set to a finite value as a performance approximation for large particle counts.
-    pub cutoff: f32,
-
-    /// Force-switch onset -- smooth fade starts at this radius (must be ≤ cutoff).
-    /// Only meaningful when cutoff is finite.
-    pub switch_on: f32,
 }
 
 impl GravityWellField {
-    /// Full-range gravity -- IRL default, no distance cutoff.
+    /// Full-range gravity: Newtonian gravity has no range limit.
     pub const fn new(
         sources: Vec<(Vec2, f32)>,
         gravitational_constant: f32,
@@ -71,22 +62,12 @@ impl GravityWellField {
             sources,
             gravitational_constant,
             softening,
-            cutoff: f32::INFINITY,
-            switch_on: f32::INFINITY,
         }
     }
 
-    /// Single stationary point mass -- IRL default, no cutoff.
+    /// Single stationary point mass.
     pub fn point(position: Vec2, mass: f32, gravitational_constant: f32, softening: f32) -> Self {
         Self::new(vec![(position, mass)], gravitational_constant, softening)
-    }
-
-    /// Performance approximation: clamp gravity to zero beyond `cutoff` grid-cells.
-    /// Smooth fade begins at 0.85 × cutoff.
-    pub fn with_cutoff(mut self, cutoff: f32) -> Self {
-        self.cutoff = cutoff;
-        self.switch_on = FADE_ONSET_RATIO * cutoff;
-        self
     }
 }
 
@@ -101,7 +82,7 @@ impl Field for GravityWellField {
             let r2 = r_vec.length_squared();
             let r = r2.sqrt();
 
-            if r >= self.cutoff || r < f32::EPSILON {
+            if r < f32::EPSILON {
                 continue;
             }
 
@@ -114,8 +95,7 @@ impl Field for GravityWellField {
                 continue;
             }
 
-            let switch = smooth_cutoff(r, self.switch_on, self.cutoff);
-            acc += r_vec * force_scale * switch;
+            acc += r_vec * force_scale;
         }
 
         acc

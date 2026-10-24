@@ -113,6 +113,17 @@ pub struct GrainPopulation {
     last_contact_substeps: usize,
 }
 
+impl std::fmt::Debug for GrainPopulation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GrainPopulation")
+            .field("grain_count", &self.grains.len())
+            .field("config", &self.config)
+            .field("contact_iterations", &self.contact_iterations)
+            .field("grain_field_count", &self.grain_fields.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Outer product `a (x) b` as a 2x2 matrix (`M*v = a*(b.dot(v))`): the
 /// per-contact term of the discrete stress sum.
 fn outer_product(a: Vec2, b: Vec2) -> Mat2 {

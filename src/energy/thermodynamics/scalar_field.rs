@@ -59,6 +59,7 @@ use crate::{
 /// doc for what each argument is for.
 pub type ScalarFieldSource = fn(&Particle, f32, &dyn MaterialModel) -> f32;
 
+#[derive(Debug)]
 pub struct ScalarDiffusionField {
     pub config: ScalarDiffusionConfig,
     /// Read the scalar value φ from a particle.
@@ -184,7 +185,8 @@ impl ScalarDiffusionField {
     /// Read-only view of the post-step scalar field on the grid.
     ///
     /// Layout: `phi[x * grid_res + y]`.  Valid after the first call to `apply()`.
-    /// Use with `ChemotaxisField::sync_from` to drive gradient-following forces.
+    /// Read by `ChemotaxisSensor::sync_from` (`information::control`) to sense
+    /// the gradient.
     pub fn current_phi(&self) -> &[f32] {
         &self.grid_work
     }

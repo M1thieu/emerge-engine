@@ -14,6 +14,19 @@ use crate::particle::Particles;
 ///
 /// `gravity` should match `SimConfig::gravity` exactly.
 ///
+/// Scope: the surrounding fluid is not simulated. If it is, buoyancy already
+/// comes from its pressure, and this field would count it twice.
+///
+/// Missing physics, declared: the added mass of the fluid the particle drags
+/// along. For a small sphere the Maxey-Riley equation with the Auton added-mass
+/// correction (Farazmand & Haller 2015, arXiv:1310.2450, eqs. 1 and 3) gives
+/// the gravity-plus-buoyancy acceleration `(1 - 3R/2) g` with
+/// `R = 2 rho_f / (rho_f + 2 rho_p)`: finite as `rho_p -> 0` (a bubble rises at
+/// `2g`). Without it the acceleration here grows as `rho_f / rho_p` without
+/// bound, which is why `min_density` exists: a floor against division by zero,
+/// not physics. The engine's particles are extruded columns rather than
+/// spheres, so the sphere's coefficient does not carry over unchanged.
+///
 /// # IRL calibration
 /// For water (ρ₀ = 1000 kg/m³), the ratio `ρ_fluid/ρ` this field applies:
 /// - Wood (ρ ≈ 600 kg/m³): ρ_fluid/ρ ≈ 1.67, floats ~60% submerged
@@ -27,7 +40,8 @@ pub struct BuoyancyField {
     pub fluid_density: f32,
     /// Gravitational direction and magnitude -- should match `SimConfig::gravity`.
     pub gravity: Vec2,
-    /// Density floor to prevent division by zero for near-vacuum particles.
+    /// Density floor against division by zero for near-vacuum particles (see
+    /// the type's doc: a guard, not physics).
     pub min_density: f32,
 }
 

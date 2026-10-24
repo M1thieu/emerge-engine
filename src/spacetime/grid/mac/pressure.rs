@@ -54,7 +54,7 @@ impl PressureSystem {
 }
 
 /// Where the material is, as the equations and the update read it.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Surface<'a> {
     /// Negative at the centre of a cell with a pressure unknown, the
     /// solids folded in; the free surface cuts the line to a neighbour at

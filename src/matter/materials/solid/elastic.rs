@@ -1,11 +1,12 @@
 use glam::Mat2;
 
-use crate::materials::physical_props::{Elastic, FromSI, scale_lame};
-use crate::materials::utils::{
-    MIN_J, advance_deformation_gradient, elastic_wave_dt, lame_from_young,
-};
+use crate::materials::lame_parameters::lame_from_young;
+use crate::materials::physical_props::{Elastic, FromSI};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
+use crate::matter::kinematics::volume_ratio::MIN_J;
 use crate::particle::{ParticleUpdateCtx, Particles};
+use crate::spacetime::solver::cfl::elastic_wave_dt;
 
 /// Compressible Neo-Hookean hyperelastic solid (jelly, soft tissue).
 ///
@@ -58,6 +59,11 @@ pub struct NeoHookeanMaterial {
     /// keeps the barrier LARGE-BUT-FINITE at the floor: finite because an
     /// un-clamped `mu/J` at J=1e-6 would blow up to `mu*1e6`.
     pub j_min: f32,
+    /// Specific heat capacity `c_p`, J/(kg*K). 0 (the default) means
+    /// undeclared -- see `MaterialModel::specific_heat_j_kg_k`; measured
+    /// values in `materials::heat_capacity`. Set after construction, as
+    /// `NewtonianFluidMaterial::specific_heat_j_kg_k` is.
+    pub specific_heat_j_kg_k: f32,
 }
 
 impl NeoHookeanMaterial {
@@ -75,6 +81,7 @@ impl NeoHookeanMaterial {
             damage_softening_rate: 0.0,
             viscosity: 0.0,
             j_min: 0.01,
+            specific_heat_j_kg_k: 0.0,
         }
     }
 
@@ -188,7 +195,7 @@ impl NeoHookeanMaterial {
 
 impl FromSI<Elastic> for NeoHookeanMaterial {
     fn from_physical(props: &Elastic, config: &crate::SimConfig) -> Self {
-        let (lambda, mu) = scale_lame(props.e_pa, props.nu, props.rho_kg_m3, config);
+        let (lambda, mu) = config.lame_from_si(props.e_pa, props.nu);
         Self {
             rest_density: Some(props.rho_kg_m3 / config.reference_density_kg_m3),
             ..Self::new(lambda, mu)
@@ -291,6 +298,10 @@ impl MaterialModel for NeoHookeanMaterial {
         1.0
     }
 
+    fn specific_heat_j_kg_k(&self) -> f32 {
+        self.specific_heat_j_kg_k
+    }
+
     fn params(&self) -> MaterialParams {
         MaterialParams {
             model: ConstitutiveModel::NeoHookean as u32,
@@ -308,6 +319,7 @@ impl MaterialModel for NeoHookeanMaterial {
             // Same GPU param slot `ViscoelasticMaterial` already uses for its
             // own `j_min` -- see this field's doc.
             volume_ratio_min: self.j_min,
+            specific_heat_j_kg_k: self.specific_heat_j_kg_k,
             ..Default::default()
         }
     }

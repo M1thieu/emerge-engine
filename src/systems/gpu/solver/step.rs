@@ -32,7 +32,26 @@ impl GpuSimulation {
             return;
         }
         let total_start = std::time::Instant::now();
-        let cfl_scan_start = total_start;
+        // Bound the frames queued on the GPU to two. While the CPU encodes this
+        // frame the GPU needs the previous one to work on, so that one may still be
+        // running; the one before it need not be, so wait for it here. A CPU that
+        // outpaces the GPU then waits instead of queueing without limit. Measured on
+        // the sand scene of `sand_gpu_boundary_velocity_investigation` (integrated
+        // AMD, Vulkan): without this wait the GPU fell 524 frames behind over
+        // 20,000 frames and process memory grew to 5.9 GB (about 11 MB per queued
+        // frame), the growth behind the Out of Memory panic `CommandEncoder::finish`
+        // raised in that test under a loaded GPU.
+        let mut wait_ns = 0.0f32;
+        if let Some(index) = self.frame_submissions[0].take() {
+            self.device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: Some(index),
+                    timeout: None,
+                })
+                .ok();
+            wait_ns += total_start.elapsed().as_secs_f32() * 1.0e9;
+        }
+        let cfl_scan_start = std::time::Instant::now();
         let any_cpu = self.registry.any_needs_cpu_update();
         // Materials can be registered/replaced after construction; keep the per-particle
         // update pipeline specialized to the models actually present (no-op unless the
@@ -491,7 +510,7 @@ impl GpuSimulation {
             pass.set_pipeline(&self.pipelines.particle_sort_scatter);
             pass.dispatch_workgroups(particle_wg, 1, 1);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let mut frame_submission = self.queue.submit(std::iter::once(encoder.finish()));
 
         // Substeps are submitted in small batches as soon as they are encoded, so the
         // GPU starts on the first ones while the CPU is still encoding the rest.
@@ -533,7 +552,6 @@ impl GpuSimulation {
             ((margin_cells / per_substep_travel) as usize).clamp(1, SUBSTEP_SUBMIT_BATCH);
 
         let mut pure_encode_ns = 0.0f32;
-        let mut wait_ns = 0.0f32;
         let mut first_chunk = true;
         let mut since_block = 0usize;
         let mut substep_counter = 0usize;
@@ -590,7 +608,7 @@ impl GpuSimulation {
             if last_chunk {
                 self.profile_frame_marker(&mut sub_encoder, true);
             }
-            self.queue.submit(std::iter::once(sub_encoder.finish()));
+            frame_submission = self.queue.submit(std::iter::once(sub_encoder.finish()));
             pure_encode_ns += chunk_encode_start.elapsed().as_secs_f32() * 1.0e9;
             since_block += chunk.len();
             if !last_chunk && since_block >= SUBSTEP_BLOCK_EVERY {
@@ -620,9 +638,10 @@ impl GpuSimulation {
                 pass.set_bind_group(3, &self.resource_bind_group, &[]);
                 self.encode_slow_fields(&mut pass, particle_wg, thermal_passes, resource_passes);
             }
-            self.queue.submit(std::iter::once(slow_encoder.finish()));
+            frame_submission = self.queue.submit(std::iter::once(slow_encoder.finish()));
             pure_encode_ns += slow_start.elapsed().as_secs_f32() * 1.0e9;
         }
+        self.frame_submissions = [self.frame_submissions[1].take(), Some(frame_submission)];
         let encode_ns = pure_encode_ns;
         // Repurposed: real GPU-completion wait time between chunks, not always 0 --
         // this IS where GPU execution time shows up for multi-chunk (>64 substep) frames.

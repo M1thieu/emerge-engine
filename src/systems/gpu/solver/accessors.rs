@@ -23,8 +23,10 @@ impl GpuSimulation {
     /// `step_frame()` call. `encode_ns` is pure CPU-side command-building time (bind
     /// group already cached, just recording dispatches); `wait_ns` (renamed from the
     /// old always-zero `submit_ns` -- multi-chunk frames now really do block between
-    /// chunks) is time spent in `device.poll(wait_indefinitely())` between substep
-    /// batches, i.e. real GPU execution time for scenes needing >64 substeps/frame.
+    /// chunks) is time spent blocked on the GPU: waiting at the start of the call for
+    /// the frame before last to finish (at most two frames are queued), and in
+    /// `device.poll(wait_indefinitely())` between substep batches for scenes needing
+    /// >64 substeps/frame.
     pub fn last_cpu_timings_ns(&self) -> (f32, f32, f32, f32, f32) {
         self.last_cpu_timings
     }

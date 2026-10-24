@@ -18,10 +18,13 @@
 //! and every LP equivalent keeps resolving unchanged -- this move only
 //! changes where the files physically live, not any public API.
 
+pub(crate) mod artificial_viscosity;
 pub mod diff;
 pub mod grains;
 pub mod grid;
 pub(crate) mod integration;
+pub mod return_mapping;
 pub mod rod;
 pub mod solver;
+pub mod total_lagrangian;
 pub mod transfer;

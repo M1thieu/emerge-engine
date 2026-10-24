@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use glam::Vec2;
 
-use super::{BoundaryCondition, apply_coulomb_wall};
+use super::{BoundaryCondition, apply_coulomb_wall, assert_friction_coefficient};
 
 /// A moving circular obstacle, driven kinematically: position and velocity
 /// come from outside, with no mass, inertia or constraint solver of its own.
@@ -81,10 +81,7 @@ pub struct KinematicCircleBoundary {
 
 impl KinematicCircleBoundary {
     pub fn new(center: Vec2, radius: f32, friction: f32) -> Self {
-        assert!(
-            (0.0..=1.0).contains(&friction),
-            "friction must be in [0.0, 1.0], got {friction}"
-        );
+        assert_friction_coefficient(friction, "friction");
         Self {
             center_x_bits: std::sync::atomic::AtomicU32::new(center.x.to_bits()),
             center_y_bits: std::sync::atomic::AtomicU32::new(center.y.to_bits()),
@@ -104,10 +101,7 @@ impl KinematicCircleBoundary {
     /// Register a per-material friction override (builder). E.g. water
     /// and mud can behave differently at the same obstacle.
     pub fn with_material_friction(mut self, material_id: u32, friction: f32) -> Self {
-        assert!(
-            (0.0..=1.0).contains(&friction),
-            "friction must be in [0.0, 1.0], got {friction}"
-        );
+        assert_friction_coefficient(friction, "friction");
         self.friction_profile.insert(material_id, friction);
         self
     }
@@ -226,9 +220,11 @@ impl BoundaryCondition for KinematicCircleBoundary {
         grid_res: usize,
         velocity: &mut Vec2,
     ) -> f32 {
+        // Grid node `i` sits at `i + 0.5` (`grid::kernel::quadratic_weights`),
+        // the same point `clamp_particle_position` measures against.
         let cell_pos = Vec2::new(
-            (cell_index / grid_res) as f32,
-            (cell_index % grid_res) as f32,
+            (cell_index / grid_res) as f32 + 0.5,
+            (cell_index % grid_res) as f32 + 0.5,
         );
         let d = cell_pos - self.center();
         let dist = d.length();
@@ -314,5 +310,38 @@ impl BoundaryCondition for KinematicCircleBoundary {
     // non-circular shape (this boundary is circles only).
     fn is_strict_wc_mpm_fluid_compatible(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RES: usize = 32;
+
+    fn index(x: usize, y: usize) -> usize {
+        x * RES + y
+    }
+
+    /// Grid node `i` sits at `i + 0.5`, where `clamp_particle_position` also
+    /// measures. For a circle of radius 2 centred at (10, 10): node (11, 11)
+    /// sits at (11.5, 11.5), 2.12 cells away, outside, so a velocity aimed at
+    /// the centre is left alone; node (11, 10) sits at (11.5, 10.5), 1.58
+    /// cells away, inside, so its inward normal velocity is removed.
+    #[test]
+    fn grid_nodes_are_tested_at_their_physical_position() {
+        let circle = KinematicCircleBoundary::new(Vec2::new(10.0, 10.0), 2.0, 0.0);
+
+        let mut outside = Vec2::new(-1.0, -1.0);
+        circle.apply_to_grid_velocity(index(11, 11), RES, &mut outside);
+        assert_eq!(outside, Vec2::new(-1.0, -1.0));
+
+        let mut inside = Vec2::new(-1.0, 0.0);
+        circle.apply_to_grid_velocity(index(11, 10), RES, &mut inside);
+        let outward = Vec2::new(1.5, 0.5).normalize();
+        assert!(
+            inside.dot(outward).abs() < 1e-6,
+            "inward normal velocity must be removed, got {inside}"
+        );
     }
 }

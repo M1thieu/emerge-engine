@@ -269,6 +269,15 @@ pub struct GpuBuffers {
     pub fp_is_surface: wgpu::Buffer,
 }
 
+impl std::fmt::Debug for GpuBuffers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuBuffers")
+            .field("asflip_snapshot_grown", &self.asflip_snapshot_grown)
+            .field("material_mass_grown", &self.material_mass_grown)
+            .finish_non_exhaustive()
+    }
+}
+
 /// `asflip_snapshot`'s pre-attach size -- large enough to satisfy wgpu's nonzero-buffer
 /// requirement, small enough to be free. Never actually read/written at this
 /// size (gated on `asflip_params.enabled`), so its exact value doesn't matter beyond

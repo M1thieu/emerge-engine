@@ -4,6 +4,7 @@
 /// LP usage: measure evolutionary distance between species, compare creature behaviour
 /// distributions, quantify trait drift between populations. In multiplayer, these
 /// metrics let the simulation decide when two players' lineages count as separate species.
+#[derive(Debug)]
 pub struct KLDivergence;
 
 impl KLDivergence {

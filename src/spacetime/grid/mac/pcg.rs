@@ -31,8 +31,8 @@ pub enum Preconditioner {
 /// 1728, 3072 and 6912 unknowns; at 12288 the cycle wins, 18.0 against
 /// 22.0 ms, and by 3.3 to 8.3 times from 49152 up. The cycle smooths every
 /// cell of every level whatever the unknowns, MIC(0) only the unknowns, so
-/// a small body in a large grid favours MIC(0) further: on scene 10's
-/// block, 366 unknowns on a 72 by 72 grid, 113 against 887 us.
+/// a small body in a large grid favours MIC(0) further: on the dropped
+/// elastic block, 366 unknowns on a 72 by 72 grid, 113 against 887 us.
 pub const AUTO_MULTIGRID_UNKNOWNS: usize = 8192;
 
 /// When the solve stops, and the preconditioner's two parameters.
@@ -116,9 +116,9 @@ pub fn solve(sys: &PressureSystem, settings: &SolverSettings) -> Solution {
     // Below the parallel size, the vector operations, `A` and MIC(0) run
     // over the list of unknowns only. Couplings to a cell without an
     // unknown are zero, so whatever such a cell's entry holds is never
-    // read. Measured on scene 10's block, 366 unknowns on a 72 by 72 grid:
-    // the grid-wide loops spent about 1.5 ns on each of the 5184 cells per
-    // pass, the solve 498 us with MIC(0).
+    // read. Measured on the dropped elastic block, 366 unknowns on a 72 by
+    // 72 grid: the grid-wide loops spent about 1.5 ns on each of the 5184
+    // cells per pass, the solve 498 us with MIC(0).
     let cells: Vec<usize> = (0..n).filter(|&c| sys.active[c]).collect();
     let list = (cells.len() < PARALLEL_MIN_CELLS).then_some(cells.as_slice());
     let multigrid = match settings.preconditioner {

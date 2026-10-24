@@ -14,7 +14,7 @@ use crate::solver::config::KERNEL_D_INVERSE;
 #[cfg(test)]
 use glam::IVec2;
 
-mod friction_heat;
+pub(crate) mod friction_heat;
 mod g2p;
 mod p2g;
 

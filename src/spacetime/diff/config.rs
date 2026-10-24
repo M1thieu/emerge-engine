@@ -7,6 +7,7 @@ use super::body_plan::BodyPlan;
 
 // ── Config / controller / state ───────────────────────────────────────────────
 
+#[derive(Debug)]
 pub struct DiffConfig {
     /// Uniform per-particle mass for this mini-sim -- a free constant, same
     /// disclosed-simplification convention as `stress_coeff` below (this
@@ -93,7 +94,7 @@ impl Default for DiffConfig {
 
 /// Open-loop sinusoid-basis controller (DiffTaichi `compute_actuation`):
 /// `act[t, g] = tanh( sum_j w[g,j] * sin(omega * t * dt + 2*pi*j/n_waves) + b[g] )`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SinusoidController {
     /// Row-major `[group][wave]`.
     pub weights: Vec<f32>,
@@ -208,7 +209,7 @@ impl SinusoidController {
 ///
 /// Per-group feature layout: `[rel_x, rel_y, vel_x, vel_y]`, concatenated
 /// group-major -- `feature_len() = n_groups * 4`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FeedbackController {
     /// Row-major `[output_group][input_feature]`.
     pub weights: Vec<f32>,
@@ -371,7 +372,7 @@ impl FeedbackController {
 }
 
 /// Per-particle dynamic state of the mini-sim.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DiffState {
     pub x: Vec<Vec2>,
     pub v: Vec<Vec2>,
@@ -397,6 +398,7 @@ impl DiffState {
 
 /// What one forward substep records for its backward pass: the sticky-floor
 /// branch decisions (everything else is recomputed from the stored states).
+#[derive(Debug)]
 pub struct StepRecord {
     pub(super) stuck: BTreeSet<(i32, i32)>,
 }

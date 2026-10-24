@@ -30,6 +30,8 @@ not an implementation layer:
 src/
   matter/            particle/ (Particle, repr(C) 128 B GPU-uploadable · Grain ·
                      RodPoints · Particles SoA)
+    kinematics/       deformation gradient · volume ratio · polar decomposition ·
+                      Hencky strain (shared by every material)
     materials/        MaterialModel trait · registry · SI conversions ·
                       optical data · one folder per state of matter:
                       solid/ · liquid/ · gas/ · granular/ · mixture/
@@ -38,19 +40,23 @@ src/
                        body_state (BodyState aggregation)
     grid/               Grid · Cell · ContactCell (multi-field contact) · kernel
     transfer/           P2G scatter + G2P gather (MLS-APIC)
+    return_mapping.rs   integration of plasticity laws (Simo & Hughes)
+    artificial_viscosity.rs  von Neumann & Richtmyer shock term (numerical)
     diff.rs             differentiable/gradient-trainable stepping
     rod/                Rod · RodMaterial · build_straight_rod ·
                         coupling.rs (scatter/gather to the shared Grid)
     grains/             DEM grain dynamics: population/coupling/oracle
                         (state lives in matter::particle::Grain)
-  forces/             boundary/ (Slip / Heightmap / friction/
-                      [Friction / GripFriction / RatchetFriction]) ·
-                      fields/ (NBody / GravityWell / Coulomb / Confinement / cutoff) ·
+  forces/             boundary/ (Slip / StaticBox / Heightmap / KinematicCircle /
+                      friction/ [Friction / RatchetFriction]) ·
+                      fields/ (NBody / GravityWell / Coulomb / uniform E / gyroscopic
+                      [magnetic, Coriolis] / buoyancy / drag) ·
                       electromagnetics.rs
   energy/             thermodynamics/ (ThermalDiffusion · ScalarDiffusionField) ·
                       acoustics/, electromagnetics.rs [feature=experimental]
-  information/        control/ (Lnn neural locomotion controller) · measures/
+  information/        control/ (Lnn neural locomotion controller · ChemotaxisSensor) · measures/
   runtime/            FixedStepController
+  tensor_algebra/     SVD · Frobenius product · symmetric eigenvalues (pure math)
   systems/            gpu/ [feature=gpu] GpuSimulation + WGSL shaders ·
                       render/ [feature=render] instanced particle renderer ·
                       diagnostics/ plugin system · health · per-material stats

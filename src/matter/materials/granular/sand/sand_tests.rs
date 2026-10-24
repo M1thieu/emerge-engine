@@ -645,8 +645,8 @@ mod pradhana_correction_tests {
 #[cfg(test)]
 mod dp_update_cost_breakdown {
     use super::*;
-    use crate::materials::svd::svd2;
-    use crate::materials::utils::advance_deformation_gradient;
+    use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
+    use crate::tensor_algebra::svd::svd2;
     use crate::{FrictionBoundary, SimConfig, Simulation, SpawnRegion};
     use glam::IVec2;
     use std::hint::black_box;
@@ -785,9 +785,9 @@ mod dp_update_cost_breakdown {
             if lvs > 0.0 {
                 history_positive += 1;
             }
-            let s = sigma
-                .abs()
-                .max(Vec2::splat(crate::materials::utils::LOG_CLAMP));
+            let s = sigma.abs().max(Vec2::splat(
+                crate::matter::kinematics::hencky_strain::LOG_CLAMP,
+            ));
             let elastic_trace = s.x.ln() + s.y.ln();
             if elastic_trace <= 0.0 && elastic_trace + lvs > 0.0 {
                 tension_from_history += 1;
@@ -826,8 +826,8 @@ mod dp_update_cost_breakdown {
 #[cfg(test)]
 mod settled_pile_creep_by_depth {
     use super::*;
-    use crate::materials::svd::svd2;
-    use crate::materials::utils::advance_deformation_gradient;
+    use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
+    use crate::tensor_algebra::svd::svd2;
     use crate::{FrictionBoundary, SimConfig, Simulation, SpawnRegion};
     use glam::IVec2;
 

@@ -18,8 +18,8 @@
 use glam::{Mat2, Vec2};
 
 use super::cavitating_eos::{CavitatingEosParams, CavitatingEosTable};
-use crate::materials::utils::advance_log_volume_ratio;
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::volume_ratio::advance_log_volume_ratio;
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
 #[derive(Debug, Clone, Copy)]
@@ -217,7 +217,7 @@ impl MaterialModel for IsothermalCavitatingFluidMaterial {
         // convention `NewtonianFluidMaterial`'s own call site uses.
         if let Some(c2_rest) = self.rest_acoustic_c2() {
             let c_sound = c2_rest.max(0.0).sqrt();
-            let q = crate::materials::utils::von_neumann_richtmyer_q(
+            let q = crate::spacetime::artificial_viscosity::von_neumann_richtmyer_q(
                 self.rest_density_grid,
                 j,
                 0.5 * div_v,
@@ -513,7 +513,7 @@ impl MaterialModel for CavitatingFluidMaterial {
         // CFL-safety mechanism.
         if let Some(c2_local) = self.acoustic_c2_at(density_grid, particles.temperature[i]) {
             let c_sound = c2_local.max(0.0).sqrt();
-            let q = crate::materials::utils::von_neumann_richtmyer_q(
+            let q = crate::spacetime::artificial_viscosity::von_neumann_richtmyer_q(
                 self.rest_density_grid,
                 j,
                 0.5 * div_v,

@@ -83,18 +83,8 @@
 use std::f32::consts::PI;
 
 use crate::energy::thermodynamics::water_saturation::{
-    WATER_SATURATION_MAX_VALID_K, water_saturation_pressure_pa,
+    WATER_SATURATION_MAX_VALID_K, water_saturation_pressure_gauge_pa_f64,
 };
-use crate::matter::materials::gas::STANDARD_ATMOSPHERE_PA;
-
-/// Saturation pressure in gauge terms at `temperature_k`, via the IAPWS-IF97
-/// saturation curve, in `f64` so the dense verification sweep of the
-/// temperature-dependent closure (`t_liquid_closure_max`) checks the `f32`
-/// path against a precise reference.
-fn p_v_gauge_pa_at_temperature_f64(temperature_k: f32) -> f64 {
-    let p_v_abs_pa = water_saturation_pressure_pa(temperature_k) as f64;
-    p_v_abs_pa - STANDARD_ATMOSPHERE_PA as f64
-}
 
 /// Bounded-derivative C^1 patch. A cubic Hermite cannot bridge an arbitrary
 /// `(p0, m0)` to `(p1, m1)` while keeping its derivative inside
@@ -598,7 +588,7 @@ impl CavitatingEosParams {
 
     /// Closure at a temperature: evaluates the IAPWS-IF97 saturation
     /// pressure at `temperature_k` (in `f64`, see
-    /// `p_v_gauge_pa_at_temperature_f64`) and delegates to `new`.
+    /// `water_saturation_pressure_gauge_pa_f64`) and delegates to `new`.
     pub fn at_temperature(
         rho_l_ref_kg_m3: f32,
         c_l_m_s: f32,
@@ -608,7 +598,7 @@ impl CavitatingEosParams {
         c_min_m_s: f32,
         temperature_k: f32,
     ) -> Self {
-        let p_v_gauge_pa = p_v_gauge_pa_at_temperature_f64(temperature_k) as f32;
+        let p_v_gauge_pa = water_saturation_pressure_gauge_pa_f64(temperature_k) as f32;
         Self::new(
             rho_l_ref_kg_m3,
             c_l_m_s,
@@ -897,7 +887,7 @@ fn t_liquid_closure_max(inputs: EosBranchInputs, t_min_k: f32, t_max_k: f32) -> 
         ulp_at(pressure_scale) / (c_l_m_s * c_l_m_s)
     };
     let is_valid_at = |temperature_k: f32| -> bool {
-        let p_v_gauge_pa = p_v_gauge_pa_at_temperature_f64(temperature_k) as f32;
+        let p_v_gauge_pa = water_saturation_pressure_gauge_pa_f64(temperature_k) as f32;
         match try_liquid_patch_outer_edge_kg_m3(
             rho_l_ref_kg_m3,
             c_l_m_s,
@@ -967,7 +957,7 @@ fn primitives_at_temperature(
     c_min_m_s: f32,
     temperature_k: f32,
 ) -> CavitatingEosPrimitives {
-    let p_v_gauge_pa = p_v_gauge_pa_at_temperature_f64(temperature_k) as f32;
+    let p_v_gauge_pa = water_saturation_pressure_gauge_pa_f64(temperature_k) as f32;
     let b_pa = c_l_m_s * c_l_m_s * rho_l_ref_kg_m3 / gamma_l;
     let (rho_m_plus_kg_m3, rho_m_minus_kg_m3) = solve_mixture_band(
         rho_l_ref_kg_m3,
@@ -1235,7 +1225,7 @@ impl CavitatingEosTable {
     /// path for pressure, `dp/drho` and any CFL term.
     pub fn reconstruct(&self, temperature_k: f32) -> CavitatingEosParams {
         let p = self.interpolate_primitives_at_temperature(temperature_k);
-        let p_v_gauge_pa = p_v_gauge_pa_at_temperature_f64(temperature_k) as f32;
+        let p_v_gauge_pa = water_saturation_pressure_gauge_pa_f64(temperature_k) as f32;
         let c_l2 = self.c_l_m_s * self.c_l_m_s;
         let b_pa = c_l2 * self.rho_l_ref_kg_m3 / self.gamma_l;
         let rho_m_plus_kg_m3 = p.rho_m_plus_kg_m3;
@@ -1342,7 +1332,7 @@ mod tests {
     /// `p_v_gauge_pa`.
     #[test]
     fn at_temperature_matches_new_given_the_equivalent_gauge_pressure() {
-        let p_v_gauge_pa = p_v_gauge_pa_at_temperature_f64(300.0) as f32;
+        let p_v_gauge_pa = water_saturation_pressure_gauge_pa_f64(300.0) as f32;
         let via_new = CavitatingEosParams::new(
             T_CLOSURE_RHO_L_REF_KG_M3,
             T_CLOSURE_C_L_M_S,

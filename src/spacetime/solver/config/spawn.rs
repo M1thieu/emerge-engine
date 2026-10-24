@@ -151,6 +151,22 @@ impl SpawnRegion {
         self
     }
 
+    /// The particle mass this region gives `material`'s particles when it
+    /// states none: the material's own density (`rest_density`, the grid's
+    /// mass unit per cell area) times the lattice's cell share, `spacing^2`.
+    /// `None` when the region states a mass or the material declares no
+    /// density (built from grid units: `SimConfig::grid_density` then).
+    /// The one rule every spawn path applies (`Simulation::add_body`, the
+    /// initial body, the GPU solver's `spawn_region`).
+    pub fn declared_mass(&self, material: &dyn crate::materials::MaterialModel) -> Option<f32> {
+        if self.mass_override.is_some() {
+            return None;
+        }
+        material
+            .rest_density()
+            .map(|rho| rho * self.spacing * self.spacing)
+    }
+
     /// Like `.mass()`, but derives the value from a physical-property struct and
     /// THIS region's own `spacing` (already set via `.spacing()` or the `spacing`
     /// field) -- avoids passing spacing twice, a duplication risk (see

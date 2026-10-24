@@ -10,6 +10,17 @@
 //! # Reference
 //! - Coulomb's law: E = k·q / r²
 //! - Biot-Savart law: dB = (μ₀/4π)(I dl × r̂)/r²
+//!
+//! # Known inconsistency, not reconciled
+//! Both laws above are the three-dimensional ones (fields falling as 1/r²).
+//! In two-dimensional electrodynamics, which `MagneticField` follows for the
+//! scalar out-of-plane B, a point charge's field falls as 1/r and the
+//! Biot-Savart field of a steady current as 1/r too (McDonald, "Electrodynamics
+//! in 1 and 2 Spatial Dimensions", eqs. 9 and 17-18; a 2D charge is a 3D line
+//! charge). Which applies depends on whether a particle stands for a thin slab
+//! (`SimConfig::slice_thickness_m`, 1/r² far away) or an infinitely extruded
+//! column (plane strain, 1/r). The module is not wired to particles.
+//! The magnetic force on charged matter is `fields::UniformMagneticField`.
 
 use glam::Vec2;
 

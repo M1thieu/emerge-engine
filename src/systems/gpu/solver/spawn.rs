@@ -47,8 +47,15 @@ impl GpuSimulation {
             spawn.material_id
         );
         let mut rng = LcgRng::new(spawn.rng_seed);
+        let declared = spawn.declared_mass(self.registry.get(spawn.material_id));
         let new_particles = initialize_particles(&self.config, spawn, &mut rng);
-        self.particles.extend(new_particles);
+        self.particles
+            .extend(new_particles.into_iter().map(|mut p| {
+                if let Some(mass) = declared {
+                    p.mass = mass;
+                }
+                p
+            }));
         let n = self.particles.len();
 
         // Local-only volume estimate for the new group -- only scatters/gathers near

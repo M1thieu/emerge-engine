@@ -73,6 +73,7 @@ impl CosseratConfig {
 }
 
 /// A persistent, grid-coupled Cosserat micro-rotation field.
+#[derive(Debug)]
 pub struct CosseratField {
     pub config: CosseratConfig,
     grid_res: usize,

@@ -1,11 +1,13 @@
 use glam::{Mat2, Vec2};
 
-use crate::materials::svd::svd2;
-use crate::materials::utils::{
-    MIN_J, advance_deformation_gradient, elastic_wave_dt, lame_from_young, polar_decomposition_2d,
-};
+use crate::materials::lame_parameters::lame_from_young;
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
+use crate::matter::kinematics::polar_decomposition::polar_decomposition_2d;
+use crate::matter::kinematics::volume_ratio::MIN_J;
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
+use crate::spacetime::solver::cfl::elastic_wave_dt;
+use crate::tensor_algebra::svd::svd2;
 
 /// Granular-fluid mixture: Tait EOS bulk pressure + corotated elastic deviatoric + SVD plasticity.
 ///
@@ -252,7 +254,7 @@ impl MaterialModel for GranularFluidMaterial {
         let density = (self.rest_density / j).max(1.0e-6);
         let ratio = (density / self.rest_density.max(1.0e-6)).max(1.0e-6);
         let pressure = (self.eos_stiffness
-            * (crate::materials::utils::fast_pow(ratio, self.eos_power) - 1.0))
+            * (crate::materials::equation_of_state::fast_pow(ratio, self.eos_power) - 1.0))
             .max(self.pressure_floor);
 
         let h = particles.hardening_scale[i];

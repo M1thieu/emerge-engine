@@ -126,13 +126,14 @@ fn slump(tau0: f32, floor_mu: Option<f32>, seconds: f32, dt: f32) -> Deposit {
         shear_modulus_pa: tau0 / YIELD_STRAIN,
         cavitation_pressure_pa: BinghamProps::air_entrained_cavitation_pressure(),
     };
-    // A quarter cell right of the tank's axis, so the lattice, which starts
-    // at the box's corner (issue #42), is centred ON the axis.
+    // The box on the tank's axis. This is the explicit path, whose lattice
+    // starts at the box's corner (issue #42 centres it on the precise path
+    // only), so the column's particles sit a quarter cell left of the axis.
     let axis = GRID as f32 * 0.5;
     let spawn = SpawnRegion {
         spacing: 0.5,
         box_size: COLUMN_CELLS,
-        box_center: Vec2::new(axis + 0.25, FLOOR_CELLS + COLUMN_CELLS.y as f32 * 0.5),
+        box_center: Vec2::new(axis, FLOOR_CELLS + COLUMN_CELLS.y as f32 * 0.5),
         material_id: 0,
         initial_velocity_scale: 0.0,
         ..SpawnRegion::for_sim(&config)

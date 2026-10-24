@@ -1,13 +1,16 @@
 use glam::{Mat2, Vec2};
 
-use crate::materials::physical_props::{BinghamProps, FromSI, scale_stress, scale_visc};
-use crate::materials::svd::svd2;
-use crate::materials::utils::{
-    LOG_CLAMP, MIN_J, advance_deformation_gradient, advance_log_volume_ratio, elastic_wave_dt,
-    hencky_strains, reconstruct_f,
-};
+use crate::materials::physical_props::{BinghamProps, FromSI};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
+use crate::matter::kinematics::hencky_strain::LOG_CLAMP;
+use crate::matter::kinematics::hencky_strain::hencky_strains;
+use crate::matter::kinematics::volume_ratio::MIN_J;
+use crate::matter::kinematics::volume_ratio::advance_log_volume_ratio;
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
+use crate::spacetime::solver::cfl::elastic_wave_dt;
+use crate::tensor_algebra::svd::reconstruct_f;
+use crate::tensor_algebra::svd::svd2;
 
 /// Bingham viscoplastic fluid.
 ///
@@ -231,14 +234,14 @@ impl FromSI<BinghamProps> for BinghamFluidMaterial {
         // volumetric/EOS part of a Bingham fluid same as any other weakly-compressible
         // liquid; the yield-stress physics (tau0 below) is separate and unaffected.
         const GAMMA: f32 = 7.0;
-        let visc = scale_visc(props.eta_pa_s, props.rho_kg_m3, config);
-        let tau0 = scale_stress(props.yield_stress_pa, props.rho_kg_m3, config);
+        let visc = config.visc_from_si(props.eta_pa_s);
+        let tau0 = config.stress_from_si(props.yield_stress_pa);
         // Same conversion as `tau0`, and that is not a stylistic choice:
         // the return mapping compares `2 G |dev|` against `tau_0` directly,
         // so a modulus converted through a different family would compare
         // two different units and silently move the yield point.
-        let shear_modulus = scale_stress(props.shear_modulus_pa, props.rho_kg_m3, config);
-        let eos = scale_stress(props.bulk_modulus_pa / GAMMA, props.rho_kg_m3, config);
+        let shear_modulus = config.stress_from_si(props.shear_modulus_pa);
+        let eos = config.stress_from_si(props.bulk_modulus_pa / GAMMA);
         // Density as a ratio against the scene's reference density (1.0 for a
         // fluid at that reference), as `NewtonianFluidMaterial::from_physical`
         // computes it. `scale_visc` and `scale_stress` already divide by
@@ -252,8 +255,7 @@ impl FromSI<BinghamProps> for BinghamFluidMaterial {
         // leaves this at 0.0, which says the fluid carries no tension at
         // all, and a fluid that cannot be pulled on can only gain volume:
         // see `BinghamProps::cavitation_pressure_pa`.
-        material.pressure_floor =
-            scale_stress(props.cavitation_pressure_pa, props.rho_kg_m3, config);
+        material.pressure_floor = config.stress_from_si(props.cavitation_pressure_pa);
         material
     }
 }
@@ -331,6 +333,12 @@ impl BinghamFluidMaterial {
 }
 
 impl MaterialModel for BinghamFluidMaterial {
+    /// The fluid's rest density in the grid's mass unit per cell area: a
+    /// body spawned without a stated mass takes it (`Simulation::add_body`).
+    fn rest_density(&self) -> Option<f32> {
+        Some(self.rest_density)
+    }
+
     fn constitutive_model(&self) -> ConstitutiveModel {
         ConstitutiveModel::Fluid
     }

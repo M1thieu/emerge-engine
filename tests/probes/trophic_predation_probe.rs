@@ -22,11 +22,7 @@ fn make_sim(max_substeps_per_step: usize) -> Simulation {
         max_substeps_per_step,
         ..SimConfig::standard(GRID, DT, Vec2::ZERO)
     };
-    let (lambda, mu) = config.lame_from_si(
-        BODY_YOUNG_MODULUS_PA,
-        BODY_POISSON_RATIO,
-        BODY_DENSITY_KG_M3,
-    );
+    let (lambda, mu) = config.lame_from_si(BODY_YOUNG_MODULUS_PA, BODY_POISSON_RATIO);
     println!("[trophic-probe] lambda={lambda} mu={mu}");
     const SPACING: f32 = 0.6;
     let mass_grid = (BODY_DENSITY_KG_M3 / config.reference_density_kg_m3) * SPACING * SPACING;

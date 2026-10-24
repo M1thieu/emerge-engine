@@ -5,7 +5,7 @@
 //!   tau(F) = 2*mu*(F-R)*F^T + lambda*(J-1)*J*I,  R = polar_decomposition_2d(F)
 //!
 //! The closed-form 2D polar decomposition the engine uses
-//! (`utils::polar_decomposition_2d`): R = M/||M||, M = [[x,-y],[y,x]], x = F00+F11
+//! (`matter::kinematics::polar_decomposition::polar_decomposition_2d`): R = M/||M||, M = [[x,-y],[y,x]], x = F00+F11
 //! (trace), y = F01-F10. An exact, tractable derivative (not the generic SVD-based
 //! polar-decomposition derivative of the literature, which is more complex and not
 //! what the engine implements):

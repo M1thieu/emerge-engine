@@ -38,6 +38,7 @@ impl Simulation {
             grid: Grid::new(config.grid_res),
             materials,
             friction_heat_debt: Vec::new(),
+            initial_mass_pending: None,
             boundaries: vec![default_boundary],
             boundaries_are_default: true,
             contact_grip: None,
@@ -69,6 +70,8 @@ impl Simulation {
             scratch_indices: Vec::new(),
             rods: Vec::new(),
             grain_populations: Vec::new(),
+            total_lagrangian: None,
+            total_lagrangian_outlines: Vec::new(),
         }
     }
 
@@ -84,6 +87,18 @@ impl Simulation {
         spawn.validate_for_sim(&config);
 
         let mut rng = LcgRng::new(spawn.rng_seed);
+        let outline =
+            config
+                .total_lagrangian
+                .map(|_| super::total_lagrangian_solids::SpawnedBody {
+                    outline: super::total_lagrangian_solids::spawn_outline(&spawn),
+                    material: spawn.material_id,
+                    tag: 0,
+                });
+        let initial_mass_pending = spawn
+            .mass_override
+            .is_none()
+            .then_some((spawn, spawn.material_id));
         let mut particles = Particles::from(initialize_particles(&config, spawn, &mut rng));
         let mut grid = Grid::new(config.grid_res);
         // Always, for every body: a particle's initial volume is measured
@@ -117,6 +132,7 @@ impl Simulation {
             grid,
             materials,
             friction_heat_debt: Vec::new(),
+            initial_mass_pending,
             boundaries: vec![default_boundary],
             boundaries_are_default: true,
             contact_grip: None,
@@ -148,6 +164,8 @@ impl Simulation {
             scratch_indices: Vec::new(),
             rods: Vec::new(),
             grain_populations: Vec::new(),
+            total_lagrangian: None,
+            total_lagrangian_outlines: outline.into_iter().collect(),
         };
         solver
             .spatial_hash
@@ -176,7 +194,7 @@ impl Simulation {
     /// that field is completely unaffected whether or not this is set.
     pub fn with_contact_grip(
         mut self,
-        grip: std::sync::Arc<crate::grid::DirectionalContactGrip>,
+        grip: std::sync::Arc<crate::boundary::DirectionalContactGrip>,
     ) -> Self {
         self.contact_grip = Some(grip);
         self
@@ -455,10 +473,46 @@ impl Simulation {
 
     pub fn set_default_material(&mut self, material: Box<dyn MaterialModel>) {
         self.materials.set_default(material);
+        if let Some((_, id)) = self.initial_mass_pending
+            && !self.materials.is_registered(id)
+        {
+            self.apply_declared_density();
+        }
     }
 
     pub fn set_material(&mut self, material_id: u32, material: Box<dyn MaterialModel>) {
         self.materials.insert(material_id, material);
+        if self
+            .initial_mass_pending
+            .is_some_and(|(_, id)| id == material_id)
+        {
+            self.apply_declared_density();
+        }
+    }
+
+    /// The initial body spawned without a stated mass, once its material is
+    /// known: each particle's mass from the material's own density (its
+    /// `rest_density`, in the grid's mass unit per cell area) times the
+    /// lattice's cell share, `spacing^2`. A material built from grid units
+    /// declares no density and keeps `SimConfig::grid_density`. The volume
+    /// estimate is a ratio of masses, unchanged by this; the density is
+    /// rewritten from it.
+    fn apply_declared_density(&mut self) {
+        let Some((spawn, id)) = self.initial_mass_pending else {
+            return;
+        };
+        let Some(mass) = spawn.declared_mass(self.materials.get(id)) else {
+            return;
+        };
+        self.initial_mass_pending = None;
+        for i in 0..self.particles.len() {
+            if self.particles.user_tag[i] == 0 && self.particles.material_id[i] == id {
+                self.particles.mass[i] = mass;
+                if self.particles.volume[i] > 0.0 {
+                    self.particles.density[i] = self.particles.mass[i] / self.particles.volume[i];
+                }
+            }
+        }
     }
 
     /// Replace all boundary conditions with one (backwards-compat).

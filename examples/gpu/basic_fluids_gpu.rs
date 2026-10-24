@@ -411,9 +411,7 @@ fn make_sim_data(
     // raw 1.0e-3 would be ~10x too weak here (grid value 0.01). Molecular viscosity
     // does not explain or damp the splash's C-matrix growth, even at 10x.
     const WATER_DYNAMIC_VISCOSITY_PA_S: f32 = 1.0e-3;
-    const WATER_RHO_SI_KG_M3_FOR_VISC: f32 = 1000.0;
-    let water_dynamic_viscosity =
-        config.visc_from_si(WATER_DYNAMIC_VISCOSITY_PA_S, WATER_RHO_SI_KG_M3_FOR_VISC);
+    let water_dynamic_viscosity = config.visc_from_si(WATER_DYNAMIC_VISCOSITY_PA_S);
     let mut water = NewtonianFluidMaterial::new(
         WATER_RHO_GRID,
         water_dynamic_viscosity,
@@ -440,18 +438,17 @@ fn make_sim_data(
     water.specific_heat_j_kg_k = 4182.0;
     // Cavitation floor converted to grid units. The constructor's `pressure_floor`
     // default (-0.1) is a bare grid-unit constant, never SI-converted, unlike
-    // `water_tait_b_pa` above. Water's practical cavitation onset (dissolved-gas
-    // nucleation, the standard engineering figure) is ~-0.1 MPa = -100,000 Pa
-    // gauge; through `stress_from_si` it lands far below the EOS scale, so water
+    // `water_tait_b_pa` above. Water's cavitation pressure is its vapour-pressure
+    // criterion, about -99,000 Pa gauge (`water_cavitation_pressure_pa`);
+    // through `stress_from_si` it lands far below the EOS scale, so water
     // essentially never cavitates from ordinary splashing (a 2x expansion is
     // nowhere near its tensile limit). The unconverted -0.1 clips almost the whole
     // expansion range into a zero-pressure-gradient dead zone with no restoring
     // force: the resting bulk sits at mean_J=1.5-1.9, pinned at the 2.0 clamp in
     // every depth band, against mean_J=1.00-1.03 with the converted floor over a
     // 2000-frame run.
-    const REAL_CAVITATION_PRESSURE_PA: f32 = -100_000.0;
-    const WATER_RHO_SI_KG_M3: f32 = 1000.0;
-    water.pressure_floor = config.stress_from_si(REAL_CAVITATION_PRESSURE_PA, WATER_RHO_SI_KG_M3);
+    water.pressure_floor =
+        config.stress_from_si(NewtonianFluidMaterial::water_cavitation_pressure_pa());
     // Surface tension: none (`surface_tension_coeff` stays 0.0). The exact,
     // rotation-invariant J integration removes the biased `det(I+dt*C)` update's
     // spurious `+dt^2*det(C)` expansion, which had softened the EOS in the

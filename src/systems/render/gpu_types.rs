@@ -47,6 +47,16 @@ pub struct GpuRenderParams<'a> {
     pub interp_alpha: f32,
 }
 
+impl std::fmt::Debug for GpuRenderParams<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuRenderParams")
+            .field("particle_count", &self.particle_count)
+            .field("clear", &self.clear)
+            .field("interp_alpha", &self.interp_alpha)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Bundles `render_grid_volume`'s buffer args -- same real precedent as
 /// `spacetime::transfer::P2GParticleState` (a struct instead of a suppressed
 /// argument-count lint).
@@ -61,6 +71,15 @@ pub struct GridVolumeSource<'a> {
     /// Resolution of the grid in `grid` (`SimConfig::grid_res`): the grid is
     /// `grid_res * grid_res` cells whatever the camera frames.
     pub grid_res: u32,
+}
+
+impl std::fmt::Debug for GridVolumeSource<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GridVolumeSource")
+            .field("material_mass_enabled", &self.material_mass_enabled)
+            .field("grid_res", &self.grid_res)
+            .finish_non_exhaustive()
+    }
 }
 
 #[repr(C)]
@@ -368,6 +387,18 @@ pub struct SurfaceReconstructionSource<'a> {
     pub dt: f32,
 }
 
+impl std::fmt::Debug for SurfaceReconstructionSource<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SurfaceReconstructionSource")
+            .field("particle_count", &self.particle_count)
+            .field("grid_res", &self.grid_res)
+            .field("material_slot", &self.material_slot)
+            .field("material_mass_enabled", &self.material_mass_enabled)
+            .field("dt", &self.dt)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Bundles `render_surface_reconstruction_dual_phase`'s args (see that
 /// method's doc, and `curvature_flow.wgsl`'s "two-phase extension" doc
 /// for the technique) -- two independently-smoothed surfaces sharing
@@ -384,6 +415,18 @@ pub struct DualPhaseSurfaceSource<'a> {
     /// `SurfaceReconstructionSource::dt`: this path shares the same
     /// `splat_density_main` compute shader.
     pub dt: f32,
+}
+
+impl std::fmt::Debug for DualPhaseSurfaceSource<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DualPhaseSurfaceSource")
+            .field("particle_count", &self.particle_count)
+            .field("grid_res", &self.grid_res)
+            .field("material_id_a", &self.material_id_a)
+            .field("material_id_b", &self.material_id_b)
+            .field("dt", &self.dt)
+            .finish_non_exhaustive()
+    }
 }
 
 #[repr(C)]

@@ -71,6 +71,13 @@ pub struct GpuSimulation {
     last_sim_time_dropped: f32,
     /// Frame stats readback begun at the end of the last `step_frame`.
     pending_frame_stats: Option<ReadbackResult>,
+    /// Last compute submission of the most recent `step_frame`, and of the one
+    /// before it. `step_frame` waits for the older one before encoding, so at most
+    /// two frames are ever queued on the GPU: the one it is running and the one the
+    /// CPU is encoding. Without that bound nothing ever waits when the GPU is slower
+    /// than the CPU, the queue grows by a frame every few frames, and every queued
+    /// frame keeps its command buffers and staging memory alive.
+    frame_submissions: [Option<wgpu::SubmissionIndex>; 2],
     /// One-frame-lagged max particle speed -- mirrors CPU's own
     /// `Simulation::last_max_particle_speed` exactly (same convention, same
     /// consumer: `SimConfig::fluid_near_wall_compression_mach_margin`'s
@@ -207,6 +214,18 @@ pub struct GpuSimulation {
     /// (no directional bias) -- real Coulomb friction at `config.contact_friction`,
     /// identical to every scene before this field existed until a caller opts in.
     grip_params: GpuDirectionalGripParams,
+}
+
+impl std::fmt::Debug for GpuSimulation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuSimulation")
+            .field("particle_count", &self.particle_count)
+            .field("particle_capacity", &self.particle_capacity)
+            .field("frame_index", &self.frame_index)
+            .field("readback_stride", &self.readback_stride)
+            .field("readback_error_count", &self.readback_error_count)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One [begin, end] timestamp pair per labeled compute pass in `encode_substep`, written
@@ -382,6 +401,7 @@ impl GpuSimulation {
             last_substeps: 0,
             last_sim_time_dropped: 0.0,
             pending_frame_stats: None,
+            frame_submissions: [None, None],
             last_max_particle_speed: 0.0,
             frame_index: 0,
             last_spawn_frame: 0,

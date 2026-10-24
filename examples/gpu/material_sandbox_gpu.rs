@@ -177,20 +177,16 @@ fn make_registry(config: &SimConfig) -> MaterialRegistry {
     // the same factor (10*0.1/4.0=0.25) to keep the same c2.
     let water = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
     // Stomakhin 2013 values, as basic_snow_gpu.rs.
-    let (snow_lambda, snow_mu) = config.lame_from_si(
-        SNOW_YOUNG_MODULUS_PA,
-        SNOW_POISSON_RATIO,
-        SNOW_DENSITY_KG_M3,
-    );
-    let snow = StomakhinMaterial::new(snow_lambda, snow_mu, 7.0, 0.025, 0.0075, 0.6, 20.0); // basic_snow_gpu
+    let (snow_lambda, snow_mu) = config.lame_from_si(SNOW_YOUNG_MODULUS_PA, SNOW_POISSON_RATIO);
+    let mut snow = StomakhinMaterial::new(snow_lambda, snow_mu, 7.0, 0.025, 0.0075, 0.6, 20.0); // basic_snow_gpu
+    // Its density, so painted snow weighs what snow does (`SpawnRegion::declared_mass`).
+    snow.rest_density = Some(config.density_from_si(SNOW_DENSITY_KG_M3));
     // Soft-tissue values, as basic_jellies_gpu.rs.
-    let (tissue_lambda, tissue_mu) = config.lame_from_si(
-        TISSUE_YOUNG_MODULUS_PA,
-        TISSUE_POISSON_RATIO,
-        TISSUE_DENSITY_KG_M3,
-    );
-    let tissue_visc = config.visc_from_si(TISSUE_VISCOSITY_PA_S, TISSUE_DENSITY_KG_M3);
-    let tissue = ViscoelasticMaterial::new(tissue_lambda, tissue_mu, tissue_visc); // basic_jellies_gpu
+    let (tissue_lambda, tissue_mu) =
+        config.lame_from_si(TISSUE_YOUNG_MODULUS_PA, TISSUE_POISSON_RATIO);
+    let tissue_visc = config.visc_from_si(TISSUE_VISCOSITY_PA_S);
+    let mut tissue = ViscoelasticMaterial::new(tissue_lambda, tissue_mu, tissue_visc); // basic_jellies_gpu
+    tissue.rest_density = Some(config.density_from_si(TISSUE_DENSITY_KG_M3));
     let mut reg = MaterialRegistry::with_default(Box::new(jelly));
     reg.insert(SAND_ID, Box::new(sand));
     // Positive = endothermic (melting into water absorbs energy, cools the particle).

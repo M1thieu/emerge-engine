@@ -84,6 +84,27 @@ fn orthogonal_complement(v: Vec2) -> Vec2 {
     if len > 1e-10 { perp / len } else { Vec2::X }
 }
 
+/// Rebuild a 2×2 matrix from its SVD factors and (possibly updated) singular values.
+///
+/// F = U · diag(sigma) · Vᵀ
+#[inline]
+pub(crate) fn reconstruct_f(u: Mat2, sigma: Vec2, vt: Mat2) -> Mat2 {
+    u * Mat2::from_cols(Vec2::new(sigma.x, 0.0), Vec2::new(0.0, sigma.y)) * vt
+}
+
+/// Rebuild a symmetric tensor from its principal values and the LEFT singular
+/// vectors of `F = U·Σ·Vᵀ`: τ = U · diag(τ_principal) · Uᵀ.
+///
+/// For an isotropic hyperelastic material the Kirchhoff (and Cauchy) stress is
+/// coaxial with the left stretch tensor, whose eigenvectors are U, not V
+/// (Bonet & Wood, *Nonlinear Continuum Mechanics for Finite Element Analysis*).
+/// Unlike [`reconstruct_f`], which rebuilds F itself for materials whose
+/// return mapping changes F, this rebuilds only a stress for the current F.
+#[inline]
+pub(crate) fn reconstruct_stress_from_principal(u: Mat2, tau_principal: Vec2) -> Mat2 {
+    u * Mat2::from_diagonal(tau_principal) * u.transpose()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

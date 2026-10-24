@@ -14,7 +14,7 @@
 //   │                    MaterialRegistry; granular/ groups the sand research thread)
 //   ├── forces/          Forces domain: boundary (BoundaryCondition + impls,
 //   │                    friction/ groups the Coulomb-friction family), fields
-//   │                    (Field trait + impls: gravity, Coulomb, EM, confinement, cutoff)
+//   │                    (Field trait + impls: gravity, Coulomb, EM, rotating frame, drag)
 //   ├── information/     Information domain: control (Lnn), measures (entropy/MI) [experimental]
 //   ├── energy/          Energy domain: thermodynamics (ThermalDiffusion,
 //   │                    ScalarDiffusionField), acoustics (WaveEquation2D) [experimental]
@@ -38,6 +38,7 @@ pub mod matter;
 pub mod runtime;
 pub mod spacetime;
 pub mod systems;
+pub(crate) mod tensor_algebra;
 
 // Domain folders re-export their contents at the old crate-root paths --
 // every existing internal `crate::x::` path and every LP `emerge::x::` path
@@ -73,7 +74,7 @@ pub mod prelude;
 // `use emerge::Simulation` instead of `use emerge::solver::Simulation`.
 
 // Solver core
-pub use grid::{Cell, DirectionalContactGrip, Grid};
+pub use grid::{Cell, Grid};
 pub use particle::{Particle, Particles};
 pub use solver::Simulation;
 pub use solver::config::{SimConfig, SpawnRegion, SpawnShape};
@@ -82,37 +83,38 @@ pub use solver::handle::{MaterialHandle, ParticleGroup};
 pub use solver::{BoundaryImpulseExperiment, BoundaryImpulseReport};
 
 // Materials
+pub use fields::drag::stokes_drag_rate_from_si;
 pub use materials::{
     BinghamFluidMaterial, BinghamProps, BoilingMixtureMaterial, BrittleProps, CavitatingEosParams,
     CavitatingEosTable, CavitatingFluidMaterial, CavitatingFluidMaterialParams, ConstitutiveModel,
     CorotatedMaterial, DruckerPragerMaterial, DuctileProps, Elastic, Elastoplastic, Fluid,
     FluidGranular, FromSI, GranularFluidMaterial, GranularProps, IdealGasMaterial,
     IdealGasPhysicalParams, IsothermalCavitatingFluidMaterial,
-    IsothermalCavitatingFluidMaterialParams, MAX_MATERIAL_SLOTS, MaterialModel, MaterialParams,
-    MaterialRegistry, MixturePhase, MuIRheologyMaterial, NaccMaterial, NaccMaterialParams,
-    NaccProps, NeoHookeanMaterial, NewtonianFluidMaterial, NoCompression, NoCompressionMaterial,
-    ParticleMass, PlasticityModel, Pressurized, RankineMaterial, StomakhinMaterial, Viscoelastic,
-    ViscoelasticMaterial, VonMisesMaterial, WithLatentHeat, WithLatentHeatTable, WithMixturePhase,
-    WithPreStress, gravity_to_grid, lame_from_si, lame_from_young, rankine_damage_estimate,
-    stokes_drag_rate_from_si,
+    IsothermalCavitatingFluidMaterialParams, LiquidWaterMaterial, MAX_MATERIAL_SLOTS,
+    MaterialModel, MaterialParams, MaterialRegistry, MixturePhase, MuIRheologyMaterial,
+    NaccMaterial, NaccMaterialParams, NaccProps, NeoHookeanMaterial, NewtonianFluidMaterial,
+    NoCompression, NoCompressionMaterial, ParticleMass, PlasticityModel, Pressurized,
+    RankineMaterial, StomakhinMaterial, Viscoelastic, ViscoelasticMaterial, VonMisesMaterial,
+    WithLatentHeat, WithLatentHeatTable, WithMixturePhase, WithPreStress, lame_from_young,
+    rankine_damage_estimate,
 };
+pub use solver::config::gravity_to_grid;
 
 // Boundary conditions
 pub use boundary::{
-    BoundaryCondition, FrictionBoundary, GripFrictionBoundary, HeightmapBoundary,
+    BoundaryCondition, DirectionalContactGrip, FrictionBoundary, HeightmapBoundary,
     KinematicCircleBoundary, RatchetFrictionBoundary, SlipBoundary, StaticBoxBoundary,
 };
 
 // Force fields
 pub use fields::Field;
 pub use fields::{
-    AabbConfinementField, BuoyancyField, ChemotaxisField, CoulombField, GravityWellField,
-    LinearDragField, NBodyGravityField, RadialConfinementField, SpatialDragField,
-    UniformElectricField,
+    BuoyancyField, CoriolisField, CoulombField, GravityWellField, LinearDragField,
+    NBodyGravityField, RotatingSlice, SpatialDragField, UniformElectricField, UniformMagneticField,
 };
 
 // State queries + density export for rendering
-pub use control::Lnn;
+pub use control::{ChemotaxisSensor, Lnn};
 pub use solver::body_state::BodyState;
 pub use solver::density::compute_density_grid;
 

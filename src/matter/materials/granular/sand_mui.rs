@@ -1,13 +1,16 @@
 use glam::{Mat2, Vec2};
 
-use crate::materials::physical_props::{FromSI, GranularProps, scale_lame};
-use crate::materials::svd::svd2;
-use crate::materials::utils::{
-    MIN_J, advance_deformation_gradient, corotated_elastic_stress, elastic_wave_dt, hencky_strains,
-    lame_from_young, reconstruct_f,
-};
+use crate::materials::lame_parameters::lame_from_young;
+use crate::materials::physical_props::{FromSI, GranularProps};
+use crate::materials::solid::corotated::stress::corotated_elastic_stress;
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
+use crate::matter::kinematics::hencky_strain::hencky_strains;
+use crate::matter::kinematics::volume_ratio::MIN_J;
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
+use crate::spacetime::solver::cfl::elastic_wave_dt;
+use crate::tensor_algebra::svd::reconstruct_f;
+use crate::tensor_algebra::svd::svd2;
 
 /// µ(I)-rheology sand -- rate-dependent Drucker-Prager (Cicoira et al. / matter "DPMui").
 ///
@@ -131,12 +134,7 @@ impl FromSI<GranularProps> for MuIRheologyMaterial {
     /// µ(I) friction params (µ₁, µ₂, I₀) fixed to canonical fine-sand values.
     /// Use `irl::DRY_SAND`, `irl::LOOSE_SAND`, or `irl::DENSE_SAND` as props.
     fn from_physical(props: &GranularProps, config: &crate::SimConfig) -> Self {
-        let (lambda, mu) = scale_lame(
-            props.elastic.e_pa,
-            props.elastic.nu,
-            props.elastic.rho_kg_m3,
-            config,
-        );
+        let (lambda, mu) = config.lame_from_si(props.elastic.e_pa, props.elastic.nu);
         Self {
             mu_static: props.friction_angle_deg.to_radians().tan(),
             mu_dynamic: (props.friction_angle_deg + 12.0).to_radians().tan(),

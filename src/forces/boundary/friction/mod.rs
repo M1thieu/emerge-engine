@@ -1,15 +1,14 @@
-//! Coulomb wall friction family -- three real variants sharing one base
-//! mechanism (`apply_coulomb_wall`, defined in `boundary`'s own `mod.rs`,
-//! one level up): plain friction, muscle-phase-gated grip, and directional
-//! (anisotropic) ratchet friction. `grip_friction` builds directly on
-//! `friction::FrictionBoundary`; `ratchet_friction` is an independent
-//! variant of the same base mechanism, not a further specialization of
-//! `grip_friction`.
+//! Coulomb friction family, sharing one base mechanism (`apply_coulomb_wall`
+//! and its anisotropic form `apply_anisotropic_coulomb_wall`, defined in
+//! `boundary`'s own `mod.rs`, one level up): isotropic wall friction
+//! (`FrictionBoundary`), directional friction on the floor
+//! (`RatchetFrictionBoundary`), and the same directional law for body-to-body
+//! contact (`DirectionalContactGrip`).
 
 mod base;
-mod grip_friction;
+mod directional_contact;
 mod ratchet_friction;
 
 pub use base::FrictionBoundary;
-pub use grip_friction::GripFrictionBoundary;
+pub use directional_contact::DirectionalContactGrip;
 pub use ratchet_friction::RatchetFrictionBoundary;

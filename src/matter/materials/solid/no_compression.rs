@@ -1,13 +1,14 @@
 use glam::{Mat2, Vec2};
 
-use crate::materials::physical_props::{Elastic, FromSI, scale_lame};
-use crate::materials::svd::svd2;
-use crate::materials::utils::{
-    MIN_J, advance_deformation_gradient, elastic_wave_dt, hencky_strains,
-    reconstruct_stress_from_principal,
-};
+use crate::materials::physical_props::{Elastic, FromSI};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
+use crate::matter::kinematics::hencky_strain::hencky_strains;
+use crate::matter::kinematics::volume_ratio::MIN_J;
 use crate::particle::Particles;
+use crate::spacetime::solver::cfl::elastic_wave_dt;
+use crate::tensor_algebra::svd::reconstruct_stress_from_principal;
+use crate::tensor_algebra::svd::svd2;
 
 /// No-compression (tension-only) elastic material, the dual of no-tension
 /// masonry theory, for cables, membranes, tendons and spider silk. Its
@@ -92,7 +93,7 @@ impl NoCompressionMaterial {
 
 impl FromSI<Elastic> for NoCompressionMaterial {
     fn from_physical(props: &Elastic, config: &crate::SimConfig) -> Self {
-        let (lambda, mu) = scale_lame(props.e_pa, props.nu, props.rho_kg_m3, config);
+        let (lambda, mu) = config.lame_from_si(props.e_pa, props.nu);
         Self {
             rest_density: Some(props.rho_kg_m3 / config.reference_density_kg_m3),
             ..Self::new(lambda, mu)

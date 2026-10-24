@@ -1,11 +1,13 @@
 use glam::Vec2;
 
-use super::{BoundaryCondition, position_clamp_bounds};
+use super::{BoundaryCondition, apply_coulomb_wall, position_clamp_bounds};
 
 /// Heightmap terrain boundary -- arbitrary ground profile + outer box walls.
 ///
-/// The terrain is described by `heights[x]` in grid units for each x-column.
-/// All grid cells at (x, y) with `y ≤ heights[x]` are treated as solid terrain.
+/// The terrain is described by `heights[i]`, the surface height in grid units
+/// at `x = i`, linearly interpolated in between. A grid node is solid terrain
+/// when its own position (`i + 0.5`, see `grid::kernel::quadratic_weights`)
+/// lies at or below the surface.
 ///
 /// The terrain surface normal comes from the heightmap's slope (central
 /// difference `dh/dx`), not a fixed +Y: with +Y everywhere a sloped
@@ -35,7 +37,8 @@ use super::{BoundaryCondition, position_clamp_bounds};
 pub struct HeightmapBoundary {
     /// Terrain surface height in grid cells for each x-column. Fractional values are supported.
     pub heights: Vec<f32>,
-    /// Coulomb friction coefficient on the terrain surface. 0.0 = slip, 1.0 = full friction.
+    /// Coulomb friction coefficient of the terrain surface (>= 0, 0 is
+    /// frictionless; see `FrictionBoundary::friction_coefficient`).
     pub friction: f32,
     /// Thickness of outer box walls (standard MPM boundary padding).
     pub wall_thickness: usize,
@@ -55,41 +58,10 @@ impl HeightmapBoundary {
         Self::new(vec![floor_height; grid_res], friction, 2)
     }
 
-    /// Sample the terrain height at grid column x. Clamps to array bounds.
-    #[inline]
-    fn height_at(&self, x: usize) -> f32 {
-        if self.heights.is_empty() {
-            return 0.0;
-        }
-        self.heights[x.min(self.heights.len() - 1)]
-    }
-
-    /// Returns the surface normal at column `x`, from a central-difference
-    /// slope (one-sided at the array edges). Unit length, pointing up
-    /// (positive y component).
-    #[inline]
-    fn normal_at(&self, x: usize) -> Vec2 {
-        if self.heights.len() < 2 {
-            return Vec2::Y;
-        }
-        let last = self.heights.len() - 1;
-        let slope = if x == 0 {
-            self.heights[1] - self.heights[0]
-        } else if x >= last {
-            self.heights[last] - self.heights[last - 1]
-        } else {
-            (self.heights[x + 1] - self.heights[x - 1]) * 0.5
-        };
-        // Tangent along the surface is (1, slope); the outward normal is
-        // that rotated 90 degrees CCW: (-slope, 1). For a surface rising to
-        // the right (slope > 0), this correctly tilts up-and-left, away
-        // from the uphill mass.
-        Vec2::new(-slope, 1.0).normalize()
-    }
-
     /// Returns the height at a fractional x, linearly interpolated between the
-    /// two bracketing columns. Without it a grain's contact response jumped at
-    /// every integer column, and rolling looked stair-stepped.
+    /// two bracketing columns (`heights[i]` is the surface height at `x = i`).
+    /// Without it a grain's contact response jumped at every integer column,
+    /// and rolling looked stair-stepped.
     #[inline]
     fn height_at_f32(&self, x: f32) -> f32 {
         if self.heights.is_empty() {
@@ -104,7 +76,10 @@ impl HeightmapBoundary {
     }
 
     /// Returns the normal at a fractional x, by central difference of
-    /// `height_at_f32`, so it varies smoothly with `x`.
+    /// `height_at_f32`, so it varies smoothly with `x`. The tangent along the
+    /// surface is (1, slope); the outward normal is that rotated 90 degrees
+    /// counterclockwise, (-slope, 1): a surface rising to the right tilts it
+    /// up and to the left, away from the uphill mass.
     #[inline]
     fn normal_at_f32(&self, x: f32) -> Vec2 {
         if self.heights.len() < 2 {
@@ -138,34 +113,14 @@ impl BoundaryCondition for HeightmapBoundary {
             velocity.y = velocity.y.min(0.0);
         }
 
-        // Heightmap terrain: cells at or below terrain surface.
-        let terrain_h = self.height_at(x);
-        if (y as f32) <= terrain_h {
-            let normal = self.normal_at(x);
-            let v_n = velocity.dot(normal);
-            // Block velocity moving INTO the surface along its local
-            // normal (v_n < 0), same real Coulomb-wall convention every
-            // other boundary in this engine uses -- just projected onto the
-            // correct tangent/normal frame instead of assuming horizontal/
-            // vertical.
-            if v_n < 0.0 {
-                let tangent_v = *velocity - v_n * normal;
-                *velocity = tangent_v;
-                if self.friction > 0.0 {
-                    let friction_impulse = self.friction * v_n.abs();
-                    let v_t = velocity.length();
-                    let v_t_after = (v_t - friction_impulse).max(0.0);
-                    *velocity = if v_t > friction_impulse {
-                        *velocity * (v_t_after / v_t)
-                    } else {
-                        Vec2::ZERO
-                    };
-                    // Same tangential-only accounting as `apply_coulomb_wall`
-                    // -- see that function's doc for why the normal part of
-                    // the correction is deliberately not reported as heat.
-                    return 0.5 * (v_t * v_t - v_t_after * v_t_after);
-                }
-            }
+        // Terrain: a grid node is solid when its own position, `i + 0.5`
+        // (`grid::kernel::quadratic_weights`), lies at or below the surface
+        // there. The same Coulomb wall as every other boundary, in the
+        // surface's local normal/tangent frame.
+        let node_x = x as f32 + 0.5;
+        let node_y = y as f32 + 0.5;
+        if node_y <= self.height_at_f32(node_x) {
+            return apply_coulomb_wall(velocity, self.normal_at_f32(node_x), self.friction);
         }
         0.0
     }
@@ -175,15 +130,14 @@ impl BoundaryCondition for HeightmapBoundary {
         let (wall_min, wall_max) = position_clamp_bounds(self.wall_thickness, grid_res);
         let mut pos = position.clamp(Vec2::splat(wall_min), Vec2::splat(wall_max));
 
-        // Terrain: push particles above the surface. Keeps the per-column
-        // lookup, not `height_at_f32`: the continuous one here froze a grain
-        // that rolled down a slope. A last-resort domain clamp; the physics
-        // is in `apply_to_grid_velocity` and `grain_contact`, which use the
-        // continuous lookup.
-        let x_col = (pos.x as usize).min(grid_res.saturating_sub(1));
-        let terrain_h = self.height_at(x_col);
-        if pos.y < terrain_h + 1.0 {
-            pos.y = terrain_h + 1.0;
+        // Terrain: the same last-resort rule as the outer walls
+        // (`position_clamp_bounds`: one cell past the wall plane), measured
+        // from the surface under the particle. The physics is in
+        // `apply_to_grid_velocity`; a particle the grid condition holds never
+        // reaches this depth. Grains use `clamp_grain_position` instead.
+        let deepest = self.height_at_f32(pos.x) - 1.0;
+        if pos.y < deepest {
+            pos.y = deepest;
         }
 
         pos
@@ -249,7 +203,7 @@ mod tests {
     fn flat_floor_normal_is_exactly_up_everywhere() {
         let b = HeightmapBoundary::flat_floor(20, 3.0, 0.4);
         for x in 0..20 {
-            let n = b.normal_at(x);
+            let n = b.normal_at_f32(x as f32 + 0.5);
             assert!(
                 (n - Vec2::Y).length() < 1e-6,
                 "flat floor should have normal=(0,1) at every column, got {n:?} at x={x}"
@@ -257,16 +211,34 @@ mod tests {
         }
     }
 
+    /// A grid node is terrain when its own position `i + 0.5` lies at or
+    /// below the surface: with the floor at y = 3, node row 2 (at 2.5) is
+    /// solid and node row 3 (at 3.5) is open air.
+    #[test]
+    fn terrain_nodes_are_tested_at_their_physical_position() {
+        let grid_res = 32usize;
+        let b = HeightmapBoundary::flat_floor(grid_res, 3.0, 0.0);
+        let falling = Vec2::new(0.0, -1.0);
+
+        let mut below = falling;
+        b.apply_to_grid_velocity(10 * grid_res + 2, grid_res, &mut below);
+        assert_eq!(below, Vec2::ZERO, "node at y = 2.5 is inside the floor");
+
+        let mut above = falling;
+        b.apply_to_grid_velocity(10 * grid_res + 3, grid_res, &mut above);
+        assert_eq!(above, falling, "node at y = 3.5 is above the floor");
+    }
+
     /// A sloped heightmap gives a tilted normal, so the downhill component of
     /// gravity accelerates a resting body; a vertical normal cancels all of
     /// it.
     #[test]
     fn sloped_heightmap_normal_is_tilted_and_lets_gravity_drive_motion_downhill() {
-        // A real 30-degree-ish rise: height increases by 1.0 per column.
+        // A 45-degree rise: height increases by 1.0 per column.
         let heights: Vec<f32> = (0..40).map(|x| 2.0 + x as f32).collect();
         let b = HeightmapBoundary::new(heights, 0.2, 2);
 
-        let n = b.normal_at(20);
+        let n = b.normal_at_f32(20.5);
         assert!(
             (n.length() - 1.0).abs() < 1e-5,
             "normal must stay unit length, got {n:?}"
@@ -284,9 +256,9 @@ mod tests {
         let mut v = gravity_dt;
         // cell_index = x*grid_res + y, as in `apply_to_grid_velocity`.
         let grid_res = 64usize;
-        let x = 20usize;
-        let y = b.height_at(x) as usize; // exactly on the surface
-        let cell_index = x * grid_res + y;
+        // Node (20, 22) sits at (20.5, 22.5), exactly on the surface there
+        // (h(20.5) = 2 + 20.5).
+        let cell_index = 20 * grid_res + 22;
         b.apply_to_grid_velocity(cell_index, grid_res, &mut v);
         assert!(
             v.length() > 1e-4,

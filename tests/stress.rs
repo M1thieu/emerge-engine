@@ -8,7 +8,7 @@
 extern crate emerge_engine as emerge;
 
 use emerge::diagnostics::DiagnosticsRegistry;
-use emerge::fields::RadialConfinementField;
+use emerge::fields::GravityWellField;
 use emerge::{
     DruckerPragerMaterial, FrictionBoundary, HeightmapBoundary, NeoHookeanMaterial, SimConfig,
     Simulation, SlipBoundary, SpawnRegion, lame_from_young,
@@ -219,8 +219,9 @@ fn material_count_stress() {
 
 // ── force_field_count_stress (correctness companion to benches::force_field_scaling) ────────
 //
-// Up to 16 simultaneous RadialConfinementField instances (mirrors GPU MAX_FORCE_FIELDS).
-// Asserts particles stay finite and confined to within each field's strictest radius.
+// 16 simultaneous GravityWellField instances (mirrors GPU MAX_FORCE_FIELDS), one per
+// compass direction around the body. Asserts particles stay finite and stable under
+// 16 field evaluations per particle per substep.
 
 #[test]
 fn force_field_count_stress() {
@@ -233,24 +234,14 @@ fn force_field_count_stress() {
         .with_boundary(Box::new(SlipBoundary::new(2)));
 
     const N_FIELDS: usize = 16;
-    const RADIUS: f32 = 12.0;
-    for _ in 0..N_FIELDS {
-        sim.add_force_field(Box::new(RadialConfinementField::new(center, RADIUS, 200.0)));
+    for k in 0..N_FIELDS {
+        let angle = k as f32 * std::f32::consts::TAU / N_FIELDS as f32;
+        let source = center + 12.0 * Vec2::new(angle.cos(), angle.sin());
+        sim.add_force_field(Box::new(GravityWellField::point(source, 1.0, 1.0, 1.0)));
     }
 
     sim.step_n(30);
     assert_all_finite_and_stable(&sim, "force_field_count_stress");
-
-    // All 16 fields confine to the same radius+margin -- particles should not have escaped
-    // far beyond it despite 16x the confinement evaluations per substep.
-    let max_allowed = RADIUS * 1.5;
-    for (i, p) in sim.particles().iter().enumerate() {
-        let dist = (p.x - center).length();
-        assert!(
-            dist <= max_allowed,
-            "force_field_count_stress: particle {i} escaped confinement, dist={dist}"
-        );
-    }
 }
 
 // ── sand_count_stress (granular plasticity under multi-material load) ───────────────────────

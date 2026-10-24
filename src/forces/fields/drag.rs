@@ -11,13 +11,12 @@
 //! # Physics
 //! Linear drag toward a target velocity: **a = k·(v_target − v_particle)**
 //!
-//! This is the same mathematical form as two independently-established real techniques:
-//! Stokes drag (`F = -b·(v - v_ambient)`, the textbook low-Reynolds-number linear drag law
-//! for a particle in a flow) and Rayleigh friction / Newtonian relaxation (used in real
-//! atmospheric/ocean models to represent large-scale boundary-layer forcing -- a velocity
-//! field relaxes toward a target on a damping timescale `1/k`). Real aeolian sand-transport
-//! literature confirms a wind-blown grain's actual equation of motion is exactly gravity
-//! plus a drag term depending on `(wind velocity − grain velocity)` -- the same formula.
+//! This is the form of Stokes drag on a small sphere at low Reynolds number,
+//! `F = -6 pi mu r (v - v_ambient)` (`stokes_drag_rate_from_si`), the
+//! drag term of the Maxey-Riley equation for an inertial particle in a flow
+//! (Farazmand & Haller 2015, arXiv:1310.2450, eq. 1). That equation has more
+//! terms (fluid acceleration, added mass, buoyancy, history); this field keeps
+//! the drag alone.
 //!
 //! `drag_coefficient` (`k`, units 1/time) sets the relaxation rate: a particle's velocity
 //! decays toward `target_velocity` as `v(t) = target + (v0 − target)·exp(−k·t)` with no
@@ -36,6 +35,7 @@ use crate::fields::{Field, GrainField};
 use crate::particle::{Grain, Particles};
 
 /// Linear-drag acceleration toward a target/ambient flow velocity, masked by material.
+#[derive(Debug)]
 pub struct LinearDragField {
     /// Target/ambient flow velocity in grid-units/time -- the velocity a masked particle's
     /// own velocity relaxes toward. Downstream direction for a river; wind direction for a
@@ -44,8 +44,9 @@ pub struct LinearDragField {
 
     /// Drag/relaxation rate `k` in 1/time. Larger = faster relaxation toward
     /// `target_velocity` (stiffer coupling to the ambient flow). The velocity-decay
-    /// timescale is `1/k`. Real dry-sand-in-wind and open-channel-flow scenes: start
-    /// around 0.5–5.0 and tune against the scene's own gravity/material stiffness.
+    /// timescale is `1/k`. For a small sphere at low Reynolds number this is the
+    /// Stokes rate `6 pi mu r / m` (`stokes_drag_rate_from_si`); for
+    /// anything else the caller supplies it and states where it comes from.
     pub drag_coefficient: f32,
 
     /// Bitmask over `material_id` (`1 << material_id`) selecting which particles feel this
@@ -101,6 +102,7 @@ impl GrainField for LinearDragField {
 /// stream + doublet superposition -- Anderson-style fluid dynamics, confirmed against
 /// MIT 16.unified fluid mechanics lecture notes and Caltech's "An Internet Book on Fluid
 /// Dynamics," not invented), not a procedural/noise-based approximation.
+#[derive(Debug)]
 pub struct SpatialDragField {
     /// Position-dependent target flow velocity, evaluated at the particle's own
     /// `x` each substep. A pure function of position -- no time-dependence, no captured
@@ -140,6 +142,25 @@ impl Field for SpatialDragField {
         let target = (self.target_velocity_fn)(particles.x[i]);
         self.drag_coefficient * (target - particles.v[i])
     }
+}
+
+/// Single-sphere Stokes drag rate (Stokes 1851) for
+/// `LinearDragField::drag_coefficient` (1/s, the solver's own time unit):
+/// `F = 6 pi mu r v` gives `dv/dt = -(6 pi mu r / m) v`.
+///
+/// Only valid at low Reynolds number (`Re = rho_air v 2r / mu <~ 1`), e.g.
+/// fine dust or sand grains in a gentle wind. A 1 cm ball at 1 m/s sits at
+/// `Re ~ 2000-3000`, where drag is quadratic (form drag), not this.
+///
+/// # Example -- fine dust grain in air (r=50 micron, m=6.5e-10 kg, 20 C air)
+/// ```rust,no_run
+/// # extern crate emerge_engine as emerge;
+/// use emerge::fields::drag::stokes_drag_rate_from_si;
+/// let k = stokes_drag_rate_from_si(5.0e-5, 6.5e-10, 1.81e-5);
+/// # let _ = k;
+/// ```
+pub fn stokes_drag_rate_from_si(radius_m: f32, mass_kg: f32, dynamic_viscosity_pa_s: f32) -> f32 {
+    6.0 * std::f32::consts::PI * dynamic_viscosity_pa_s * radius_m / mass_kg
 }
 
 #[cfg(test)]

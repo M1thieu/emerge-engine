@@ -3,7 +3,9 @@
 //!
 //! `control` -- `Lnn` (Liquid Time-constant Network locomotion controller): a
 //! genome/weights IS information, and this is an in-world decision-making
-//! system. `measures` [feature = "experimental"] -- O(N) entropy
+//! system. `ChemotaxisSensor`: sensing a chemical gradient and the Keller-Segel
+//! drift velocity it calls for; it moves nothing itself (an organism moves by
+//! its own muscles, in `matter`). `measures` [feature = "experimental"] -- O(N) entropy
 //! (spatial/kinetic/phase), local mutual information, KL divergence:
 //! literally information theory applied to real simulated quantities.
 //!

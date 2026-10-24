@@ -16,7 +16,7 @@ use super::Particle;
 ///
 /// # Invariant
 /// All vecs have the same length at all times. Methods panic on out-of-bounds.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Particles {
     // ── Kinematics -- hot (read every substep) ────────────────────────────────
     pub x: Vec<Vec2>,
@@ -96,16 +96,15 @@ pub struct Particles {
 }
 
 /// Per-particle mutable view into one particle's warm state, used by
-/// `MaterialModel::update_particle` and `BoundaryCondition::post_g2p_particle`.
-/// Exists so G2P's per-particle plasticity/boundary pass can run in parallel
+/// `MaterialModel::update_particle`.
+/// Exists so G2P's per-particle plasticity pass can run in parallel
 /// across particles (rayon) instead of needing `&mut Particles` (the whole
 /// SoA struct) one particle at a time -- every field here is disjoint-borrowed
 /// straight out of `Particles`' own separate `Vec<T>` fields (real struct-of-
 /// arrays, not just in name), so the borrow checker can prove two different
 /// particles' contexts never alias, even built concurrently on different
-/// threads. Covers exactly the fields every material's `update_particle` (and
-/// `GripFrictionBoundary`'s `post_g2p_particle`) actually touches -- verified
-/// by grepping every implementation, not guessed.
+/// threads. Covers the fields the materials' `update_particle` touches.
+#[derive(Debug)]
 pub struct ParticleUpdateCtx<'a> {
     pub x: &'a mut Vec2,
     pub v: &'a mut Vec2,
@@ -506,6 +505,7 @@ impl Default for Particles {
 /// Lazy iterator over [`Particle`] views from a borrowed [`Particles`] store.
 ///
 /// Constructs each `Particle` on demand from SoA storage -- no upfront allocation.
+#[derive(Debug)]
 pub struct ParticlesIter<'a> {
     particles: &'a Particles,
     index: usize,

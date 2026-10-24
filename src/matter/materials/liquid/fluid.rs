@@ -1,9 +1,11 @@
 use glam::{Mat2, Vec2};
 
-use crate::materials::physical_props::{FromSI, NewtonianFluid, scale_stress, scale_visc};
-use crate::materials::utils::{advance_log_volume_ratio, von_neumann_richtmyer_q};
+use crate::energy::thermodynamics::water_saturation::water_saturation_pressure_gauge_pa_f64;
+use crate::materials::physical_props::{FromSI, NewtonianFluid};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::volume_ratio::advance_log_volume_ratio;
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
+use crate::spacetime::artificial_viscosity::von_neumann_richtmyer_q;
 
 /// Current volume ratio `J = V/V0` from the material's own conserved volume
 /// state (not a kernel-density gather, which is free-surface biased).
@@ -55,7 +57,7 @@ pub(crate) fn artificial_bulk_viscosity(
     let density_ratio = 1.0 / j;
     let c2 = eos_stiffness
         * eos_power
-        * crate::materials::utils::fast_pow(density_ratio, eos_power - 1.0)
+        * crate::materials::equation_of_state::fast_pow(density_ratio, eos_power - 1.0)
         / rest_density;
     let c_sound = c2.max(0.0).sqrt();
     von_neumann_richtmyer_q(rest_density, j, div_v, grid_cell_size, c_sound, eos_power)
@@ -189,8 +191,62 @@ impl NewtonianFluidMaterial {
         // constant. This constructor keeps stress raw SI (see above), so the
         // cavitation pressure stays raw SI Pa too; `scale_stress` would
         // convert it twice.
-        material.pressure_floor = -100_000.0; // real dissolved-gas cavitation onset, Pa gauge
+        material.pressure_floor = Self::water_cavitation_pressure_pa();
         material
+    }
+
+    /// Temperature `[K]` the engine's water coefficients are stated at,
+    /// 20 C: `low_viscosity`'s 1.0e-3 Pa s ("water at 20 C") and
+    /// `granular::sand::WATER_SURFACE_TENSION_N_M` (IAPWS R1-76(2014) at
+    /// 20 C). A declared state, not a measurement. Over 0 to 30 C the
+    /// cavitation pressure it selects runs from -100.7 to -97.1 kPa
+    /// (IAPWS-IF97), so the choice moves it by under 4 percent.
+    ///
+    /// Open gap, stated: the floor is one number per material, evaluated
+    /// here, not at each particle's own `temperature`. Removal criterion:
+    /// evaluate it per particle once the Newtonian path carries a
+    /// temperature every spawn sets (`Particle::temperature` defaults to 0).
+    pub const WATER_REFERENCE_TEMPERATURE_K: f32 = 293.15;
+
+    /// Gauge pressure `[Pa, SI]` below which ordinary water stops carrying
+    /// tension: the vapour-pressure criterion, `p_sat(T) - p_atm`
+    /// (`water_saturation_pressure_gauge_pa_f64`) at
+    /// `WATER_REFERENCE_TEMPERATURE_K`. About -98,986 Pa.
+    ///
+    /// Why this law. Brennen, "Cavitation and Bubble Dynamics" (Oxford
+    /// University Press, 1995), section 1.5, defines cavitation as rupture
+    /// when the pressure falls below the vapour pressure, the tension
+    /// being `p_V - p`. Section 1.13, Eq. 1.15, is the criterion itself:
+    /// in a liquid that "cannot withstand any tension and in which vapor
+    /// bubbles appear instantaneously when p reaches p_V", inception sits
+    /// at `p = p_V`. Section 1.6: in water, air microbubbles "seem to
+    /// persist almost indefinitely and are almost impossible to remove
+    /// completely", and "their presence dominates most engineering
+    /// applications". Caupin and Herbert, "Cavitation in water: a review",
+    /// C. R. Physique 7 (2006) 1000-1017, section 4.2: in a Venturi tube
+    /// "the bubbles appear close to the saturated vapor pressure because of
+    /// the air occluded in water"; section 4.7: most acoustic experiments
+    /// cavitate between +0.1 and -1 MPa (absolute) "because of the presence
+    /// of cavitation nuclei".
+    ///
+    /// What it leaves out, and in which direction. A clean liquid holds
+    /// tension below `p_V`: 2S/R for a vapour nucleus of radius R (Brennen
+    /// Eq. 1.4), 4S/3R for a nucleus holding a fixed mass of gas (the Blake
+    /// critical tension, Brennen section 2.5), and about -25 MPa absolute
+    /// for ultrapure water (Caupin and Herbert, section 5). No measured
+    /// nucleus radius stands for "ordinary water": Brennen section 1.11
+    /// reports a size distribution (number density roughly proportional to
+    /// R^-4 above 5 micrometres), so no tension below `p_V` is credited.
+    /// That is the shallow side: Galloway's air-saturated distilled water
+    /// held -0.1 MPa absolute at 22 C (Caupin and Herbert, section 4.7),
+    /// about 0.1 MPa below this floor.
+    ///
+    /// Every liquid built through `FromSI<NewtonianFluid>` gets this value,
+    /// because the engine holds a saturation curve for water only. For any
+    /// other liquid it is water's figure borrowed, a declared gap. Removal
+    /// criterion: a sourced vapour-pressure law for that liquid.
+    pub fn water_cavitation_pressure_pa() -> f32 {
+        water_saturation_pressure_gauge_pa_f64(Self::WATER_REFERENCE_TEMPERATURE_K) as f32
     }
 }
 
@@ -201,8 +257,8 @@ impl FromSI<NewtonianFluid> for NewtonianFluidMaterial {
         // Tait EOS polytropic exponent for water -- Cole 1948, "Underwater Explosions";
         // standard in SPH/MPM weakly-compressible fluid solvers (Monaghan 1994).
         const GAMMA: f32 = 7.0;
-        let visc = scale_visc(props.eta_pa_s, props.rho_kg_m3, config);
-        let eos = scale_stress(props.bulk_modulus_pa / GAMMA, props.rho_kg_m3, config);
+        let visc = config.visc_from_si(props.eta_pa_s);
+        let eos = config.stress_from_si(props.bulk_modulus_pa / GAMMA);
         // rest_density must be in the SAME units `particles.density[i]` actually
         // comes out in. A particle spawned at `spacing` carries
         // `grid_density * spacing^2` of mass in a `spacing^2` cell area, so the
@@ -218,19 +274,21 @@ impl FromSI<NewtonianFluid> for NewtonianFluidMaterial {
         let rho_grid = props.rho_kg_m3 / config.reference_density_kg_m3;
         let mut material = Self::new(rho_grid, visc, eos, GAMMA);
         // `Self::new`'s `pressure_floor: -0.1` is an unconverted grid-unit
-        // constant. Water's cavitation onset in practice (dissolved-gas
-        // nucleation, the engineering figure, not the higher degassed lab
-        // value) is ~-100,000 Pa gauge, converted through the same
-        // `scale_stress`/`stress_from_si` as `eos`, at this material's own
-        // `props.rho_kg_m3`.
-        const REAL_CAVITATION_PRESSURE_PA: f32 = -100_000.0;
-        material.pressure_floor =
-            scale_stress(REAL_CAVITATION_PRESSURE_PA, props.rho_kg_m3, config);
+        // constant. The tension limit is water's vapour-pressure criterion
+        // (`water_cavitation_pressure_pa`, which says why and what it leaves
+        // out), converted through the same `stress_from_si` as `eos`.
+        material.pressure_floor = config.stress_from_si(Self::water_cavitation_pressure_pa());
         material
     }
 }
 
 impl MaterialModel for NewtonianFluidMaterial {
+    /// The fluid's rest density in the grid's mass unit per cell area: a
+    /// body spawned without a stated mass takes it (`Simulation::add_body`).
+    fn rest_density(&self) -> Option<f32> {
+        Some(self.rest_density)
+    }
+
     fn constitutive_model(&self) -> ConstitutiveModel {
         ConstitutiveModel::Fluid
     }
@@ -538,21 +596,48 @@ mod si_construction_tests {
         assert!((material.eos_stiffness - (1000.0 * 20.0 * 20.0 / 7.0)).abs() < 1.0e-3);
     }
 
-    /// Both SI construction paths carry a converted cavitation pressure
-    /// (~-100,000 Pa gauge, dissolved-gas nucleation onset) by default instead
-    /// of `Self::new`'s unconverted grid-unit `-0.1`, each in its own unit
-    /// convention (`weakly_compressible` raw SI; `from_physical` through
-    /// `scale_stress`, like its `eos_stiffness`).
+    /// The cavitation pressure is the vapour-pressure criterion in gauge
+    /// terms, `p_sat(T) - p_atm` at 20 C. Reference, evaluated outside the
+    /// engine in double precision from the IAPWS-IF97 Region 4 equation
+    /// (R7-97(2012), Eq. 30, Table 34): `p_sat(293.15 K) = 2339.2148 Pa`
+    /// (steam tables give 2339 Pa, see `water_saturation`'s own test), so
+    /// the floor is `2339.2148 - 101325 = -98985.785 Pa`. The 0.05 Pa
+    /// tolerance covers `f32` rounding at this magnitude (one ulp near 1e5
+    /// is 0.0078 Pa) and the `f32` evaluation of `p_sat`.
+    #[test]
+    fn water_cavitation_pressure_is_the_vapour_pressure_criterion_at_20_c() {
+        let floor = NewtonianFluidMaterial::water_cavitation_pressure_pa();
+        const REFERENCE_FLOOR_PA: f64 = -98_985.785;
+        assert!(
+            (f64::from(floor) - REFERENCE_FLOOR_PA).abs() < 0.05,
+            "water_cavitation_pressure_pa = {floor} Pa, expected p_sat(293.15 K) - \
+             p_atm = -98985.785 Pa"
+        );
+        let from_parts =
+            crate::energy::thermodynamics::water_saturation::water_saturation_pressure_pa(
+                NewtonianFluidMaterial::WATER_REFERENCE_TEMPERATURE_K,
+            ) - crate::matter::materials::gas::STANDARD_ATMOSPHERE_PA;
+        assert!(
+            (floor - from_parts).abs() <= 0.0079,
+            "floor {floor} must equal p_sat - p_atm built from its two parts, {from_parts}"
+        );
+    }
+
+    /// Both SI construction paths carry the converted cavitation pressure
+    /// (`water_cavitation_pressure_pa`) by default instead of `Self::new`'s
+    /// unconverted grid-unit `-0.1`, each in its own unit convention
+    /// (`weakly_compressible` raw SI; `from_physical` through
+    /// `stress_from_si`, like its `eos_stiffness`).
     #[test]
     fn si_constructors_convert_pressure_floor_not_just_stiffness() {
         let cfg = crate::SimConfig::earth(32, 0.01, 0.1);
+        let floor_si_pa = NewtonianFluidMaterial::water_cavitation_pressure_pa();
 
         let wc = NewtonianFluidMaterial::weakly_compressible(1000.0, 1.0e-3, 20.0, &cfg);
-        assert!(
-            (wc.pressure_floor - (-100_000.0)).abs() < 1.0e-3,
-            "weakly_compressible: pressure_floor={} -- expected raw SI -100000.0 Pa, \
-             not the unconverted default -0.1",
-            wc.pressure_floor
+        assert_eq!(
+            wc.pressure_floor, floor_si_pa,
+            "weakly_compressible: pressure_floor must be the raw SI cavitation \
+             pressure, not the unconverted default -0.1"
         );
 
         let props = NewtonianFluid {
@@ -561,13 +646,14 @@ mod si_construction_tests {
             bulk_modulus_pa: 1000.0 * 20.0 * 20.0,
         };
         let si = NewtonianFluidMaterial::from_physical(&props, &cfg);
-        let expected = cfg.stress_from_si(-100_000.0, props.rho_kg_m3);
-        assert!(
-            (si.pressure_floor - expected).abs() < 1.0e-6,
-            "from_physical: pressure_floor={} -- expected {expected} (real cavitation \
-             pressure through the same scale_stress conversion eos_stiffness uses), not \
-             the unconverted default -0.1",
-            si.pressure_floor
+        // `stress_from_si` divides by `grid_mass_unit_kg_per_m()`; the
+        // reference is that division written out.
+        let expected = floor_si_pa / cfg.grid_mass_unit_kg_per_m();
+        assert_eq!(
+            si.pressure_floor, expected,
+            "from_physical: pressure_floor must be the cavitation pressure through \
+             the same stress_from_si conversion eos_stiffness uses, not the \
+             unconverted default -0.1"
         );
         assert_ne!(
             si.pressure_floor, -0.1,

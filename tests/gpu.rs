@@ -142,9 +142,22 @@ mod gpu_tests {
     /// `particles_knn` (see `Simulation::particles_knn`, CPU side, for the full
     /// rationale -- a topological neighbor rule, Ballerini et al. 2008)
     /// mirrored on the GPU backend must match a brute-force k-nearest scan.
-    /// Query point is off either disk's own center so no two particles land at
-    /// the exact same distance (a tie right at the k-th cutoff is
-    /// ambiguous, not a bug -- see the CPU-side test's own note).
+    ///
+    /// Compared tie-invariantly: the two disks overlap and both lay their
+    /// particles on the same lattice (the explicit path's `min + k s`, 5.0 +
+    /// 0.5 k and 9.0 + 0.5 k, exact in `f32`, no jitter), so the overlap holds
+    /// pairs of particles at identical positions, at identical distances from
+    /// any query. Measured while the spawn still centred this lattice
+    /// (`min + s/2 + k s`, 5.25 + 0.5 k and 9.25 + 0.5 k; issue #42 now
+    /// centres it on the precise path only): the nearest squared distances
+    /// 0.0193, 0.1493, 0.1993 and 0.3293 were each such a pair, so the 7th and
+    /// 8th nearest tied exactly and which of the two is "the" 7th was not
+    /// defined (the GPU kept particle 420, the scan 266, at the same point).
+    /// The tie holds on either lattice; the values are not re-measured on
+    /// this one. Asserted: `k`
+    /// particles, every one no farther than the scan's k-th distance, and
+    /// every particle strictly closer than it among them; distances are
+    /// recomputed here by the scan's own arithmetic.
     #[test]
     fn gpu_particles_knn_matches_brute_force_scan() {
         if !gpu_available() {
@@ -168,15 +181,30 @@ mod gpu_tests {
             .map(|(i, p)| (i, (p.x - center).length_squared()))
             .collect();
         brute.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        let mut expected: Vec<usize> = brute.into_iter().take(k).map(|(i, _)| i).collect();
-        expected.sort_unstable();
+        let kth = brute[k - 1].1;
+        let distance = |i: usize| (solver.particles()[i].x - center).length_squared();
 
         let mut got = solver.particles_knn(center, k);
         got.sort_unstable();
+        got.dedup();
         assert_eq!(
-            got, expected,
-            "particles_knn must match a brute-force k-nearest scan (same particle set)"
+            got.len(),
+            k,
+            "particles_knn must return k distinct particles"
         );
+        for &i in &got {
+            assert!(
+                distance(i) <= kth,
+                "particle {i} at {} is farther than the k-th nearest, {kth}",
+                distance(i)
+            );
+        }
+        for &(i, d) in brute.iter().take_while(|(_, d)| *d < kth) {
+            assert!(
+                got.contains(&i),
+                "particle {i} at {d}, strictly closer than the k-th nearest {kth}, is missing"
+            );
+        }
     }
 
     #[test]
@@ -5085,6 +5113,63 @@ mod gpu_tests {
         eprintln!(
             "overall max speed observed over 600 steps (sand): {:.3}",
             max_speed_ever
+        );
+    }
+
+    /// `step_frame` never blocks on its own, so when the GPU is slower than the CPU
+    /// nothing used to stop frames queueing without limit: on the scene above
+    /// (integrated AMD, Vulkan) this test measured the GPU 44 to 46 frames behind
+    /// after 600 frames, and a 20,000-frame run 524 behind, holding about 11 MB per
+    /// queued frame, the growth that ended in command encoding running out of
+    /// memory under load. `step_frame` now waits for the frame before last
+    /// before encoding. The bound checked here follows from that wait: when frame
+    /// `n` returns, the compute of frame `n - 2` is done, and everything submitted
+    /// up to frame `n - 3`'s end precedes it in queue order, so a work-done marker
+    /// queued after each frame lags at most 3 frames. A GPU faster than the CPU
+    /// never gets near the bound either way.
+    #[test]
+    fn gpu_frames_queued_ahead_of_the_device_stay_bounded() {
+        if !gpu_available() {
+            return;
+        }
+        const GRID: usize = 64;
+        let config = SimConfig {
+            boundary_thickness: 3,
+            max_substeps_per_step: 12,
+            gravity: Vec2::new(0.0, -0.3),
+            ..SimConfig::earth(GRID, 0.01, 0.1)
+        };
+        let spawn = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(18, 14),
+            box_center: Vec2::new(17.0, 40.0),
+            material_id: 0,
+            rng_seed: 11,
+            position_jitter: 0.5,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let particles = build_particles(&config, spawn);
+        let mut sand = DruckerPragerMaterial::new(2000.0, 3000.0);
+        sand.friction_angle = 20.0f32.to_radians();
+        let registry = MaterialRegistry::with_default(Box::new(sand));
+        let mut sim = block_on(GpuSimulation::new(config, particles, registry));
+        let queue = sim.queue().clone();
+
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut max_lag = 0usize;
+        for frame in 1..=600usize {
+            sim.step_frame();
+            let marker = done.clone();
+            queue.on_submitted_work_done(move || {
+                marker.fetch_max(frame, std::sync::atomic::Ordering::SeqCst);
+            });
+            max_lag = max_lag.max(frame - done.load(std::sync::atomic::Ordering::SeqCst));
+        }
+        eprintln!("frames queued ahead of the device, max over 600 frames: {max_lag}");
+        assert!(
+            max_lag <= 3,
+            "the GPU fell {max_lag} frames behind step_frame; the frame-before-last \
+             wait bounds it at 3"
         );
     }
 

@@ -1,25 +1,41 @@
-//! Boundary conditions: the `BoundaryCondition` trait plus 7 real models.
-//! The 3 Coulomb-friction variants (plain/grip/ratchet) are a tightly
-//! related family -- grouped under `friction/` (see that module's doc);
+//! Boundary conditions: the `BoundaryCondition` trait plus 6 models.
+//! The 2 Coulomb-friction walls (isotropic and directional) are grouped
+//! under `friction/` with the directional law for body-to-body contact
+//! (`DirectionalContactGrip`), see that module's doc;
 //! `heightmap`/`kinematic_obstacle`/`slip`/`static_box` are each
 //! standalone, one file apiece.
+//! `signorini_coulomb` states the contact law itself (push but never
+//! pull, Coulomb friction) for the solvers that enforce it on their own
+//! unknowns.
+//!
+//! Every wall acts at the grid nodes it contains; grid node `i` sits at
+//! `i + 0.5` (`grid::kernel::quadratic_weights`).
 //!
 //! Shared helpers (`apply_coulomb_wall`, `apply_slip_wall_velocity`,
-//! `apply_sealed_wall_velocity`, `clamp_position_inside_grid`) and their
-//! direct unit tests live here,
+//! `apply_sealed_wall_velocity`, `clamp_position_inside_grid`,
+//! `assert_friction_coefficient`) and their direct unit tests live here,
 //! since they're shared math, not any one model's own logic.
 
 use glam::Vec2;
 
-use crate::particle::ParticleUpdateCtx;
+/// Walls on the domain's four sides, as the contact law sees them: planes
+/// `thickness` cells in from each edge (where every outer wall's plane
+/// sits, `position_clamp_bounds`), matter pushed but never pulled, and
+/// Coulomb's coefficient along them (`signorini_coulomb`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DomainWalls {
+    pub thickness: usize,
+    pub friction: f32,
+}
 
 mod friction;
 mod heightmap;
 mod kinematic_obstacle;
+pub mod signorini_coulomb;
 mod slip;
 mod static_box;
 
-pub use friction::{FrictionBoundary, GripFrictionBoundary, RatchetFrictionBoundary};
+pub use friction::{DirectionalContactGrip, FrictionBoundary, RatchetFrictionBoundary};
 pub use heightmap::HeightmapBoundary;
 pub use kinematic_obstacle::KinematicCircleBoundary;
 pub use slip::SlipBoundary;
@@ -45,18 +61,21 @@ pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
     /// Not a physical force -- last-resort domain enforcement so particles never escape the grid.
     /// Proper no-penetration physics lives in `apply_to_grid_velocity`.
     fn clamp_particle_position(&self, position: Vec2, grid_res: usize) -> Vec2;
-    /// Optional post-G2P per-particle hook (e.g. `GripFrictionBoundary`'s muscle
-    /// grip). Takes a `ParticleUpdateCtx`, not `&mut Particles, i` -- same reason
-    /// as `MaterialModel::update_particle`: only ever touches its own particle's
-    /// fields, so G2P can run every particle's boundary hook in parallel too.
-    fn post_g2p_particle(&self, _ctx: &mut ParticleUpdateCtx, _grid_res: usize, _dt: f32) {}
 
     /// Whether this boundary has a declared compatible wall discretisation
-    /// for strict WC-MPM liquids. The conservative default is false: a
-    /// post-G2P particle mutation is not automatically a fluid traction or
-    /// no-penetration condition. Implementors must opt in explicitly.
+    /// for strict WC-MPM liquids, verified by a strict-fluid scene run
+    /// against it. The conservative default is false; implementors opt in
+    /// explicitly.
     fn is_strict_wc_mpm_fluid_compatible(&self) -> bool {
         false
+    }
+
+    /// The domain's walls as the contact law sees them (`DomainWalls`),
+    /// for a solver that holds them by contact on its own unknowns (the
+    /// total Lagrangian solid step). `None`: this boundary has no such
+    /// form yet, and that solver refuses it.
+    fn domain_walls(&self) -> Option<DomainWalls> {
+        None
     }
 
     /// Local contact normal and penetration overlap for a grain of `radius` at
@@ -146,10 +165,6 @@ impl<T: BoundaryCondition + ?Sized> BoundaryCondition for std::sync::Arc<T> {
         (**self).clamp_particle_position(position, grid_res)
     }
 
-    fn post_g2p_particle(&self, ctx: &mut ParticleUpdateCtx, grid_res: usize, dt: f32) {
-        (**self).post_g2p_particle(ctx, grid_res, dt);
-    }
-
     fn is_strict_wc_mpm_fluid_compatible(&self) -> bool {
         (**self).is_strict_wc_mpm_fluid_compatible()
     }
@@ -191,13 +206,13 @@ impl<T: BoundaryCondition + ?Sized> BoundaryCondition for std::sync::Arc<T> {
 /// `0.5 * (|v_t|^2 - |v_t_after|^2)`, in the grid's own velocity-squared
 /// units (multiply by `dx_meters^2` for J/kg).
 ///
-/// Only the TANGENTIAL part is reported, and that is deliberate. Sliding
-/// friction doing work against a surface is unambiguously dissipation and
-/// becomes heat, and Coulomb's own law says how much. The normal component
-/// this function also removes is a no-penetration constraint against an
-/// idealised rigid wall; where that energy goes in reality (wall
-/// deformation, sound, heat on both sides) is a modelling choice this
-/// engine does not make, so it is not reported as frictional heat.
+/// Only the TANGENTIAL part is reported. Sliding friction doing work against
+/// a surface is dissipation and becomes heat, and Coulomb's own law says how
+/// much. Removing the normal component makes the node's impact on the wall
+/// perfectly inelastic: the kinetic energy `0.5 * v_n^2` per unit mass it
+/// removes is a loss of the velocity-level discretization, not a modelled
+/// physical process, and it is not reported anywhere yet (see
+/// `forces/README.md`, Scope & Limits).
 ///
 /// Callers that do not care may ignore the value. Recording it is what
 /// lets `energy::thermodynamics::frictional_heating` close the first law
@@ -220,6 +235,37 @@ pub(crate) fn apply_coulomb_wall(velocity: &mut Vec2, outward_normal: Vec2, mu: 
         Vec2::ZERO
     };
     0.5 * (v_t_len * v_t_len - v_t_after * v_t_after)
+}
+
+/// Anisotropic Coulomb friction along one wall face: the coefficient is
+/// `mu_easy` when the tangential velocity points the same way as
+/// `easy_direction`'s tangential component, `mu_resist` when it points against
+/// it. This is the forward/backward part of the anisotropic friction law
+/// measured on snake skin by Hu, Nirody, Scott & Shelley 2009 (PNAS
+/// 106:10081, eq. 2); the transverse coefficient has no counterpart along a
+/// one-dimensional wall tangent. No-penetration and the Coulomb reduction are
+/// `apply_coulomb_wall`'s, and so is the returned dissipated energy.
+pub(crate) fn apply_anisotropic_coulomb_wall(
+    velocity: &mut Vec2,
+    outward_normal: Vec2,
+    easy_direction: Vec2,
+    mu_easy: f32,
+    mu_resist: f32,
+) -> f32 {
+    let tangent = Vec2::new(-outward_normal.y, outward_normal.x);
+    let aligned = velocity.dot(tangent) * easy_direction.dot(tangent) >= 0.0;
+    let mu = if aligned { mu_easy } else { mu_resist };
+    apply_coulomb_wall(velocity, outward_normal, mu)
+}
+
+/// Panics unless `mu` is a valid Coulomb friction coefficient: finite and
+/// `>= 0`. There is no upper bound: rubber on dry rough surfaces exceeds 1
+/// (Persson, Tartaglino, Albohr & Tosatti 2005, Phys. Rev. B 71, 035428).
+pub(crate) fn assert_friction_coefficient(mu: f32, name: &str) {
+    assert!(
+        mu.is_finite() && mu >= 0.0,
+        "{name} must be a finite Coulomb friction coefficient >= 0, got {mu}"
+    );
 }
 
 pub(crate) const fn apply_slip_wall_velocity(

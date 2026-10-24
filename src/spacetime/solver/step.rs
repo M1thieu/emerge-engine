@@ -79,7 +79,7 @@ impl Simulation {
                 self.boundaries
                     .iter()
                     .all(|boundary| boundary.is_strict_wc_mpm_fluid_compatible()),
-                "strict WC-MPM fluid cannot use a boundary with an undeclared post-G2P particle mutation; use a compatible geometric wall/traction discretisation"
+                "strict WC-MPM fluid cannot use a boundary without a declared strict-fluid wall discretisation; use a compatible geometric wall/traction discretisation"
             );
             assert!(
                 self.config.apic_blend == 1.0,
@@ -103,7 +103,47 @@ impl Simulation {
     /// One MLS-MPM timestep: particle→grid→particle cycle.
     /// The grid is temporary scratch -- only particles hold long-term material memory.
     pub fn step(&mut self) {
+        if let Some(path) = self.config.total_lagrangian {
+            self.step_total_lagrangian_solids(path);
+            return;
+        }
+        assert!(
+            self.total_lagrangian_frame().is_none(),
+            "the total Lagrangian solid path cannot be switched off in a run"
+        );
         self.assert_strict_fluid_mode_is_supported();
+        for id in 0..self.materials.len() as u32 {
+            let relaxing = self
+                .materials
+                .get(id)
+                .as_any()
+                .downcast_ref::<crate::CorotatedMaterial>()
+                .is_some_and(|m| m.relaxation.is_some());
+            assert!(
+                !relaxing,
+                "material {id} carries a relaxation spectrum, which only the total Lagrangian solid path carries"
+            );
+            let norton = self
+                .materials
+                .get(id)
+                .as_any()
+                .downcast_ref::<crate::VonMisesMaterial>()
+                .is_some_and(|m| m.norton.is_some());
+            assert!(
+                !norton,
+                "material {id} carries Norton's power-law flow, which only the total Lagrangian solid path carries"
+            );
+            let water = self
+                .materials
+                .get(id)
+                .as_any()
+                .downcast_ref::<crate::LiquidWaterMaterial>()
+                .is_some();
+            assert!(
+                !water,
+                "material {id} is the barotropic liquid water, which only the total Lagrangian solid path carries"
+            );
+        }
         // Adaptive substep loop: step() always advances exactly config.dt of simulation time,
         // but uses smaller sub-steps when CFL requires it (stiff materials, high velocities).
         // Without this loop, the FixedStepController accounts for config.dt per call but the
@@ -1137,11 +1177,26 @@ impl Simulation {
                 if self.particles.pinned[i] != 0 {
                     continue;
                 }
-                let mut dv = Vec2::ZERO;
+                let mut acceleration = Vec2::ZERO;
+                let mut gyration_rate = 0.0;
                 for (_, field) in &fields {
-                    dv += field.acceleration(&self.particles, i);
+                    acceleration += field.acceleration(&self.particles, i);
+                    gyration_rate += field.gyration_rate(&self.particles, i);
                 }
-                self.particles.v[i] += sub_dt * dv;
+                // A workless, velocity-turning force cannot take the plain
+                // kick without creating energy: Boris rotation (see
+                // `fields::gyroscopic`). All rates turn about the same axis
+                // (out of the plane), so they add.
+                if gyration_rate == 0.0 {
+                    self.particles.v[i] += sub_dt * acceleration;
+                } else {
+                    self.particles.v[i] = crate::forces::fields::gyroscopic::boris_step(
+                        self.particles.v[i],
+                        acceleration,
+                        gyration_rate,
+                        sub_dt,
+                    );
+                }
             }
             self.force_fields = fields;
             self.last_timing.fields_us += t3.elapsed().as_micros() as u64;

@@ -70,13 +70,14 @@ can read any one of them without knowing the others; each has its own README.
 
 | Folder | What lives there |
 |---|---|
-| [`matter/`](src/matter) | What things are made of -- the particle, and 17 material models with their measured constants |
+| [`matter/`](src/matter) | What things are made of -- the particle, how it moves and deforms (kinematics), and 17 material models with their measured constants |
 | [`spacetime/`](src/spacetime) | How matter moves -- the solver itself: particle-to-grid transfer, grid update, grid-to-particle, plus a separate solver for slender bodies |
 | [`forces/`](src/forces) | What pushes on matter -- gravity, drag, buoyancy, walls and friction |
 | [`energy/`](src/energy) | Heat and light -- conduction, diffusion, radiation, and the optics that turn a spectrum into a colour |
 | [`information/`](src/information) | Control and measurement -- a neural locomotion controller, information-theoretic measures |
 | [`systems/`](src/systems) | The machinery, not the physics -- GPU compute, rendering, diagnostics |
 | [`runtime/`](src/runtime) | Fixed-timestep stepping |
+| [`tensor_algebra/`](src/tensor_algebra) | The mathematics the physics is written in -- matrix decompositions and products, no physical law |
 
 The rule the tree follows: a piece of code lives where its *concept* belongs,
 never where it happens to be used. Beer-Lambert absorption is a law of energy
@@ -173,15 +174,16 @@ Same sleep/wake pattern as MPM particles, at rod granularity (a rod's points are
 
 ## Force fields & boundaries
 
-Ten force fields, six boundary conditions -- mix and match, all optional, zero cost when unused.
+Nine force fields, six boundary conditions -- mix and match, all optional, zero cost when unused.
 
 | Group | Types |
 |---|---|
 | **External fields** | `GravityWellField` / `NBodyGravityField` (Barnes-Hut N-body), `CoulombField` / `UniformElectricField`, `BuoyancyField` |
+| **Workless (gyroscopic)** | `UniformMagneticField` (magnetic Lorentz force), `CoriolisField` (rotating planet), integrated by the Boris rotation |
 | **Flow / drag** | `LinearDragField` (fixed target velocity -- wind, current), `SpatialDragField` (spatially-varying flow) |
-| **Confinement** | `RadialConfinementField`, `AabbConfinementField` |
-| **Chemotaxis** | `ChemotaxisField` (gradient-following, Keller-Segel) |
-| **Domain walls** | `SlipBoundary` (default), `FrictionBoundary`, `GripFrictionBoundary` (strain-rate-gated grip), `RatchetFrictionBoundary` (direction-dependent), `HeightmapBoundary` (terrain profile), `StaticBoxBoundary` (solid rectangle inside the domain: a ridge, a sill, a beaker wall; holds strict liquids), `KinematicCircleBoundary` (moving circle, two-way) |
+| **Domain walls** | `SlipBoundary` (default), `FrictionBoundary`, `RatchetFrictionBoundary` (direction-dependent), `HeightmapBoundary` (terrain profile), `StaticBoxBoundary` (solid rectangle inside the domain: a ridge, a sill, a beaker wall; holds strict liquids), `KinematicCircleBoundary` (moving circle, two-way) |
+
+Chemotaxis is sensing, not a force: `ChemotaxisSensor` (`control`) gives the Keller-Segel drift velocity a controller steers toward.
 
 ## Particle fields
 

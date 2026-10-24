@@ -18,7 +18,6 @@ pub mod mac;
 mod contact;
 mod contact_normal;
 mod dct;
-mod directional_grip;
 mod friction;
 mod mixture;
 mod pressure;
@@ -31,7 +30,6 @@ use glam::DVec2;
 use glam::{IVec2, Vec2};
 
 use contact::ContactCellMap;
-pub use directional_grip::DirectionalContactGrip;
 pub(crate) use friction::{FrictionCellMap, accumulate_friction, merge_friction_maps};
 use mixture::MixtureCellMap;
 
@@ -45,7 +43,7 @@ use mixture::MixtureCellMap;
 /// glam + bytemuck-only invariant.
 const FXHASH_K: u64 = 0x51_7c_c1_b7_27_22_0a_95;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct FxU32Hasher {
     hash: u64,
 }
@@ -71,7 +69,7 @@ impl Hasher for FxU32Hasher {
     }
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, Debug)]
 pub struct FxU32BuildHasher;
 
 impl BuildHasher for FxU32BuildHasher {

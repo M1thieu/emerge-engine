@@ -21,7 +21,9 @@ that turn strain into stress.
 - `Particle` (`particle/mod.rs`) -- 128 bytes, `repr(C)`, GPU-uploadable via `bytemuck::Pod`. Position, velocity, APIC velocity gradient, deformation gradient, mass/volume/density, material ID, plasticity state (`plastic_volume_ratio`, `hardening_scale`, `friction_hardening`, `log_volume_strain`), temperature, `user_tag`, activation + muscle fields, `contact_group`, `sleeping`, `pinned`, `scalar_field`, `internal_pressure`.
 - `Particles` (`particle/soa.rs`) -- SoA container; the long-term storage form `Simulation` operates on.
 - `MaterialModel` trait (`materials/`) -- `kirchhoff_stress` + `update_particle`, one impl per constitutive law. A substance also declares what it is beyond mechanics: `optical_properties()` (measured absorption and scattering, `m^-1`), `specific_heat_j_kg_k()`, `luminous_emission_w_m3()`. Each defaults to "undeclared", so a material carries only what is actually known about it.
+- `kinematics/` -- how matter moves and deforms, whatever it is made of: the deformation gradient `F` and its exact update `F(t+dt) = exp(dt L) F(t)`, the volume ratio `J = det F`, the polar decomposition `F = R U`, the Hencky (logarithmic) strain. Kept apart from the material models the way continuum mechanics keeps kinematics apart from constitutive theory (Gurtin, Fried & Anand 2010, part III). Material models use these; they never redefine them.
 - `optical.rs` -- measured optical constants of real substances, with the band averaging that collapses a spectrum onto three channels. Pure water's absorption spectrum (Pope & Fry 1997, 140 points, 380-727 nm).
+- `heat_capacity.rs` -- measured specific heat capacities of real substances (ice Ih, alpha quartz, copper, natural rubber), each at its stated temperature and with its source. A material carries one only when its caller declares it.
 - 17 material models: `NeoHookeanMaterial`, `CorotatedMaterial`, `NewtonianFluidMaterial`, `BinghamFluidMaterial`, `StomakhinMaterial` (snow), `DruckerPragerMaterial` (sand), `MuIRheologyMaterial` (µ(I) dense granular flow), `VonMisesMaterial`, `RankineMaterial`, `ViscoelasticMaterial`, `NaccMaterial` (Cam-Clay), `GranularFluidMaterial`, `NoCompressionMaterial`. See root `README.md`'s materials table for real citations and preset constructors.
 - `grain_contact_law` -- Cundall & Strack 1979 / Luding 2008 / Ai et al. 2011 discrete-element contact force law (normal/tangential/rolling spring-dashpot, Coulomb + rolling-friction caps). Not a `MaterialModel` -- a portable, self-contained function of local `GrainContactState` pairs, consumed by `spacetime::grains`.
 - `cosserat` -- micropolar (Cosserat) grain kinematics + constitutive relation, the root-cause fix candidate for sand's self-arrest/repose-angle gap.
@@ -30,7 +32,7 @@ that turn strain into stress.
 ## Scope & Limits
 
 - 2D only, throughout.
-- Constitutive models bundle kinematics (strain reconstruction), kinetics (stress), and the material-specific law together per particle -- matches how production MPM codebases structure this (kinematics/kinetics/constitutive-modeling are textbook-distinct in continuum mechanics, but tightly coupled per substep in practice).
+- Kinematics lives in `kinematics/`, constitutive laws in `materials/`: each material's `update_particle` calls the shared kinematic update, then applies its own law.
 - `grain_contact_law` and `cosserat` are portable/self-contained (no dependency on solver-side state) -- that's why they live here rather than in `spacetime`, unlike e.g. `RodMaterial`, which reaches directly into `spacetime::rod`'s own `RodPoints` and stays there.
 
 ## Status

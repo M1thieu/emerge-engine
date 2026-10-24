@@ -1,13 +1,17 @@
 use glam::{Mat2, Vec2};
 
-use crate::materials::physical_props::{DuctileProps, FromSI, scale_lame, scale_stress};
-use crate::materials::svd::svd2;
-use crate::materials::utils::{
-    LOG_CLAMP, MIN_J, advance_deformation_gradient, corotated_elastic_stress, elastic_wave_dt,
-    hencky_strains, lame_from_young, reconstruct_f,
-};
+use crate::materials::lame_parameters::lame_from_young;
+use crate::materials::physical_props::{DuctileProps, FromSI};
+use crate::materials::solid::corotated::stress::corotated_elastic_stress;
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
+use crate::matter::kinematics::hencky_strain::LOG_CLAMP;
+use crate::matter::kinematics::hencky_strain::hencky_strains;
+use crate::matter::kinematics::volume_ratio::MIN_J;
 use crate::particle::{ParticleUpdateCtx, Particles};
+use crate::spacetime::solver::cfl::elastic_wave_dt;
+use crate::tensor_algebra::svd::reconstruct_f;
+use crate::tensor_algebra::svd::svd2;
 
 /// Von Mises elastoplastic material: J2 plasticity with optional linear isotropic hardening.
 ///
@@ -54,6 +58,17 @@ pub struct VonMisesMaterial {
     /// `q_factor_elastic_viscosity_pa_s`). Without it this material has no
     /// damping at all.
     pub elastic_viscosity: f32,
+    /// Specific heat capacity `c_p`, J/(kg*K). 0 (the default) means
+    /// undeclared -- see `MaterialModel::specific_heat_j_kg_k`; measured
+    /// values in `materials::heat_capacity`. Set after construction, as
+    /// `NewtonianFluidMaterial::specific_heat_j_kg_k` is.
+    pub specific_heat_j_kg_k: f32,
+    /// Norton's power-law flow in place of the yield (SI: Pa and 1/s;
+    /// `j2_hencky::Norton`), from a measured record
+    /// (`viscoplastic_records`). Read by the total Lagrangian solid path
+    /// only; the explicit and GPU paths refuse a material that carries one
+    /// rather than ignore it. `None` (the default): none.
+    pub norton: Option<super::j2_hencky::Norton>,
 }
 
 impl VonMisesMaterial {
@@ -79,6 +94,8 @@ impl VonMisesMaterial {
             yield_stress,
             hardening_modulus: 0.0,
             elastic_viscosity: 0.0,
+            specific_heat_j_kg_k: 0.0,
+            norton: None,
         }
     }
 
@@ -93,6 +110,8 @@ impl VonMisesMaterial {
             yield_stress,
             hardening_modulus,
             elastic_viscosity: 0.0,
+            specific_heat_j_kg_k: 0.0,
+            norton: None,
         }
     }
 
@@ -142,12 +161,7 @@ impl VonMisesMaterial {
 
 impl FromSI<DuctileProps> for VonMisesMaterial {
     fn from_physical(props: &DuctileProps, config: &crate::SimConfig) -> Self {
-        let (lambda, mu) = scale_lame(
-            props.elastic.e_pa,
-            props.elastic.nu,
-            props.elastic.rho_kg_m3,
-            config,
-        );
+        let (lambda, mu) = config.lame_from_si(props.elastic.e_pa, props.elastic.nu);
         // Tables give the uniaxial yield stress. J2 flow yields where
         // sqrt(3 J2) reaches it, J2 = s:s / 2, so |s|_F = sqrt(2/3) sigma_Y. In
         // plane strain with incompressible plastic flow the out-of-plane
@@ -155,7 +169,7 @@ impl FromSI<DuctileProps> for VonMisesMaterial {
         // material tests. Fed in as is, a table value set the threshold
         // sqrt(3/2), about 1.22, times too high.
         let yield_frobenius = (2.0f32 / 3.0).sqrt() * props.yield_stress_pa;
-        let yield_stress = scale_stress(yield_frobenius, props.elastic.rho_kg_m3, config);
+        let yield_stress = config.stress_from_si(yield_frobenius);
         Self {
             rest_density: Some(props.elastic.rho_kg_m3 / config.reference_density_kg_m3),
             ..Self::new(lambda, mu, yield_stress)
@@ -166,6 +180,12 @@ impl FromSI<DuctileProps> for VonMisesMaterial {
 impl MaterialModel for VonMisesMaterial {
     fn rest_density(&self) -> Option<f32> {
         self.rest_density
+    }
+
+    fn gpu_unsupported_reason(&self) -> Option<&'static str> {
+        self.norton.map(|_| {
+            "Norton's power-law flow: the shaders carry none; the total Lagrangian path carries it"
+        })
     }
 
     fn constitutive_model(&self) -> ConstitutiveModel {
@@ -256,8 +276,13 @@ impl MaterialModel for VonMisesMaterial {
             mu: self.mu,
             hardening_exponent: self.yield_stress,
             hardening_modulus: self.hardening_modulus,
+            specific_heat_j_kg_k: self.specific_heat_j_kg_k,
             ..Default::default()
         }
+    }
+
+    fn specific_heat_j_kg_k(&self) -> f32 {
+        self.specific_heat_j_kg_k
     }
 
     fn timestep_bound(
@@ -316,7 +341,7 @@ mod uniaxial_yield_tests {
             yield_stress_pa: 30_000.0,
         };
         let mat = VonMisesMaterial::from_physical(&props, &config);
-        let sigma_y = scale_stress(props.yield_stress_pa, props.elastic.rho_kg_m3, &config);
+        let sigma_y = &config.stress_from_si(props.yield_stress_pa);
         // Hencky strains (a, -a, 0): deviator 2 mu (a, -a, 0), so J2 = 4 mu^2 a^2
         // and sqrt(3 J2) = 2 sqrt(3) mu a.
         let a = sigma_y / (2.0 * 3.0f32.sqrt() * mat.mu);
@@ -459,7 +484,7 @@ mod marginal_yield_tests {
         // The projected dev_norm must equal exactly yield_stress/(2*mu) (perfect
         // plasticity here), computed as the material does (L2 norm of the
         // deviatoric vector), not per component.
-        let eps_after = crate::materials::utils::hencky_strains(sigma_after);
+        let eps_after = crate::matter::kinematics::hencky_strain::hencky_strains(sigma_after);
         let tr_after = eps_after.x + eps_after.y;
         let dev_after_vec = eps_after - Vec2::splat(tr_after * 0.5);
         let dev_after = dev_after_vec.length();
@@ -535,7 +560,7 @@ mod marginal_yield_tests {
              worked case (~103.846), got {expected_post_hardening_limit}"
         );
 
-        let eps_after = crate::materials::utils::hencky_strains(sigma_after);
+        let eps_after = crate::matter::kinematics::hencky_strain::hencky_strains(sigma_after);
         let tr_after = eps_after.x + eps_after.y;
         let dev_after = (eps_after - Vec2::splat(tr_after * 0.5)).length();
         let measured_limit = 2.0 * mat.mu * dev_after;

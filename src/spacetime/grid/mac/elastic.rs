@@ -1,4 +1,5 @@
-//! The shear part of an elastic solid on the staggered grid (step A2).
+//! The shear part of an elastic solid on the staggered grid (criteria in
+//! `gates.rs`).
 //!
 //! Stomakhin, Schroeder, Jiang, Chai, Teran and Selle 2014 split the fixed
 //! corotated energy into a shear part taken on the isochoric deformation
@@ -48,7 +49,7 @@ pub fn shear_energy(f: Mat2, mu: f32) -> f32 {
 /// `C`: `F <- R(dt C) F`, Stomakhin et al. 2014 section 5.9. The exact step
 /// for a gradient held over the substep is `exp(dt C)`, whose determinant
 /// `exp(dt tr C)` is always positive; `I + dt C`, its first-order
-/// truncation, inverts `F` once `det(I + dt C) <= 0`. Measured in step A2:
+/// truncation, inverts `F` once `det(I + dt C) <= 0`. Measured here:
 /// at a block's impact on a wall, `|C|` reached 932 1/s at `dt` 1 ms, `det
 /// F` went to -0.2 and then NaN. Their compromise, `R(M) = I + M` where
 /// `det(I + M) > 0` and `R(M) = R(M / 2)^2` otherwise, is a truncated
@@ -116,7 +117,8 @@ mod tests {
 
     /// Small uniaxial strain `F = diag(1, 1 + e)`: the shear part carries
     /// `mu e` of the axial stress (`(lambda + mu) e` with the projection's
-    /// `lambda e`), the 2D uniaxial stiffness the scene 8 criterion uses.
+    /// `lambda e`), the 2D uniaxial stiffness the confined elastic
+    /// column's criterion uses.
     #[test]
     fn uniaxial_strain_carries_mu_e_of_the_axial_stress() {
         let e = 1.0e-3;

@@ -1,13 +1,16 @@
 use glam::{Mat2, Vec2};
 
-use crate::materials::physical_props::{FromSI, GranularProps, scale_lame};
-use crate::materials::svd::svd2;
-use crate::materials::utils::{
-    LOG_CLAMP, MIN_J, advance_deformation_gradient, corotated_elastic_stress, elastic_wave_dt,
-    lame_from_young, self_consistent_plastic_multiplier,
-};
+use crate::materials::lame_parameters::lame_from_young;
+use crate::materials::physical_props::{FromSI, GranularProps};
+use crate::materials::solid::corotated::stress::corotated_elastic_stress;
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
+use crate::matter::kinematics::hencky_strain::LOG_CLAMP;
+use crate::matter::kinematics::volume_ratio::MIN_J;
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
+use crate::spacetime::return_mapping::self_consistent_plastic_multiplier;
+use crate::spacetime::solver::cfl::elastic_wave_dt;
+use crate::tensor_algebra::svd::svd2;
 
 /// Dry medium-sand grain diameter (standard soil classification), the value
 /// Haeri & Skonieczny 2022 (CMAME, arXiv:2111.01523) calibrate their
@@ -381,6 +384,12 @@ pub struct DruckerPragerMaterial {
     /// hardening update). The persistent flag is
     /// `Particles::eps_pl_vol_pradhana`.
     pub use_pradhana: bool,
+    /// Specific heat capacity `c_p`, J/(kg*K). 0 (the default) means
+    /// undeclared -- see `MaterialModel::specific_heat_j_kg_k`; measured
+    /// values in `materials::heat_capacity` (`ALPHA_QUARTZ_AT_298_K_J_KG_K`
+    /// for quartz sand). Set after construction, as
+    /// `NewtonianFluidMaterial::specific_heat_j_kg_k` is.
+    pub specific_heat_j_kg_k: f32,
 }
 
 /// Bundled inputs for `DruckerPragerMaterial::project` -- grew past clippy's
@@ -450,6 +459,7 @@ impl DruckerPragerMaterial {
             pendular_regime_ceiling: 0.3,
             elastic_viscosity: 0.0,
             use_pradhana: false,
+            specific_heat_j_kg_k: 0.0,
         }
     }
 
@@ -793,12 +803,7 @@ impl DruckerPragerMaterial {
 
 impl FromSI<GranularProps> for DruckerPragerMaterial {
     fn from_physical(props: &GranularProps, config: &crate::SimConfig) -> Self {
-        let (lambda, mu) = scale_lame(
-            props.elastic.e_pa,
-            props.elastic.nu,
-            props.elastic.rho_kg_m3,
-            config,
-        );
+        let (lambda, mu) = config.lame_from_si(props.elastic.e_pa, props.elastic.nu);
         Self {
             friction_angle: props.friction_angle_deg.to_radians(),
             dilatancy_angle: props.dilatancy_angle_deg.to_radians(),
@@ -1162,8 +1167,13 @@ impl MaterialModel for DruckerPragerMaterial {
             // Not read by the GPU's model==5u branch for any other purpose.
             stretch_limit: self.cohesion,
             volume_ratio_min: self.min_volume_jacobian,
+            specific_heat_j_kg_k: self.specific_heat_j_kg_k,
             ..Default::default()
         }
+    }
+
+    fn specific_heat_j_kg_k(&self) -> f32 {
+        self.specific_heat_j_kg_k
     }
 
     fn timestep_bound(

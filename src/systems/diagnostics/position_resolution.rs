@@ -98,6 +98,7 @@ pub fn position_resolution(
 /// particles over the frame's mean substep (`configured_dt` over
 /// `substeps_last_step`), not the last one, which is often the short
 /// remainder that ends the frame.
+#[derive(Debug)]
 pub struct PositionResolutionPlugin;
 
 impl DiagnosticsPlugin for PositionResolutionPlugin {

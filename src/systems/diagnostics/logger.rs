@@ -25,6 +25,7 @@ use crate::diagnostics::snapshot::SimSnapshot;
 /// ```json
 /// {"frame":60,"dt":0.05,"active":2176,"sleeping":0,"substeps":4,"cfl":0.033,"j":[0.97,1.34],"health":"OK","materials":[...]}
 /// ```
+#[derive(Debug)]
 pub struct FrameLogger {
     writer: BufWriter<File>,
     calls_since_flush: usize,

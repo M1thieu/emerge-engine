@@ -1,5 +1,7 @@
 use glam::Vec2;
 
+use crate::materials::lame_from_young;
+
 /// D⁻¹ = 4.0 for the quadratic B-spline MLS-MPM kernel (always).
 /// Not a tunable parameter -- hardcoded from Hu 2018 Table 1.
 pub(crate) const KERNEL_D_INVERSE: f32 = 4.0;
@@ -310,9 +312,11 @@ pub struct SimConfig {
     /// N-phase mixture coupling drag coefficient (generalizes Tampubolon et al.
     /// 2017, "Multi-species simulation of porous sand and water mixtures" --
     /// Darcy-style momentum exchange between materials wrapped in different
-    /// `MixturePhase` slots, see `WithMixturePhase`). Units: mass/time (a per-node drag rate,
-    /// not the paper's permeability-derived `c_E`; mapping it to soil
-    /// permeability and porosity is future work).
+    /// `MixturePhase` slots, see `WithMixturePhase`). Units: grid mass per
+    /// second, one shared value for every pair of phases at a node.
+    /// `mixture_drag_from_darcy` derives it from a soil's measured porosity
+    /// and hydraulic conductivity (the paper's `c_E`); any other value is the
+    /// caller's own choice and should say where it comes from.
     /// 0.0 = disabled (default) -- `Grid::has_mixture_activity()` gates the extra
     /// P2G scatter and the whole resolve pass, zero cost for every scene that
     /// doesn't use `WithMixturePhase`, matching `asflip_blend`'s own convention.
@@ -377,11 +381,16 @@ pub struct SimConfig {
 
     // ── Physical unit scaling ──────────────────────────────────────────────────
     // Default 1.0 = simulation units (no scaling). Set these to enable SI-calibrated materials
-    // (`FromSI::from_physical`, or `lame_from_si` / `gravity_to_grid` in `materials::utils`).
+    // (`FromSI::from_physical`, or `lame_from_si` / `gravity_to_grid` below).
     /// Physical length of one grid cell in meters. Default 1.0 (grid units).
     ///
     /// Example: if the simulation domain is 64 cells representing 0.64 m, set `dx_meters = 0.01`.
     pub dx_meters: f32,
+    /// The opt-in total Lagrangian path for elastic solids (energy kept
+    /// exactly, walls and bodies by contact; `total_lagrangian_solids`).
+    /// `None` (default): the explicit MLS-MPM step.
+    pub total_lagrangian:
+        Option<crate::spacetime::solver::total_lagrangian_solids::TotalLagrangianConfig>,
 
     /// Out-of-plane thickness, in metres, of the slab the 2D scene stands
     /// for. `None` (the default) means the scene has not stated one.
@@ -456,6 +465,7 @@ impl Default for SimConfig {
             fluid_pressure_iterations: 0,
             spatial_sort_enabled: false,
             dx_meters: 1.0,
+            total_lagrangian: None,
             slice_thickness_m: None,
             implicit_corotated_elastic: false,
         }
@@ -519,27 +529,46 @@ impl SimConfig {
     }
 
     // ── SI conversion helpers ─────────────────────────────────────────────────
-    // Grid stress is SI stress over `rho dx^2` (a squared speed in cells/s),
-    // never dt-dependent. Pair stress and viscosity conversions only with
-    // Lamé parameters from `lame_from_si`: the same `rho dx^2` must divide
-    // every term added into one stress tensor.
+    // The grid's units: length `dx_meters` (a cell), time the second, mass
+    // per metre of depth `grid_mass_unit` = `reference_density_kg_m3 *
+    // dx_meters^2` (one cell's area at the reference density). Substituting
+    // them into `m a = -sum A sigma grad N` (SI, per metre of depth) gives
+    // `m~ a~ = -sum A~ sigma~ grad~N` with `sigma~ = sigma / grid_mass_unit`
+    // and `m~ = rho A / grid_mass_unit`: ONE stress unit for every material
+    // (Lame parameters, pressure, EOS stiffness, viscosity alike), and each
+    // particle's mass from its material's own density. `reference_density`
+    // is a conditioning constant of that layer, not physics: any value
+    // gives the same motion.
 
-    /// SI Young's modulus (Pa) and Poisson's ratio to grid Lamé parameters,
-    /// through [`crate::materials::lame_from_si`] at this config's `dx_meters`.
-    pub fn lame_from_si(&self, e_pa: f32, nu: f32, rho_kg_m3: f32) -> (f32, f32) {
-        crate::materials::lame_from_si(e_pa, nu, rho_kg_m3, self.dx_meters)
+    /// The grid's mass unit per metre of depth, kg/m: one cell's area at the
+    /// reference density. Grid stress is SI stress over it.
+    pub fn grid_mass_unit_kg_per_m(&self) -> f32 {
+        self.reference_density_kg_m3 * self.dx_meters * self.dx_meters
     }
 
-    /// SI stress or pressure (Pa) to grid units: `p / (rho dx^2)`.
-    pub fn stress_from_si(&self, pa: f32, rho_kg_m3: f32) -> f32 {
-        pa / (rho_kg_m3 * self.dx_meters * self.dx_meters)
+    /// SI Young's modulus (Pa) and Poisson's ratio to grid Lamé parameters.
+    pub fn lame_from_si(&self, e_pa: f32, nu: f32) -> (f32, f32) {
+        let (lambda, mu) = lame_from_young(e_pa, nu);
+        let unit = self.grid_mass_unit_kg_per_m();
+        (lambda / unit, mu / unit)
     }
 
-    /// SI dynamic viscosity (Pa s) to grid units: `eta / (rho dx^2)`, the
-    /// kinematic viscosity in cells^2/s (grid stress += viscosity * strain
-    /// rate in 1/s).
-    pub fn visc_from_si(&self, eta_pa_s: f32, rho_kg_m3: f32) -> f32 {
-        eta_pa_s / (rho_kg_m3 * self.dx_meters * self.dx_meters)
+    /// SI stress or pressure (Pa) to grid units.
+    pub fn stress_from_si(&self, pa: f32) -> f32 {
+        pa / self.grid_mass_unit_kg_per_m()
+    }
+
+    /// SI dynamic viscosity (Pa s) to grid units (grid stress = viscosity
+    /// times a strain rate in 1/s).
+    pub fn visc_from_si(&self, eta_pa_s: f32) -> f32 {
+        eta_pa_s / self.grid_mass_unit_kg_per_m()
+    }
+
+    /// A material's SI density as the grid's density (mass per cell area,
+    /// in `grid_mass_unit` per cell): the particle mass a lattice at
+    /// `spacing` cells gives it is this times `spacing^2`.
+    pub fn density_from_si(&self, rho_kg_m3: f32) -> f32 {
+        rho_kg_m3 / self.reference_density_kg_m3
     }
 
     /// The stated slice thickness, for a feature that cannot work without
@@ -567,6 +596,34 @@ impl SimConfig {
     pub fn gravitational_constant_from_si(&self, g_si: f32) -> f32 {
         let l = self.require_slice_thickness_m("gravitational_constant_from_si");
         g_si * self.reference_density_kg_m3 * l / self.dx_meters
+    }
+
+    /// `mixture_drag_coefficient` from measured soil properties: the Darcy
+    /// exchange coefficient `c_E = n^2 rho_w g / k_hat`
+    /// (`forces::interphase::darcy_exchange_coefficient`, Tampubolon et al.
+    /// 2017 eq. 13) in the grid units the mixture solve uses.
+    ///
+    /// `c_E` is a force per unit volume per unit relative velocity. A node
+    /// stands for the volume `dx_meters^2 * L` (one cell times the slice
+    /// thickness), a grid mass is `m_SI / (reference_density_kg_m3 *
+    /// dx_meters^2 * L)` (see `gravitational_constant_from_si`) and a grid
+    /// velocity is the SI one over `dx_meters`, so the node equation
+    /// `m dv/dt = k (v_other - v)` holds in grid units with
+    /// `k = c_E / reference_density_kg_m3`: `dx_meters` and `L` cancel, and no
+    /// slice thickness is needed.
+    pub fn mixture_drag_from_darcy(
+        &self,
+        porosity: f32,
+        hydraulic_conductivity_m_s: f32,
+        fluid_density_kg_m3: f32,
+        gravity_m_s2: f32,
+    ) -> f32 {
+        crate::forces::interphase::darcy_exchange_coefficient(
+            porosity,
+            hydraulic_conductivity_m_s,
+            fluid_density_kg_m3,
+            gravity_m_s2,
+        ) / self.reference_density_kg_m3
     }
 
     /// Validate solver-side numerical and domain constraints.
@@ -640,3 +697,20 @@ impl SimConfig {
 // re-export in lib.rs) keeps resolving unchanged.
 mod spawn;
 pub use spawn::{SpawnRegion, SpawnShape};
+
+/// Convert SI gravity (m/s²) to solver units (grid cells / s²).
+///
+/// In the solver `v += gravity * sub_dt` where sub_dt is in real seconds,
+/// so gravity must be in [cells/s²] = g_SI / dx_meters.
+///
+/// # Example -- Earth gravity at 1 cm/cell
+/// ```rust,no_run
+/// # extern crate emerge_engine as emerge;
+/// use emerge::gravity_to_grid;
+/// use glam::Vec2;
+/// let g = gravity_to_grid(Vec2::new(0.0, -9.81), 0.01);
+/// // g ≈ Vec2::new(0.0, -981.0) cells/s²
+/// ```
+pub fn gravity_to_grid(g_si: glam::Vec2, dx_meters: f32) -> glam::Vec2 {
+    g_si / dx_meters
+}

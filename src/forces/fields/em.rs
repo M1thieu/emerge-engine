@@ -7,7 +7,8 @@
 //!
 //! Distinct from `CoulombField` (`fields::coulomb`), which models discrete point-source
 //! interactions rather than a uniform field. Use `UniformElectricField` for capacitor plates,
-//! external confinement fields, or EM traps.
+//! external confinement fields, or EM traps. The magnetic part of the Lorentz force is
+//! `fields::UniformMagneticField`.
 
 use std::collections::HashMap;
 
@@ -27,6 +28,7 @@ use crate::particle::Particles;
 /// # Units
 /// `field` is in simulation units (force-per-unit-charge). In SI: V/m.
 /// `charge` values must be in the same unit system as your Coulomb constant.
+#[derive(Debug)]
 pub struct UniformElectricField {
     /// The uniform electric field vector E (force per unit charge, in simulation units).
     pub field: Vec2,

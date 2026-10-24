@@ -584,6 +584,32 @@ pub(crate) fn single_particle_instability_dt_bound(
     (dt.is_finite() && dt > 0.0).then_some(dt)
 }
 
+/// CFL timestep bound from elastic longitudinal wave speed c_P = √((λ+2µ)·h / ρ).
+///
+/// `hardening` = 1.0 for materials without hardening (elastic, sand, von Mises).
+/// `hardening` = particle.hardening_scale for corotated/snow (stiffness grows on compression).
+/// Returns f32::INFINITY when the material has zero or negative stiffness.
+pub fn elastic_wave_dt(
+    lambda: f32,
+    mu: f32,
+    hardening: f32,
+    density: f32,
+    min_density: f32,
+    cell_width: f32,
+    material_cfl: f32,
+) -> f32 {
+    let rho = density.max(min_density);
+    let modulus = ((lambda + 2.0 * mu) * hardening).max(0.0);
+    if modulus <= f32::EPSILON {
+        return f32::INFINITY;
+    }
+    let c = (modulus / rho).sqrt();
+    if c <= f32::EPSILON {
+        return f32::INFINITY;
+    }
+    material_cfl * cell_width / c
+}
+
 #[cfg(test)]
 mod tests {
     use glam::{Mat2, Vec2};

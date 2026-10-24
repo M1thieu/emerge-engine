@@ -11,7 +11,7 @@
 //! directly (`gates.rs`), and the linear hat failed an elastic solid: its
 //! slope does not vanish at the edge of its reach, so a face a particle
 //! barely reaches across takes a finite stress force on a vanishing mass.
-//! Measured in step A2: a face of mass 4e-13 (1.27 on a full one) took a
+//! Measured: a face of mass 4e-13 (1.27 on a full one) took a
 //! velocity step of 797 cells/s, 3152 the next substep, then NaN. With the
 //! quadratic both ways, slope and weight vanish together and stiffness
 //! over mass stays bounded (`the_stiffest_mode_stays_bounded_at_the_edge_of_

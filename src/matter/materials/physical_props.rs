@@ -504,13 +504,24 @@ impl BinghamProps {
     /// coefficient a property of the nucleus rather than of the rheology.
     /// Adding it back is the natural refinement, and it is measurable.
     ///
-    /// This relation also reproduces the figure the Newtonian twin already
-    /// ships: `NewtonianFluidMaterial::from_physical` uses -100,000 Pa for
-    /// practical dissolved-gas cavitation, and `2*gamma/R` returns that at
-    /// a nucleus radius of 1.4 micrometres. The two are the same
-    /// physics at two nucleus sizes, not two conventions: a clean liquid
-    /// carries only sub-micron nuclei, an ordinarily mixed paste carries
-    /// bubbles two hundred times larger, and cavitates that much sooner.
+    /// A second adaptation, also stated: this measures `2*gamma/R` down
+    /// from gauge zero, the ambient pressure. Brennen, "Cavitation and
+    /// Bubble Dynamics" (Oxford University Press, 1995), measures the same
+    /// Laplace term down from the VAPOUR pressure (section 1.7, Eqs. 1.3
+    /// and 1.4: rupture below `p_V - 2S/R`), takes off the partial pressure
+    /// of any gas inside the nucleus (section 1.12: critical tension
+    /// `2S/R - p_G`), and puts the critical tension of a nucleus holding a
+    /// fixed mass of gas at `4S/3R` rather than `2S/R` (the Blake
+    /// threshold, section 2.5).
+    ///
+    /// This relation does NOT derive the Newtonian family's floor. An
+    /// earlier version of this comment said it did, at a nucleus radius of
+    /// 1.4 micrometres. That radius was solved backwards from the
+    /// -100,000 Pa the Newtonian family then stated without a source
+    /// (`2 * 0.072 / 1e5 = 1.44e-6 m`); it was never a measurement. The
+    /// Newtonian family now follows water's vapour-pressure criterion
+    /// instead, `NewtonianFluidMaterial::water_cavitation_pressure_pa`,
+    /// which says why.
     pub fn cavitation_pressure_from_nucleus(
         surface_tension_n_m: f32,
         nucleus_radius_m: f32,
@@ -535,24 +546,6 @@ impl BinghamProps {
 //
 // All three divide by `rho dx^2` (see `SimConfig::stress_from_si`), so they
 // move together and never mix with raw grid-unit Lamé parameters.
-
-/// Scale SI stress (Pa) to grid units: `p_grid = p_SI / (ρ · dx²)`.
-#[inline]
-pub(super) fn scale_stress(pa: f32, rho: f32, config: &SimConfig) -> f32 {
-    config.stress_from_si(pa, rho)
-}
-
-/// Scale SI viscosity (Pa·s) to grid units: `η_grid = η_SI / (ρ · dx²)`.
-#[inline]
-pub(super) fn scale_visc(eta: f32, rho: f32, config: &SimConfig) -> f32 {
-    config.visc_from_si(eta, rho)
-}
-
-/// Scale SI Young's modulus to grid Lamé parameters: `λ_SI / (ρ · dx²)`.
-#[inline]
-pub(super) fn scale_lame(e_pa: f32, nu: f32, rho: f32, config: &SimConfig) -> (f32, f32) {
-    config.lame_from_si(e_pa, nu, rho)
-}
 
 // ── Reference SI values used in unit tests below ─────────────────────────────
 #[cfg(test)]

@@ -80,11 +80,7 @@ fn make_sim() -> Simulation {
         material_cfl_coefficient: 0.7,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    let (lambda, mu) = config.lame_from_si(
-        SAND_YOUNG_MODULUS_PA,
-        SAND_POISSON_RATIO,
-        SAND_DENSITY_KG_M3,
-    );
+    let (lambda, mu) = config.lame_from_si(SAND_YOUNG_MODULUS_PA, SAND_POISSON_RATIO);
     // Mass from the same density as the stiffness above, not the `grid_density=1.0`
     // default, through `ParticleMass::particle_mass`'s formula, since the raw
     // `DruckerPragerMaterial::new` constructor bypasses `mass_from`.

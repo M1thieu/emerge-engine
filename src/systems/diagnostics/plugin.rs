@@ -77,6 +77,15 @@ pub struct DiagnosticsRegistry {
     plugins: Vec<Box<dyn DiagnosticsPlugin>>,
 }
 
+impl std::fmt::Debug for DiagnosticsRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&'static str> = self.plugins.iter().map(|p| p.name()).collect();
+        f.debug_struct("DiagnosticsRegistry")
+            .field("plugins", &names)
+            .finish_non_exhaustive()
+    }
+}
+
 impl DiagnosticsRegistry {
     pub fn new() -> Self {
         Self::default()
@@ -207,6 +216,7 @@ impl fmt::Display for DiagnosticsFrame {
 ///
 /// - `act_mean` -- mean activation across all particles.
 /// - `act_frac` -- fraction of particles with activation > 0.01 (active).
+#[derive(Debug)]
 pub struct ActivationStatsPlugin;
 
 impl DiagnosticsPlugin for ActivationStatsPlugin {
@@ -235,6 +245,7 @@ impl DiagnosticsPlugin for ActivationStatsPlugin {
 }
 
 /// Temperature / thermal energy summary: `T_mean`, `T_max`.
+#[derive(Debug)]
 pub struct ThermalStatsPlugin;
 
 impl DiagnosticsPlugin for ThermalStatsPlugin {
@@ -262,6 +273,7 @@ impl DiagnosticsPlugin for ThermalStatsPlugin {
 }
 
 /// Per-material particle counts: `mat{id}_n` for each material found.
+#[derive(Debug)]
 pub struct MaterialCountPlugin;
 
 impl DiagnosticsPlugin for MaterialCountPlugin {
@@ -301,6 +313,16 @@ pub struct RollingPlugin {
     inner: Box<dyn DiagnosticsPlugin>,
     alpha: f32,
     ema: std::collections::HashMap<String, f32>,
+}
+
+impl std::fmt::Debug for RollingPlugin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RollingPlugin")
+            .field("inner", &self.inner.name())
+            .field("alpha", &self.alpha)
+            .field("ema", &self.ema)
+            .finish_non_exhaustive()
+    }
 }
 
 impl RollingPlugin {

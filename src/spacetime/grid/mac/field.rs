@@ -3,21 +3,11 @@
 use glam::Vec2;
 
 /// Size of a MAC grid: `nx` by `ny` cells of width `dx`, cell `(0, 0)`
-/// at the origin of the engine's grid coordinates.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct MacLayout {
-    pub nx: usize,
-    pub ny: usize,
-    pub dx: f32,
-}
+/// at the origin of the engine's grid coordinates (the total Lagrangian
+/// step's `GridLayout`, the same grid).
+pub type MacLayout = crate::spacetime::total_lagrangian::GridLayout;
 
 impl MacLayout {
-    pub fn new(nx: usize, ny: usize, dx: f32) -> Self {
-        assert!(nx > 0 && ny > 0, "a MAC grid needs at least one cell");
-        assert!(dx > 0.0, "cell width must be positive");
-        Self { nx, ny, dx }
-    }
-
     pub fn cell_centre(&self, i: usize, j: usize) -> Vec2 {
         Vec2::new(i as f32 + 0.5, j as f32 + 0.5) * self.dx
     }

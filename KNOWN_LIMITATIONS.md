@@ -472,22 +472,30 @@ own volumes give, per 4-cell band:
   `NewtonianFluidMaterial::kirchhoff_stress`). Which correction is right
   is open and not built.
 
-### Solids throw their friction heat away
+### Solids throw part of their dissipated heat away
 
-Only `BinghamFluidMaterial` and `NewtonianFluidMaterial` declare a
-specific heat. Every solid and plastic law returns the trait's default,
-so the work their yielding and friction dissipate raises nothing's
-temperature: sand shearing, metal yielding and rock fracturing are all
-adiabatic in the wrong direction, losing the energy instead of keeping
-it as heat.
+A solid can now declare its specific heat: `CorotatedMaterial`,
+`VonMisesMaterial`, `RankineMaterial`, `NeoHookeanMaterial`,
+`ViscoelasticMaterial` and `DruckerPragerMaterial` carry a
+`specific_heat_j_kg_k` field, filled by the caller from the measured
+values of `matter::materials::heat_capacity` (ice Ih, quartz, copper,
+natural rubber, each with its source), and the wrappers
+(`WithLatentHeat`, ...) pass it through. Undeclared stays 0, which keeps
+the temperature unchanged rather than inventing a rise.
 
-Found in the first pass of the core audit, alongside the spawn contract
-and mu(I)'s Euler integration. Both of those are now fixed and this one
-is not: it belongs to no phase of the plan, which is why it is written
-here rather than left in a note. It is the cross-domain energy question,
-not a one-line fix: a law that heats itself needs somewhere for that
-heat to go, which is the thermal coupling this engine has for fluids and
-not for solids.
+What is still lost:
+
+- On the explicit path only Coulomb friction (walls, multi-field
+  contact) becomes heat. The work plastic flow and Kelvin-Voigt dashpots
+  dissipate there is not measured, so it heats nothing whatever the
+  material declares. The total Lagrangian path does turn its plastic,
+  dashpot and friction dissipation into heat.
+- `StomakhinMaterial`, `NaccMaterial`, `MuIRheologyMaterial`,
+  `GranularFluidMaterial` and `NoCompressionMaterial` have no field yet.
+  Snow and wet clay also lack a read source: snow's value is ice's plus
+  its air, clay's depends on its water content.
+- Each value holds at one temperature; ice's `c_p` falls well below it
+  in colder ice (see `heat_capacity`'s doc).
 
 ### A fluid's cavitation pressure is only half derived
 
@@ -525,10 +533,39 @@ What is still open:
   sourced. `GranularFluidMaterial` states `pressure_floor: 0.0` deliberately,
   with its own comment saying so: a cohesionless granular contact carries no
   tension, and zero is the right answer there.
-- `NewtonianFluidMaterial::from_physical` does still state -100,000 Pa as a
-  bare constant. `2*gamma/R` returns it at a 1.4 micrometre nucleus, so it
-  could come out of the same relation the yield-stress family now uses, at
-  each fluid's own surface tension instead of water's. It does not.
+- The Newtonian family no longer states -100,000 Pa as a bare constant. An
+  earlier version of this entry said `2*gamma/R` returns that figure at a
+  1.4 micrometre nucleus. That radius was solved backwards from -100,000 Pa
+  (`2 * 0.072 / 1e5 = 1.44e-6 m`); it was never a measurement, and the
+  -100,000 Pa had no source either. The floor now follows water's
+  vapour-pressure criterion, `p_sat(T) - p_atm` in gauge terms
+  (`NewtonianFluidMaterial::water_cavitation_pressure_pa`, IAPWS-IF97 for
+  `p_sat`): -98,986 Pa at 20 C. Sources read: Brennen, "Cavitation and
+  Bubble Dynamics" (1995), sections 1.5, 1.6 and 1.13 (Eq. 1.15, inception
+  at `p = p_V` for a liquid that cannot withstand tension), and Caupin and
+  Herbert, "Cavitation in water: a review", C. R. Physique 7 (2006),
+  sections 4.2 and 4.7 (ordinary water cavitates close to the saturated
+  vapour pressure, between +0.1 and -1 MPa absolute in most acoustic
+  experiments, because of the nuclei it carries). Still open on that path:
+  - No tension below `p_V` is credited. The Blake critical tension `4S/3R`
+    (Brennen section 2.5) needs a nucleus radius, and ordinary water has a
+    size distribution, not a radius (Brennen section 1.11). Galloway's
+    air-saturated distilled water held -0.1 MPa absolute at 22 C (Caupin
+    and Herbert, section 4.7), about 0.1 MPa below this floor.
+  - The floor is evaluated once at 20 C (`WATER_REFERENCE_TEMPERATURE_K`),
+    not at each particle's temperature; 0 to 30 C would move it from -100.7
+    to -97.1 kPa.
+  - Every liquid built through `Fluid` with no yield stress borrows water's
+    saturation curve, because the engine holds no other. Removal criterion:
+    a sourced vapour-pressure law per liquid. Candidates to fetch, none read
+    yet: NIST Chemistry WebBook saturation data, the IAPWS release for
+    heavy water, published Antoine or Wagner fits with their primary source.
+- The yield-stress family's floor stays on `2*gamma/R` measured from gauge
+  zero. Brennen measures that Laplace term from the vapour pressure instead
+  (section 1.7, Eqs. 1.3 and 1.4) and subtracts the gas partial pressure
+  inside the nucleus (section 1.12), so the gauge-zero reference is an
+  adaptation of the needle-injection relation, stated in
+  `BinghamProps::cavitation_pressure_from_nucleus`, not Brennen's form.
 - The needle-induced-cavitation relation is `P_c = 5E/6 + 2*gamma/R` and only
   the nucleus term is used. The elastic term would deepen the floor and make it
   depend on the fluid's own stiffness. Leaving it out is the conservative
@@ -901,11 +938,6 @@ field's stability bound does not reduce to seconds in the units it states.
   depth (shallow 0.132, deep 0.259). The ordering the test expects held only
   while the cap return over-hardened compaction. It should be rechecked once
   bodies spawn in equilibrium (the spawn contract in the core plan).
-- Two renderer tests (`render_gpu_produces_visible_particle_pixels_not_just_clear_color`
-  and its CPU control) find no particle pixel in a 64x64 headless render, on
-  real hardware too. The instance buffers hold correct data, so the fault is
-  in the draw pass or in quads about 2 pixels wide at that scale; which one
-  is not known. Both stay ignored with that reason.
 - The Cam-Clay soil model carries four disclosed approximations, all in
   `src/matter/materials/solid/nacc.rs`:
   - Its elastic response uses a constant bulk modulus. Real Cam-Clay

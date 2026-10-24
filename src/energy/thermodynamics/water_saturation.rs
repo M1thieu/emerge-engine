@@ -41,6 +41,8 @@
 //! the standard boiling point). The equation itself holds to the critical
 //! point; the clamp is a scene choice.
 
+use crate::matter::materials::gas::STANDARD_ATMOSPHERE_PA;
+
 /// IAPWS-IF97 Region 4 saturation-pressure coefficients (`n1..n10`, Table 34
 /// of R7-97(2012)) -- see this module's doc for the cross-checked
 /// source and the formula that uses them. Kept in `f64`: the formula's own
@@ -100,6 +102,22 @@ fn iapws_if97_region4_p_sat_pa_unclamped(temperature_k: f64) -> f64 {
 pub fn water_saturation_pressure_pa(temperature_k: f32) -> f32 {
     let t_k = temperature_k.clamp(WATER_SATURATION_MIN_VALID_K, WATER_SATURATION_MAX_VALID_K);
     iapws_if97_region4_p_sat_pa_unclamped(t_k as f64) as f32
+}
+
+/// Water's saturation pressure as a GAUGE pressure, `p_sat(T) - p_atm`,
+/// relative to `STANDARD_ATMOSPHERE_PA`: the gauge convention every
+/// Tait-law liquid in this engine uses (zero at rest density). Negative
+/// below the standard boiling point.
+///
+/// The one definition of the vapour-pressure criterion for water in gauge
+/// terms: `cavitating_eos` builds its mixture band on it and
+/// `NewtonianFluidMaterial::water_cavitation_pressure_pa` takes its tension
+/// limit from it. Same input clamp as `water_saturation_pressure_pa`. In
+/// `f64` so the dense verification sweep of `cavitating_eos`'s
+/// temperature-dependent closure checks its `f32` path against a precise
+/// reference.
+pub fn water_saturation_pressure_gauge_pa_f64(temperature_k: f32) -> f64 {
+    water_saturation_pressure_pa(temperature_k) as f64 - STANDARD_ATMOSPHERE_PA as f64
 }
 
 /// Returns the temperature at which water's saturation pressure is

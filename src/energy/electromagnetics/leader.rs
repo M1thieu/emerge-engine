@@ -20,6 +20,7 @@
 use super::potential_field::ElectricPotentialField;
 use crate::spacetime::solver::LcgRng;
 
+#[derive(Debug)]
 pub struct DielectricBreakdownLeader {
     width: usize,
     height: usize,
