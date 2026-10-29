@@ -37,6 +37,22 @@
 //!   and `C_vol : dC / 2 = K/2 (C^-1 : dC) C^-1 - K ln J C^-1 dC C^-1`. Not
 //!   measured for any rubber here: a declared choice until a measured
 //!   `U(J)` for the target rubber (Connolly leaves `U` to the user, p.1278).
+//!
+//! Constants, measured against EUCLID's NR-40 natural rubber data (one
+//! specimen, pure shear and uniaxial tension; fitting and testing on the
+//! same curves, so a calibration, not a validation):
+//! - pure shear alone cannot fix the exponent's sign: its nominal stress
+//!   `mu (l^(a-1) - l^(-a-1))` is unchanged under `(mu, a) -> (-mu, -a)`
+//!   (derived), and a fit on it gave two mirror optima; uniaxial data
+//!   lifts the symmetry;
+//! - a one-term law misses the uniaxial upturn above a stretch of about
+//!   2.75 (predicted 35 % low in relative L2 beyond 2.5);
+//! - two terms fitted on pure shear and uniaxial tension up to 3.25,
+//!   `(mu, alpha)` = (1.6027 MPa, 0.7669) and (0.002555 MPa, 6.0307), the
+//!   second the upturn's, small-strain shear modulus 0.6223 MPa, carry the
+//!   last 11 % of stretch (3.25 to 3.61) within 0.95 % pointwise. Not
+//!   held as a record: one rubber, one specimen, and the stiffening's onset
+//!   was inside the fit.
 
 use glam::{DMat2, DVec2};
 

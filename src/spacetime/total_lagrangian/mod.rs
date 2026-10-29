@@ -78,6 +78,8 @@ pub(crate) mod hooks;
 mod krylov;
 mod modes;
 mod multipliers;
+#[cfg(all(test, feature = "experimental"))]
+pub(crate) mod persistency;
 mod relaxation;
 mod solve;
 mod step;
@@ -349,6 +351,10 @@ pub struct StepReport {
     pub norton_slower: u32,
     pub norton_faster: u32,
     pub norton_tension: u32,
+    /// The step's entry in the probes' contact trace
+    /// (`hooks::record_contact_rows`), zero when it is off.
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) trace_id: u64,
 }
 
 /// The particles' state the step reads and writes.

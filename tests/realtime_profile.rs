@@ -6,8 +6,10 @@
 //! (contact, the step controller), E3 a block sliding on a Coulomb floor
 //! (friction), E4 two blocks colliding (body-body contact), E5 a
 //! Kelvin-Voigt bar ringing down (the dashpot), E6 a J2 block splatting
-//! (plasticity); E1 and E4 also at 2 and 4 times the particles and on 1, 4
-//! and 8 threads; E2 also under the step tolerance's earlier scale.
+//! (plasticity), E7 a clay block landing on a stiff one (two materials in
+//! contact); E1 and E4 also at 2 and 4 times the particles and on 1, 4
+//! and 8 threads; E2 also under the step tolerance's earlier scale; E1
+//! with the modal rest and E2 with the modal flight.
 //!
 //! Each prints one row: milliseconds per frame by phase (the frame's own
 //! always-on timers, `TotalLagrangianFrame::timing`, every try's time
@@ -348,6 +350,11 @@ fn on_threads(threads: usize, run: impl FnOnce() + Send) {
 /// Gate: the worst balance over the weight scale (its test: below 1e-6).
 fn e1_rest(scale: (i32, i32)) {
     let config = config(RES * scale.0 as usize, 1e-1);
+    e1_rest_with(config, scale, &format!("E1 rest x{}", scale.0 * scale.1));
+}
+
+/// E1 under `config` (the path's options), its row labelled `label`.
+fn e1_rest_with(config: SimConfig, scale: (i32, i32), label: &str) {
     let mut sim = Simulation::empty(config);
     let id = sim
         .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
@@ -360,12 +367,8 @@ fn e1_rest(scale: (i32, i32)) {
         let f = sim.total_lagrangian_frame().expect("the path is on");
         drift = drift.max(f.balance.abs() / scale_j);
     });
-    row(
-        &format!("E1 rest x{}", scale.0 * scale.1),
-        &sim,
-        &t,
-        ("drift", drift),
-    );
+    row(label, &sim, &t, ("drift", drift));
+    frame_classes(label, &t);
 }
 
 /// E2: the 8 by 4 block dropped 10 cells, 45 frames, the step tolerance
@@ -382,7 +385,11 @@ fn e2_bounce(tolerance: f64, label: &str) {
 /// its 8 cm) is critically damped at `eta = E / omega`, about 3.5e3 Pa s;
 /// the cell's modes, ten times faster, at a tenth of it.
 fn e2_bounce_damped(tolerance: f64, eta_pa_s: f32, label: &str) {
-    let config = config(RES, tolerance);
+    e2_bounce_with(config(RES, tolerance), eta_pa_s, label);
+}
+
+/// E2 under `config` (the path's options), the clay's viscosity `eta`.
+fn e2_bounce_with(config: SimConfig, eta_pa_s: f32, label: &str) {
     let mut sim = Simulation::empty(config);
     let mut material = CorotatedMaterial::from_physical(&clay(), &config);
     material.elastic_viscosity = config.visc_from_si(eta_pa_s);
@@ -436,6 +443,7 @@ fn e3_slide() {
     let travel = (centre(&sim) - start) * f64::from(CELL_M);
     let exact = 1.0 / (2.0 * 0.3 * 9.81);
     row("E3 slide", &sim, &t, ("travel / exact", travel / exact));
+    frame_classes("E3 slide", &t);
 }
 
 /// E4: two 6 by 4 blocks (times `scale`) closing at 0.25 m/s, 30 frames.
@@ -473,12 +481,57 @@ fn e4_collision(scale: (i32, i32)) {
     let start = momentum(&sim);
     let t = profile(&mut sim, 30, |_| {});
     let drift = (momentum(&sim) - start).abs() / start.abs();
+    let label = format!("E4 collision x{}", scale.0 * scale.1);
+    row(&label, &sim, &t, ("momentum drift", drift));
+    frame_classes(&label, &t);
+}
+
+/// E7: two materials in contact, the 6 by 4 clay block dropped 6 cells onto
+/// an 8 by 4 block of the path's rigid stand-in (`E` 1 GPa, the clay's
+/// density and `nu`, as `tests/total_lagrangian_path.rs`'s stiff slide)
+/// resting on the floor, 45 frames. Gate: the clay's lowest particle above
+/// the stiff block's highest at the end, cells (positive: no crossing).
+fn e7_two_materials() {
+    let config = config(RES, 1e-1);
+    let mut sim = Simulation::empty(config);
+    let stiff = Elastic {
+        e_pa: 1e9,
+        ..clay()
+    };
+    let clay_id = sim
+        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .0;
+    let stiff_id = sim
+        .register_material(Box::new(CorotatedMaterial::from_physical(&stiff, &config)))
+        .0;
+    let middle = RES as f32 * 0.5;
+    let base = sim.add_body(
+        SpawnRegion::for_sim(&config)
+            .box_of(IVec2::new(8, 4))
+            .at(Vec2::new(middle, config.boundary_thickness as f32 + 2.0))
+            .spacing(0.5)
+            .material(stiff_id)
+            .mass_from(&stiff, &config),
+    );
+    let _top = sim.add_body(block(&config, clay_id, (6, 4), middle, 4.0 + 6.0));
+    let t = profile(&mut sim, 45, |_| {});
+    let p = sim.particles();
+    let (mut lowest, mut highest) = (f32::INFINITY, f32::NEG_INFINITY);
+    for (x, &tag) in p.x.iter().zip(&p.user_tag) {
+        if tag == base {
+            highest = highest.max(x.y);
+        } else {
+            lowest = lowest.min(x.y);
+        }
+    }
+    let label = "E7 clay on a stiff block";
     row(
-        &format!("E4 collision x{}", scale.0 * scale.1),
+        label,
         &sim,
         &t,
-        ("momentum drift", drift),
+        ("clay above stiff, cells", f64::from(lowest - highest)),
     );
+    frame_classes(label, &t);
 }
 
 /// E5: the Kelvin-Voigt bar of `tests/kelvin_voigt_bar.rs` (32 by 2 cells,
@@ -544,6 +597,7 @@ fn e5_kelvin_voigt() {
         &t,
         ("zeta / exact", measured / exact),
     );
+    frame_classes("E5 Kelvin-Voigt bar", &t);
 }
 
 /// E6: the J2 block of the splat test (E 1 MPa, nu 0.3, Y 20 kPa, 1700
@@ -670,6 +724,30 @@ fn profile_e2_bounce_damped() {
                 );
             }
         }
+    });
+}
+
+/// E1 with the modal rest (`with_modal_rest`) and E2 with the modal flight
+/// (`with_modal_flight`, at the tolerance of `impact_local`'s runs): the
+/// path's options for a resting and a flying body, each its own row.
+#[test]
+#[ignore = "real-time profile: a quiet machine only, one scene at a time"]
+fn profile_modal_options() {
+    cap::capped("profile_modal_options", 3600, || {
+        let mut rest = config(RES, 1e-1);
+        rest.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1).with_modal_rest());
+        e1_rest_with(rest, (1, 1), "E1 rest, modal rest");
+        let mut flight = config(RES, 1e-2);
+        flight.total_lagrangian = Some(TotalLagrangianConfig::new(1e-2).with_modal_flight());
+        e2_bounce_with(flight, 0.0, "E2 bounce, modal flight, tol 1e-2");
+    });
+}
+
+#[test]
+#[ignore = "real-time profile: a quiet machine only, one scene at a time"]
+fn profile_e7_two_materials() {
+    cap::capped("profile_e7_two_materials", 3600, || {
+        e7_two_materials();
     });
 }
 

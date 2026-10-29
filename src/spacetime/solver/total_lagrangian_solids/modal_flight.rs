@@ -28,17 +28,17 @@ use super::vibration::{
 use super::*;
 
 /// One flight: its start time and its rigid and modal state there.
-struct Flight {
+pub(super) struct Flight {
     t: f64,
     centre: DVec2,
     velocity: DVec2,
-    angle: f64,
+    pub(super) angle: f64,
     spin: f64,
     /// The reference centre of mass, `C`.
     origin: DVec2,
     /// Per mode, `z = omega q - i q'` in the body's frame (zero for the
     /// rigid ones).
-    z: Vec<DVec2>,
+    pub(super) z: Vec<DVec2>,
 }
 
 /// The body's centre of mass, its velocity and its spin `L / I`.
@@ -64,7 +64,7 @@ fn rigid(state: &TotalLagrangianState) -> (DVec2, DVec2, f64) {
 
 /// The flight state at `t`, and the largest rigid share left in the
 /// body-frame motion (the split's own check, relative to the elastic).
-fn split(state: &TotalLagrangianState, modes: &Modes, t: f64) -> (Flight, f64) {
+pub(super) fn split(state: &TotalLagrangianState, modes: &Modes, t: f64) -> (Flight, f64) {
     let n = state.particles;
     let total: f64 = state.mass[..n].iter().sum();
     let (centre, velocity, spin) = rigid(state);

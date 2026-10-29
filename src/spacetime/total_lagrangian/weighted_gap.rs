@@ -78,6 +78,13 @@ pub(crate) fn outline_trace(
     cuts.dedup();
     let starts = if cuts.is_empty() { vec![0] } else { cuts };
     let patch = 2.0 * cell;
+    // `EMERGE_PROBE_PATCH_CELLS`, a measurement: the patch's length in
+    // cells instead of 2.
+    #[cfg(all(test, feature = "experimental"))]
+    let patch = std::env::var("EMERGE_PROBE_PATCH_CELLS")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map_or(patch, |cells| cells * cell);
     let mut functions = Vec::new();
     for (k, &start) in starts.iter().enumerate() {
         let end = if starts.len() == 1 {
@@ -165,6 +172,8 @@ pub(crate) fn reaching_conditions(
 ) -> Vec<Contact> {
     let mut found = Vec::new();
     let mut function = 0usize;
+    #[cfg(feature = "experimental")]
+    let mut census = [0u64; 3];
     for (o, (trace, outline)) in traces.iter().zip(outlines).enumerate() {
         for members in &trace.functions {
             for (index, plane) in planes.iter().enumerate() {
@@ -217,6 +226,8 @@ pub(crate) fn reaching_conditions(
                     continue;
                 }
                 let mut facing: Vec<(ContactPoint, f64, f64, f64)> = Vec::new();
+                #[cfg(feature = "experimental")]
+                let mut dropped = 0u64;
                 for &(r, w) in members {
                     let p = outline[r];
                     let (normal, nodal) = outward(x, outline, r);
@@ -247,6 +258,21 @@ pub(crate) fn reaching_conditions(
                         }
                     }
                     if let Some((signed, ends, closing)) = best {
+                        // The proposed fix (BODY_BODY_GAP_FIX_PLAN.md), behind its switch: the gap's sign by
+                        // admissibility (Laursen and Chawla 1997, eq. (1)), so a point outside the other body whose
+                        // normal line meets it only behind (through its own body) is not in penetration and has
+                        // no facing segment. Adaptation: admissibility tested on the other body's outline polygon.
+                        #[cfg(feature = "experimental")]
+                        let behind =
+                            (census_on() || fix_on()) && signed < 0.0 && !inside(x, master, x[p]);
+                        #[cfg(feature = "experimental")]
+                        if census_on() && behind {
+                            dropped += 1;
+                        }
+                        #[cfg(feature = "experimental")]
+                        if fix_on() && behind {
+                            continue;
+                        }
                         facing.push((
                             ContactPoint {
                                 particle: p,
@@ -270,6 +296,15 @@ pub(crate) fn reaching_conditions(
                 if !reaches(gap, rate) {
                     continue;
                 }
+                #[cfg(feature = "experimental")]
+                if dropped > 0 {
+                    census[0] += 1;
+                    census[1] += dropped;
+                }
+                #[cfg(feature = "experimental")]
+                {
+                    census[2] += 1;
+                }
                 found.push(Contact {
                     points: facing.iter().map(|f| (f.0, f.1 / total)).collect(),
                     key: (4, function, other),
@@ -280,7 +315,69 @@ pub(crate) fn reaching_conditions(
             function += 1;
         }
     }
+    #[cfg(feature = "experimental")]
+    if census_on() && census[0] > 0 {
+        census_record(census);
+    }
     found
+}
+
+/// The zero-change census of `tmp/papers/dl_realtime/BODY_BODY_GAP_FIX_PLAN.md`: on when the environment variable
+/// `EMERGE_PROBE_BODY_GAP_CENSUS` names a file.
+#[cfg(feature = "experimental")]
+fn census_on() -> bool {
+    static ON: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    ON.get_or_init(|| std::env::var_os("EMERGE_PROBE_BODY_GAP_CENSUS").map(Into::into))
+        .is_some()
+}
+
+/// The fix's switch: on when the environment variable `EMERGE_PROBE_BODY_GAP_FIX` is set.
+#[cfg(feature = "experimental")]
+fn fix_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("EMERGE_PROBE_BODY_GAP_FIX").is_some();
+        if on {
+            println!("knob active: body-body gap fix");
+        }
+        on
+    })
+}
+
+/// Appends one call's counts to the census file, with the thread's name (the test's, under the test harness):
+/// body-body conditions formed holding points the fix would drop, those points, and all body-body conditions formed.
+#[cfg(feature = "experimental")]
+fn census_record(counts: [u64; 3]) {
+    use std::io::Write;
+    let Some(path) = std::env::var_os("EMERGE_PROBE_BODY_GAP_CENSUS") else {
+        return;
+    };
+    let name = std::thread::current()
+        .name()
+        .unwrap_or("unnamed")
+        .to_string();
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{name}	{}	{}	{}", counts[0], counts[1], counts[2]);
+    }
+}
+
+/// Whether `q` lies inside the polygon through the outline points `polygon` (in order), by the crossing count of a
+/// ray along +x. The proposed fix's admissibility test (Laursen and Chawla 1997, eq. (1): penetration only inside the
+/// other body), discretised on the outline polygon.
+#[cfg(feature = "experimental")]
+fn inside(x: &[DVec2], polygon: &[usize], q: DVec2) -> bool {
+    let mut crossings = false;
+    for k in 0..polygon.len() {
+        let (a, b) = (x[polygon[k]], x[polygon[(k + 1) % polygon.len()]]);
+        if (a.y > q.y) != (b.y > q.y) && q.x < a.x + (q.y - a.y) / (b.y - a.y) * (b.x - a.x) {
+            crossings = !crossings;
+        }
+    }
+    crossings
 }
 
 #[cfg(test)]

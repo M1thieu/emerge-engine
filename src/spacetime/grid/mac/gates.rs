@@ -6186,7 +6186,7 @@ fn manufactured_run(case: Manufactured) -> String {
 /// weights, from the closed forms of the roots of the Legendre polynomial
 /// `P_n` on `[-1, 1]` mapped by `t = (x + 1) / 2` (weights halved). Exact
 /// for polynomials of degree up to `2 n - 1`, which the probe checks.
-fn gauss_legendre(n: usize) -> (Vec<f64>, Vec<f64>) {
+pub(super) fn gauss_legendre(n: usize) -> (Vec<f64>, Vec<f64>) {
     let (x, w): (Vec<f64>, Vec<f64>) = match n {
         1 => (vec![0.0], vec![2.0]),
         2 => {
@@ -7327,9 +7327,26 @@ fn bar_impact_run(courant: Option<f64>, cells: usize) -> String {
         || mode != crate::spacetime::total_lagrangian::ContactMode::Position;
     let cell_m = length / cells as f64;
     // Per unit density, cells and seconds; `lambda = 0`, so `bulk = mu`.
-    let c0 = (e / rho).sqrt() / cell_m;
-    let mu = 0.5 * c0 * c0;
-    let solid = crate::spacetime::total_lagrangian::Elastic::isochoric(mu, mu);
+    // MIXED_FORMULATION_PLAN.md criterion 6': `EMERGE_PROBE_BAR_CONFINED`
+    // holds every horizontal coefficient (rollers on the long sides: 1D
+    // motion, uniaxial strain), so `EMERGE_PROBE_BAR_NU` (Poisson's ratio,
+    // 0 by default) has the exact 1D solution with the P-wave modulus
+    // `lambda + 2 mu = E (1 - nu) / ((1 + nu)(1 - 2 nu))`; at `nu = 0` the
+    // free bar's own numbers, bit for bit.
+    let confined = std::env::var_os("EMERGE_PROBE_BAR_CONFINED").is_some();
+    let nu = float("EMERGE_PROBE_BAR_NU", 0.0);
+    assert!(
+        confined || nu == 0.0,
+        "a free bar at nu > 0 has no exact solution: set EMERGE_PROBE_BAR_CONFINED"
+    );
+    if confined {
+        println!("knob active: confined bar, nu {nu}");
+    }
+    crate::spacetime::total_lagrangian::hooks::set_held_axis(confined.then_some(0));
+    let modulus = e * (1.0 - nu) / ((1.0 + nu) * (1.0 - 2.0 * nu));
+    let c0 = (modulus / rho).sqrt() / cell_m;
+    let mu = 0.5 * c0 * c0 * (1.0 - 2.0 * nu) / (1.0 - nu);
+    let solid = crate::spacetime::total_lagrangian::Elastic::isochoric(mu, mu / (1.0 - 2.0 * nu));
     let side = cells as f64;
     let tau = side / c0;
     let v0 = strain * c0;
@@ -7387,12 +7404,61 @@ fn bar_impact_run(courant: Option<f64>, cells: usize) -> String {
     let n = reference.len();
     let mass = v0s.clone();
     let mut solids = vec![solid; n];
+    // `EMERGE_PROBE_THETA=cell`: Theta per grid cell (the cells of the
+    // reference positions, in cells), as the TL solids path's `theta_cells`.
+    if std::env::var("EMERGE_PROBE_THETA").as_deref() == Ok("cell") {
+        let mut index = std::collections::HashMap::new();
+        let of: Vec<usize> = reference
+            .iter()
+            .map(|q| {
+                let next = index.len();
+                *index
+                    .entry((q.x.floor() as i64, q.y.floor() as i64))
+                    .or_insert(next)
+            })
+            .collect();
+        println!("knob active: Theta per cell, {} cells", index.len());
+        crate::spacetime::total_lagrangian::hooks::set_cells(Some((of, index.len())));
+    }
     // The normal component's coefficients on the face `y = 4`: support
     // `[2.5, 5.5]`, of which the bar holds only the knot span `[4.5, 5.5]`.
     let row = (bottom - 0.5) as usize;
-    crate::spacetime::total_lagrangian::hooks::set_massless((!standard).then(|| {
+    // `EMERGE_PROBE_BAR_MASSLESS_ROWS=n` (BAR_REFERENCE_PLAN.md sec. 8.2, a
+    // diagnostic that removes mass): the normal component's `n` bottom rows
+    // massless, with any contact mode; the removed share of the normal
+    // mass printed from the plain B-splines before the first step.
+    let rows = std::env::var("EMERGE_PROBE_BAR_MASSLESS_ROWS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok());
+    if let Some(rows) = rows {
+        let spline = |t: f64| match t.abs() {
+            a if a < 0.5 => 0.75 - a * a,
+            a if a < 1.5 => 0.5 * (1.5 - a).powi(2),
+            _ => 0.0,
+        };
+        let removed: f64 = (0..body)
+            .map(|p| {
+                mass[p]
+                    * (row..row + rows)
+                        .map(|j| spline(reference[p].y - j as f64))
+                        .sum::<f64>()
+            })
+            .sum();
+        let total: f64 = mass[..body].iter().sum();
+        println!(
+            "knob active: {rows} massless bottom rows, {:.4} of the normal mass removed",
+            removed / total
+        );
+    }
+    let label = match rows {
+        Some(rows) => format!("{rows} massless bottom rows"),
+        None if standard => "standard".to_string(),
+        None => "massless contact boundary".to_string(),
+    };
+    let rows = rows.unwrap_or(usize::from(!standard));
+    crate::spacetime::total_lagrangian::hooks::set_massless((rows > 0).then(|| {
         (x0 as usize - 1..=x0 as usize + width)
-            .map(|i| (1, i, row))
+            .flat_map(|i| (row..row + rows).map(move |j| (1, i, j)))
             .collect()
     }));
     // `EMERGE_PROBE_CONTACT_TOL`: the contacts' gap tolerance, cells.
@@ -7460,6 +7526,10 @@ fn bar_impact_run(courant: Option<f64>, cells: usize) -> String {
     let (mut work, mut least_work, mut updates) = (0.0f64, 0.0f64, 0.0f64);
     let (mut newton, mut gmres, mut passes, mut most_passes, mut unconverged, mut cost) =
         (0u64, 0u64, 0u64, 0u32, 0u32, 0.0f64);
+    // Why a step is unconverged (BAR_REFERENCE_PLAN.md sec. 8.5's caveat):
+    // stagnated, or at Newton's iteration cap, and the worst final residual
+    // over the tolerance.
+    let (mut stagnated, mut capped, mut worst_residual) = (0u32, 0u32, 0.0f64);
     let mut deepest = 0.0f64;
     let pressure = c0 * v0;
     // `EMERGE_PROBE_BAR_ADAPTIVE=tol`: the step chosen by its error
@@ -7566,6 +7636,11 @@ fn bar_impact_run(courant: Option<f64>, cells: usize) -> String {
             passes += u64::from(report.passes);
             most_passes = most_passes.max(report.passes);
             unconverged += u32::from(!report.converged);
+            if !report.converged {
+                stagnated += u32::from(report.stagnated);
+                capped += u32::from(report.newton >= settings.max_newton);
+                worst_residual = worst_residual.max(report.residual / settings.newton_tolerance);
+            }
             cost += report.phases.iter().sum::<f64>();
             work += report.work.0;
             updates += report.work.1;
@@ -7628,11 +7703,7 @@ fn bar_impact_run(courant: Option<f64>, cells: usize) -> String {
     crate::spacetime::total_lagrangian::hooks::set_massless(None);
     format!(
         "bar impact, {mode:?} contact, {} mass, h = L/{cells} (L {length} m, width {width} cells), {}, c0 {:.1} m/s, strain {strain:e}: contact {:.2} steps exact; {steps} steps to t = {t:.4} s\n  contact {:.4} s for {:.4} exact (realism {:.1} %, resolution one step {:.4} s); push mean {:.4} of E v0/c0 (realism {:.1} %), spread {:.3} of it, over {pushes} steps; take-off {:.5} of v0 (realism {:.1} %)\n  energy end {:.6} of the start (realism {:.2} %), walls' work {:+.3e} of it (least step {:+.2e}), velocity updates {:+.3e}, balance {:+.2e}; vibration left {:.4} of the start\n  worst displacement error {:.3e} of v0 tau_w (realism {:.1} %), worst velocity error {:.3e} of v0 (realism {:.1} %); deepest end below the ground {deepest:.2e} cells, largest standoff while pushed {standoff:.2e} cells\n  Newton {:.2}, GMRES {:.1}, passes {:.2} (at most {most_passes}) per step, unconverged {unconverged}; {:.2} s per simulated s",
-        if standard {
-            "standard"
-        } else {
-            "massless contact boundary"
-        },
+        label,
         match courant {
             Some(nu) => format!("Courant {nu} (dt {dt:.3e} s)"),
             None => format!("frame step (Courant {:.1})", c0 * dt),
@@ -7663,6 +7734,9 @@ fn bar_impact_run(courant: Option<f64>, cells: usize) -> String {
         gmres as f64 / solved as f64,
         passes as f64 / solved as f64,
         cost / t
+    ) + &format!(
+        "
+  unconverged steps: stagnated {stagnated}, at the iteration cap {capped}, worst final residual {worst_residual:.2e} of the tolerance"
     ) + &match control {
         Some(c) => format!(
             "\n  controlled, tol {} (error energy at most {:.1e} of the start): {accepted} steps kept, {rejected} rejected, {solves} solves, {after_release} after the release, shortest {shortest:.3e} s ({:.1} per contact); active set changed {set_changes} times over the kept substeps, contact points' normal velocity flipped {flips} times beyond the ground",

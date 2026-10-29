@@ -474,6 +474,25 @@ pub(crate) fn take_tries() -> [u32; 6] {
     std::mem::take(&mut *TRIES.lock().expect("tries lock"))
 }
 
+/// Whether a probe is armed that a try's thread or the tries' order would
+/// change: the per-thread trace, homotopy, fold and torque records (read on
+/// the calling thread), the records kept in call order (condition numbers,
+/// factors built, GMRES replays, the sampled whole step's estimate), the
+/// viscous work (the last solve's), and the factor prints of the control
+/// trace. `controlled_step` then runs its tries one after the other.
+pub(super) fn order_sensitive() -> bool {
+    on() || homotopy() > 0
+        || fold()
+        || torque_on()
+        || CONDITION.lock().expect("condition lock").0 > 0
+        || preconditioned_wanted()
+        || FACTORS_BUILT.lock().expect("factors lock").is_some()
+        || gmres_replay()
+        || lobatto_wanted()
+        || viscosity() != 0.0
+        || control_trace()
+}
+
 /// The error estimate's measurement (`estimate`, `step_control`): every
 /// `every`-th pair of the step controller's tries is sampled (0: off; the
 /// default read once from `EMERGE_PROBE_EFFECTIVITY`), and every
@@ -580,4 +599,252 @@ pub(super) fn record_effectivity(row: EffectivityRow) {
 
 pub(crate) fn take_effectivity() -> Vec<EffectivityRow> {
     std::mem::take(&mut *EFFECTIVITY_ROWS.lock().expect("rows lock"))
+}
+
+/// TEMPORARY measurement (not to be committed): the solve's parts, summed:
+/// 0 Jacobian products, 1 their vector setup s, 2 their mass products s,
+/// 3 their internal-force products s, 4 their masking s, 5 linearisations,
+/// 6 residual evaluations, 7 solves, 8 the solves' wall time s, 9 Newton
+/// iterations.
+pub(crate) static PARTS: std::sync::Mutex<[f64; 10]> = std::sync::Mutex::new([0.0; 10]);
+
+pub(crate) fn add_part(i: usize, v: f64) {
+    PARTS.lock().expect("parts")[i] += v;
+}
+
+pub(crate) fn take_parts() -> [f64; 10] {
+    std::mem::take(&mut *PARTS.lock().expect("parts"))
+}
+
+/// One held contact of one step in the probes' contact trace
+/// (`tmp/papers/dl_realtime/CHATTER_TRACE_PLANS.md`, M1): its key, its
+/// multiplier at the step's end, its weighted normal velocity `G v` at the
+/// step's start and end (positive separating), the gap allowance it was held
+/// to (`contact_allowance`) and that allowance's resolution term
+/// (`gap_resolution`), and its push on each point it spreads to, the force
+/// the step applies over its length (M2).
+#[derive(Clone, Debug)]
+pub(crate) struct ContactRow {
+    pub(crate) key: super::ContactKey,
+    pub(crate) multiplier: f64,
+    pub(crate) start: f64,
+    pub(crate) end: f64,
+    pub(crate) allowance: f64,
+    pub(crate) resolution: f64,
+    pub(crate) push: Vec<(usize, glam::DVec2)>,
+}
+
+/// A step of the contact trace: its length and its contacts' rows.
+pub(crate) type TracedStep = (f64, Vec<ContactRow>);
+
+/// The contact trace: every solve's rows by id while a controlled step
+/// runs, and the kept steps' rows in order.
+type ContactTrace = Option<(u64, Vec<(u64, TracedStep)>, Vec<TracedStep>)>;
+
+static CONTACT_TRACE: std::sync::Mutex<ContactTrace> = std::sync::Mutex::new(None);
+
+pub(crate) fn watch_contact_rows(on: bool) {
+    *CONTACT_TRACE.lock().expect("contact trace lock") = on.then(|| (0, Vec::new(), Vec::new()));
+}
+
+pub(super) fn contact_rows_on() -> bool {
+    CONTACT_TRACE.lock().expect("contact trace lock").is_some()
+}
+
+/// Records one solve's rows; returns its id (`StepReport::trace_id`).
+pub(super) fn record_contact_rows(dt: f64, rows: Vec<ContactRow>) -> u64 {
+    let mut trace = CONTACT_TRACE.lock().expect("contact trace lock");
+    let Some((next, pending, _)) = trace.as_mut() else {
+        return 0;
+    };
+    *next += 1;
+    pending.push((*next, (dt, rows)));
+    *next
+}
+
+/// Keeps the rows of a controlled step's kept solves, in order, and drops
+/// the others (rejected tries, error estimates).
+pub(super) fn keep_contact_rows(kept: &[super::StepReport]) {
+    let mut trace = CONTACT_TRACE.lock().expect("contact trace lock");
+    let Some((_, pending, steps)) = trace.as_mut() else {
+        return;
+    };
+    for report in kept {
+        if let Some(i) = pending.iter().position(|(id, _)| *id == report.trace_id) {
+            steps.push(pending.swap_remove(i).1);
+        }
+    }
+    pending.clear();
+}
+
+pub(crate) fn take_contact_rows() -> Vec<TracedStep> {
+    CONTACT_TRACE
+        .lock()
+        .expect("contact trace lock")
+        .as_mut()
+        .map(|(_, _, steps)| std::mem::take(steps))
+        .unwrap_or_default()
+}
+
+/// A contact's weighted normal velocity `G v`, positive separating, over
+/// its shares (`contact_geometry`).
+fn normal_velocity(shares: &[super::Share], v: &[glam::DVec2]) -> f64 {
+    shares
+        .iter()
+        .map(|s| {
+            let relative: glam::DVec2 = s.spread.iter().map(|&(r, w)| w * v[r]).sum();
+            s.weight * s.normal.dot(relative)
+        })
+        .sum()
+}
+
+/// The contact trace's rows at a step's start (`step_total_lagrangian_
+/// contact`, before the particles' update), each with its shares at the
+/// start positions, as the step measures them; `None` when the trace is off.
+pub(super) fn contact_rows_start(
+    grid: &super::Grid,
+    (x, v, used, u): (&[glam::DVec2], &[glam::DVec2], &[super::Plane], &[f64]),
+    contacts: &[super::Contact],
+    (penalty, residual): (&[f64], f64),
+    (tolerance, dt): (f64, f64),
+) -> Option<Vec<(ContactRow, Vec<super::Share>)>> {
+    contact_rows_on().then(|| {
+        contacts
+            .iter()
+            .map(|c| {
+                let (_, shares) = super::contact_geometry(grid, x, used, u, c);
+                let resolution = super::gap_resolution(c, penalty, residual);
+                // The force as the step spreads it (`step_total_lagrangian_
+                // contact`'s torque probe): the frictionless walls' part.
+                let push = shares
+                    .iter()
+                    .flat_map(|s| {
+                        let total =
+                            s.weight * (c.multiplier * s.normal + c.tangential * s.normal.perp());
+                        s.spread.map(|(r, w)| (r, w * total))
+                    })
+                    .collect();
+                let row = ContactRow {
+                    key: c.key,
+                    multiplier: c.multiplier,
+                    start: normal_velocity(&shares, v),
+                    end: 0.0,
+                    allowance: super::contact_allowance(
+                        grid,
+                        (x, v),
+                        used,
+                        u,
+                        &shares,
+                        (tolerance, dt, resolution),
+                    ),
+                    resolution,
+                    push,
+                };
+                (row, shares)
+            })
+            .collect()
+    })
+}
+
+/// The rows completed with the end velocities, after the update.
+pub(super) fn contact_rows_end(
+    traced: Vec<(ContactRow, Vec<super::Share>)>,
+    v: &[glam::DVec2],
+) -> Vec<ContactRow> {
+    traced
+        .into_iter()
+        .map(|(row, shares)| ContactRow {
+            end: normal_velocity(&shares, v),
+            ..row
+        })
+        .collect()
+}
+
+/// PER_BODY_TOLERANCE_PLAN.md: each particle's body and each body's own
+/// tolerance energy `E0_b`, set at the path's start by the solids layer
+/// when `EMERGE_PROBE_TOL_PER_BODY` is on; the controller's error then
+/// keeps every body within `tol sqrt(E0_b)` (`step_control`'s `norm`).
+pub(crate) type BodyScales = std::rc::Rc<(Vec<usize>, Vec<f64>)>;
+
+thread_local! {
+    static BODY_SCALES: RefCell<Option<BodyScales>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn set_body_scales(scales: Option<(Vec<usize>, Vec<f64>)>) {
+    BODY_SCALES.with(|b| *b.borrow_mut() = scales.map(std::rc::Rc::new));
+}
+
+pub(crate) fn body_scales() -> Option<BodyScales> {
+    BODY_SCALES.with(|b| b.borrow().clone())
+}
+
+/// ROW15_REACH_CUT_PLAN.md: the points the controller watches at its first
+/// pair (per state point, whether it belongs to a body free at the step's
+/// start), and what it records when one of them reaches a plane there: the
+/// pair's length, the estimator's floor and the points reached. The step
+/// is then handed back untaken (`controlled_step`).
+pub(crate) struct ReachAbort {
+    pub(crate) dt: f64,
+    pub(crate) floor: f64,
+    pub(crate) reached: Vec<usize>,
+}
+
+thread_local! {
+    static REACH_WATCH: RefCell<Option<std::rc::Rc<Vec<bool>>>> = const { RefCell::new(None) };
+    static REACH_ABORT: RefCell<Option<ReachAbort>> = const { RefCell::new(None) };
+    static REACH_CRITICAL: Cell<Option<f64>> = const { Cell::new(None) };
+    static REACH_LATE: Cell<u32> = const { Cell::new(0) };
+}
+
+pub(crate) fn set_reach_watch(watch: Option<Vec<bool>>) {
+    REACH_WATCH.with(|w| *w.borrow_mut() = watch.map(std::rc::Rc::new));
+}
+
+pub(crate) fn reach_watch() -> Option<std::rc::Rc<Vec<bool>>> {
+    REACH_WATCH.with(|w| w.borrow().clone())
+}
+
+pub(crate) fn set_reach_abort(abort: ReachAbort) {
+    REACH_ABORT.with(|a| *a.borrow_mut() = Some(abort));
+}
+
+pub(crate) fn take_reach_abort() -> Option<ReachAbort> {
+    REACH_ABORT.with(|a| a.borrow_mut().take())
+}
+
+/// The critical step's length for the next `controlled_step` call: one
+/// unestimated try of that length.
+pub(crate) fn set_reach_critical(length: Option<f64>) {
+    REACH_CRITICAL.with(|c| c.set(length));
+}
+
+pub(crate) fn take_reach_critical() -> Option<f64> {
+    REACH_CRITICAL.with(|c| c.take())
+}
+
+/// A watched point reaching a plane after a rejected pair (left as today).
+pub(crate) fn add_reach_late() {
+    REACH_LATE.with(|c| c.set(c.get() + 1));
+}
+
+pub(crate) fn take_reach_late() -> u32 {
+    REACH_LATE.with(|c| c.replace(0))
+}
+
+/// MIXED_FORMULATION_PLAN.md criterion 6': a grid axis whose every face the
+/// contact step's grid holds at zero velocity (`Held`), so a bar's motion is
+/// 1D (laterally confined, rollers on its long sides); `usize::MAX` off. A
+/// process-wide value: the grid may be built on a worker thread.
+static HELD_AXIS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+pub(crate) fn set_held_axis(axis: Option<usize>) {
+    HELD_AXIS.store(
+        axis.unwrap_or(usize::MAX),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+pub(crate) fn held_axis() -> Option<usize> {
+    let axis = HELD_AXIS.load(std::sync::atomic::Ordering::Relaxed);
+    (axis != usize::MAX).then_some(axis)
 }

@@ -101,6 +101,9 @@ pub struct NewtonianFluidMaterial {
     pub min_density: f32,
     pub min_volume: f32,
     /// Thermal thinning: µ_eff = dynamic_viscosity · exp(−thermal_viscosity_coeff · T).
+    /// Empirical form, not the Arrhenius/Andrade law of liquids (µ = A·exp(Ea/(R·T)),
+    /// exponential in 1/T); the coefficient has no source. Removal criterion: replace
+    /// by a sourced viscosity-temperature law for the fluid a scene declares.
     /// 0.0 = isothermal. Positive values make the fluid flow easier when hot.
     pub thermal_viscosity_coeff: f32,
     /// Bulk viscosity ζ (second viscosity, Pa·s in physical units).

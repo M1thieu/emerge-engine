@@ -56,6 +56,10 @@ pub struct TotalLagrangianConfig {
     /// modes (`rest`) while its held contacts provably stay compressive.
     /// Off by default.
     pub modal_rest: bool,
+    /// With `modal_flight`: a frame that cannot be flown whole is flown up
+    /// to its contact and after it, the step taking only the part between
+    /// (`handoff`). Off by default.
+    pub subframe_handoff: bool,
 }
 
 impl TotalLagrangianConfig {
@@ -67,7 +71,15 @@ impl TotalLagrangianConfig {
             settings: ConservingSettings::default(),
             modal_flight: false,
             modal_rest: false,
+            subframe_handoff: false,
         }
+    }
+
+    /// The same, modal flight cut at the frame's contact (`handoff`).
+    pub fn with_subframe_handoff(mut self) -> Self {
+        self.modal_flight = true;
+        self.subframe_handoff = true;
+        self
     }
 
     /// The same, a lone body's rest carried by its constrained modes
@@ -136,7 +148,16 @@ pub(crate) struct TotalLagrangianState {
     modal_refused: [u64; 3],
     modal_check_failed: u64,
     modal_rest_refused: u64,
+    /// Whether a step has held a contact since the last flight ended
+    /// (`handoff`: a flight resumes only after a contact has ended).
+    held_since_flight: bool,
     pub(crate) frame: TotalLagrangianFrame,
+    /// The exponential flight's trial (`exponential_flight`): its flight
+    /// under way and each step's record.
+    #[cfg(all(test, feature = "experimental"))]
+    exponential: Option<exponential_flight::Exponential>,
+    #[cfg(all(test, feature = "experimental"))]
+    exponential_log: Vec<exponential_flight::Record>,
 }
 
 /// A body's contact outline: its points and the indices of its corners
@@ -430,7 +451,12 @@ impl Simulation {
             modal_refused: [0; 3],
             modal_check_failed: 0,
             modal_rest_refused: 0,
+            held_since_flight: false,
             frame: TotalLagrangianFrame::default(),
+            #[cfg(all(test, feature = "experimental"))]
+            exponential: None,
+            #[cfg(all(test, feature = "experimental"))]
+            exponential_log: Vec::new(),
         };
         state.start_momentum = (0..n).fold(DVec2::ZERO, |sum, p| sum + state.mass[p] * state.v[p]);
         if modal_flight && state.outlines.len() == 1 {
@@ -460,6 +486,8 @@ impl Simulation {
                 .iter()
                 .map(|(m, points)| (*m, &state.reference[points.clone()])),
         );
+        #[cfg(all(test, feature = "experimental"))]
+        multi_body_probes::set_body_scales(self, &state, &bodies);
         state
     }
 
@@ -479,39 +507,6 @@ impl Simulation {
                     - state.mass[p] * gravity.dot(state.x[p])
             })
             .sum()
-    }
-
-    /// The domain's walls as contact planes and their friction coefficient
-    /// (one for every contact, walls and bodies alike: declared).
-    fn total_lagrangian_walls(&self) -> (Vec<Plane>, f64) {
-        let cell = f64::from(self.config.dx_meters);
-        let res = self.config.grid_res as f64 * cell;
-        let mut planes = Vec::new();
-        let mut friction = None::<f32>;
-        for wall in self.boundaries.iter().filter_map(|b| b.domain_walls()) {
-            let t = wall.thickness as f64 * cell;
-            for axis in 0..2 {
-                planes.push(Plane {
-                    axis,
-                    at: t,
-                    inward: 1.0,
-                });
-                planes.push(Plane {
-                    axis,
-                    at: res - t,
-                    inward: -1.0,
-                });
-            }
-            match friction {
-                Some(mu) if mu != wall.friction => panic!(
-                    "the total Lagrangian solid path takes one friction coefficient for every contact; \
-                     the walls give {mu} and {}",
-                    wall.friction
-                ),
-                _ => friction = Some(wall.friction),
-            }
-        }
-        (planes, f64::from(friction.unwrap_or(0.0)))
     }
 
     /// One frame on this path: controlled steps until the frame's time is
@@ -549,7 +544,7 @@ impl Simulation {
             growth: 10.0,
             largest: f64::from(self.config.dt),
             substeps: [1, 2, 3],
-            estimator: Estimator::Acary,
+            estimator: crate::spacetime::total_lagrangian::estimator_knob(Estimator::Acary),
         };
         let gravity = self.total_lagrangian_gravity();
         let mut state = self.total_lagrangian.take().expect("built above");
@@ -594,6 +589,23 @@ impl Simulation {
         } else {
             length
         };
+        // A frame that is not flown whole: flown up to its contact
+        // (`handoff`), the step from there.
+        let handoff = config.subframe_handoff && config.modal_flight;
+        let mut flown_change = 0.0;
+        if frame.modal {
+            state.held_since_flight = false;
+        }
+        if handoff && remaining > 0.0 {
+            let (reach, change) =
+                self.fly_as_far_as_clear(&mut state, (&planes, gravity), (now, now + length));
+            if reach > now {
+                state.held_since_flight = false;
+            }
+            frame.flown += reach - now;
+            flown_change += change;
+            remaining = now + length - reach;
+        }
         while remaining > 4.0 * f64::EPSILON * f64::from(self.config.dt) {
             // A step cut short to end on the frame's time says nothing
             // about the step the solution allows: kept at its first try,
@@ -603,32 +615,53 @@ impl Simulation {
             let proposed = state.step_length;
             let cut = proposed > remaining;
             state.step_length = proposed.min(remaining);
-            let step = controlled_step(
-                &layout,
-                Particles {
-                    x: &mut state.x,
-                    v: &mut state.v,
-                    f: &mut state.f,
-                    mass: &state.mass,
-                    v0: &state.v0,
-                },
-                (&state.reference, &mut state.solids),
-                (gravity, &mut state.step_length),
-                (
-                    ContactSet {
-                        planes: &planes,
-                        pairs: &[],
-                        outlines: &state.outlines,
-                        corners: &state.corners,
-                        friction,
+            #[cfg(all(test, feature = "experimental"))]
+            let control = handoff::contact_phase_control(&control, &mut state, remaining);
+            let take = |state: &mut TotalLagrangianState, settings: &ConservingSettings| {
+                controlled_step(
+                    &layout,
+                    Particles {
+                        x: &mut state.x,
+                        v: &mut state.v,
+                        f: &mut state.f,
+                        mass: &state.mass,
+                        v0: &state.v0,
                     },
-                    &state.penalty,
+                    (&state.reference, &mut state.solids),
+                    (gravity, &mut state.step_length),
+                    (
+                        ContactSet {
+                            planes: &planes,
+                            pairs: &[],
+                            outlines: &state.outlines,
+                            corners: &state.corners,
+                            friction,
+                        },
+                        &state.penalty,
+                        settings,
+                    ),
+                    &mut state.cache,
+                    (&control, scale),
+                )
+            };
+            // ROW15_REACH_CUT_PLAN.md, test builds only.
+            #[cfg(all(test, feature = "experimental"))]
+            let step = if reach_cut::on() {
+                reach_cut::step(
+                    self,
+                    &mut state,
+                    (&planes, gravity),
                     &config.settings,
-                ),
-                &mut state.cache,
-                (&control, scale),
-            );
+                    &take,
+                )
+            } else {
+                take(&mut state, &config.settings)
+            };
+            #[cfg(not(all(test, feature = "experimental")))]
+            let step = take(&mut state, &config.settings);
             remaining -= step.dt;
+            #[cfg(all(test, feature = "experimental"))]
+            g0::after_step(&state, step.dt);
             if cut && step.rejected == 0 {
                 state.step_length = state.step_length.max(proposed);
             }
@@ -662,6 +695,37 @@ impl Simulation {
             frame.reaching += u32::from(step.reaching);
             frame.at_floor += u32::from(step.at_floor);
             frame.stagnated += step.stagnated;
+            // Once a contact held since the last flight has ended (in this
+            // frame or an earlier one), the rest of the frame flown again
+            // (`handoff`).
+            state.held_since_flight |= step.contact;
+            #[cfg(all(test, feature = "experimental"))]
+            handoff::trace(|| {
+                format!(
+                    "step of {:.3e} s ends at {:.6}, contact {}, remaining {remaining:.3e} s, rejected {} (unconverged {}), at floor {}, reaching {}, next {:.3e} s",
+                    step.dt,
+                    now + length - remaining,
+                    step.contact,
+                    step.rejected,
+                    step.unconverged,
+                    step.at_floor,
+                    step.reaching,
+                    step.next
+                )
+            });
+            let free = state.cache.as_ref().is_some_and(|c| c.contacts.is_empty());
+            if handoff && state.held_since_flight && free && remaining > 4.0 * f64::EPSILON * length
+            {
+                let at = now + length - remaining;
+                let (reach, change) =
+                    self.fly_as_far_as_clear(&mut state, (&planes, gravity), (at, now + length));
+                if reach > at {
+                    frame.flown += reach - at;
+                    flown_change += change;
+                    remaining = now + length - reach;
+                    state.held_since_flight = false;
+                }
+            }
         }
         let heat = state
             .cache
@@ -675,6 +739,8 @@ impl Simulation {
         if frame.modal || frame.modal_rest {
             frame.modal_energy_change =
                 frame.energy - state.frame.energy + (state.heat - state.frame.heat);
+        } else if frame.flown > 0.0 {
+            frame.modal_energy_change = flown_change;
         }
         state.time += length;
         frame.parts = (0..state.particles).fold([0.0; 3], |[k, e, g], p| {
@@ -733,6 +799,10 @@ impl Simulation {
                 self.particles.density[p] = units.density_to_grid(state.mass[p] / volume);
             }
         }
+        #[cfg(all(test, feature = "experimental"))]
+        reach_cut::report(&state, self.frame_index);
+        #[cfg(all(test, feature = "experimental"))]
+        g0::frame_end(&state, self.frame_index);
         self.total_lagrangian = Some(state);
         self.frame_index = self.frame_index.saturating_add(1);
     }
@@ -746,6 +816,10 @@ impl Simulation {
         (planes, gravity): (&[Plane], DVec2),
         length: f64,
     ) -> bool {
+        #[cfg(all(test, feature = "experimental"))]
+        if let Some(flown) = exponential_flight::fly_frame(state, (planes, gravity), length) {
+            return flown;
+        }
         let (t0, t1) = (state.time, state.time + length);
         if state.flight.is_none() {
             let free = state.outlines.len() == 1
@@ -767,17 +841,25 @@ impl Simulation {
                 return false;
             };
             let started = Flight::start(state, modes, (t0, length));
+            #[cfg(all(test, feature = "experimental"))]
+            let started = handoff::probe_start(state, started, (planes, gravity), (t0, t1));
             match started {
                 Err(flight::Refusal::Yielded) => state.modal_refused[1] += 1,
                 Err(flight::Refusal::Bound) => state.modal_refused[2] += 1,
                 _ => {}
             }
             state.flight = started.ok();
+            #[cfg(all(test, feature = "experimental"))]
+            if let (Some(flight), Some(Some(modes))) = (&state.flight, &state.modes) {
+                g0::at_flight_start(flight, modes, state);
+            }
         }
         let Some(mut flight) = state.flight.take() else {
             return false;
         };
         if !flight.clear(gravity, planes, (t0, t1)) {
+            #[cfg(all(test, feature = "experimental"))]
+            handoff::trace(|| format!("t {t0:.6}: whole frame not clear"));
             state.hand_backs += 1;
             return false;
         }
@@ -793,7 +875,20 @@ impl Simulation {
         }
         // A frame whose rebuilt state does not keep the angular momentum is
         // stepped instead, from the frame's start (`flight`).
+        #[cfg(all(test, feature = "experimental"))]
+        handoff::trace_angular(&flight, &modes, state, (t0, t1));
         if !flight.keeps_angular_momentum(state) {
+            #[cfg(all(test, feature = "experimental"))]
+            if handoff::tracing() {
+                let (rebuilt, own, tolerance) = flight.angular_parts(state);
+                handoff::trace(|| {
+                    format!(
+                        "t {t0:.6}: whole frame: angular momentum not kept: excess {:.3e} = {:.3} of the tolerance",
+                        (rebuilt - own).abs(),
+                        (rebuilt - own).abs() / tolerance.max(f64::MIN_POSITIVE)
+                    )
+                });
+            }
             (state.x, state.v, state.f) = start;
             state.modes = Some(Some(modes));
             state.hand_backs += 1;
@@ -843,8 +938,9 @@ impl Simulation {
 }
 
 mod flight;
+mod handoff;
+mod walls;
 use flight::Flight;
-
 mod rest;
 use rest::Rest;
 
@@ -880,3 +976,24 @@ mod effectivity;
 
 #[cfg(all(test, feature = "experimental"))]
 mod water;
+
+#[cfg(all(test, feature = "experimental"))]
+mod cost_profile;
+#[cfg(all(test, feature = "experimental"))]
+mod explicit_baseline;
+#[cfg(all(test, feature = "experimental"))]
+mod exponential_flight;
+#[cfg(all(test, feature = "experimental"))]
+mod exponential_flight_probes;
+#[cfg(all(test, feature = "experimental"))]
+mod factor_count_probes;
+#[cfg(all(test, feature = "experimental"))]
+mod g0;
+#[cfg(all(test, feature = "experimental"))]
+mod impact_local;
+#[cfg(all(test, feature = "experimental"))]
+mod multi_body_probes;
+#[cfg(all(test, feature = "experimental"))]
+mod reach_cut;
+#[cfg(all(test, feature = "experimental"))]
+mod step_sweep;

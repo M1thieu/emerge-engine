@@ -102,6 +102,9 @@ pub struct TotalLagrangianFrame {
     /// not keep (the law's nonlinearity; zero in a stepped frame).
     pub modal: bool,
     pub modal_energy_change: f64,
+    /// In a frame not flown whole, the time flown by the modes before and
+    /// after its contact (`TotalLagrangianConfig::subframe_handoff`), s.
+    pub flown: f64,
     /// Since the start: the frames flown by the modes, and the flights
     /// ended at a frame the body could touch a wall (handed to the step).
     pub modal_frames: u64,

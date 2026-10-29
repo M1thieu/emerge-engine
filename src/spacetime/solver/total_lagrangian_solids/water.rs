@@ -1,20 +1,20 @@
-//! Liquid water on the path (`LiquidWaterMaterial`, the barotropic law):
-//! its scenes against exact solutions and the probes that measure them.
+//! Liquid water on the path (`LiquidWaterMaterial`, the barotropic law),
+//! against exact solutions, criteria fixed before running:
+//! - the hydrostatic column on the domain's slip walls, started at the
+//!   exact nonlinear equilibrium;
+//! - the lowest pressure mode of a free square block, `omega = c pi sqrt(2)
+//!   / L`, `c` the record's speed of sound;
+//! - the first standing gravity wave of the tank, `omega^2 = g k tanh(k
+//!   h)`.
 //!
-//! - The lowest pressure mode of a free square block, `omega = c pi
-//!   sqrt(2) / L`, `c` the record's speed of sound (`probe_acoustic_
-//!   frequencies`). Measured: 0.990637 of it at 4 cm cells, 0.996875 at 2
-//!   cm, 0.999019 at 1 cm, 1.000141 extrapolated (observed order 1.54).
-//! - The hydrostatic column in a tank filled wall to wall, started at the
-//!   exact nonlinear equilibrium (`probe_water_column_frames`). Measured:
-//!   it does not hold. The walls hold one mean gap per patch of two cells
-//!   (`total_lagrangian::weighted_gap`); inside a patch each side face
-//!   tilts with zero mean (-1.83 to +1.80 mm after one frame, mean -1.9e-6
-//!   m at 4 cm cells), a motion a solid pays for in shear energy and a
-//!   liquid does not, and gravity drives the column through the walls
-//!   (26 mm beyond them after five frames), the energy ledger closed. Open:
-//!   a wall discretisation that holds the pointwise condition for a body
-//!   with no shear stiffness.
+//! Each runs at cells of 4, 2 and 1 cm; the measure is extrapolated to `dx
+//! -> 0` with its observed order (Richardson) and held within 5 percent,
+//! the criterion of `tests/settled_slab.rs` (compression) and
+//! `tests/wave_transit_density.rs` (wave speed), adopted unchanged. Every
+//! frame's energy balance is held within the solves' bound plus the sums'
+//! round-off (`tests/norton.rs`'s form). The water is inviscid: its
+//! discrete state rings about its own equilibrium, so the hydrostatic
+//! measures are time averages.
 //!
 //! The hydrostatic start, derived: in reference coordinates (`Y` from the
 //! floor, `H0` the depth), `F = diag(1, a(Y))` gives `P_yy = K (a - 1)` and
@@ -199,6 +199,54 @@ fn extrapolated([q4, q2, q1]: [f64; 3]) -> (f64, f64) {
     (order, q1 + (q1 - q2) / (2f64.powf(order) - 1.0))
 }
 
+/// The hydrostatic column at cell `dx`, 60 frames of 1/60 s from the
+/// exact start: the time-averaged compression over the exact, the
+/// time-averaged pressure field's relative L2 error, the worst balance
+/// over its bound.
+fn column(dx: f32) -> (f64, f64, f64) {
+    let (mut sim, floor) = tank(dx, 1.0 / 60.0);
+    let (rho0, k, g, top) = coefficients(&mut sim);
+    let h0 = top - floor;
+    start(&mut sim, &hydrostatic((rho0, k, g), (floor, h0)), &|_| {
+        DVec2::ZERO
+    });
+    let state = sim.total_lagrangian.as_ref().expect("started");
+    let n = state.particles;
+    let reference = state.reference[..n].to_vec();
+    let volume = state.v0[..n].to_vec();
+    let lowest = reference.iter().map(|q| q.y).fold(f64::INFINITY, f64::min);
+    let bottom: Vec<usize> = (0..n)
+        .filter(|&p| reference[p].y < lowest + 0.25 * f64::from(dx))
+        .collect();
+    // The centre of mass above the bottom row, all masses equal.
+    let height = |y: &dyn Fn(usize) -> f64| {
+        (0..n).map(y).sum::<f64>() / n as f64
+            - bottom.iter().map(|&p| y(p)).sum::<f64>() / bottom.len() as f64
+    };
+    let unloaded = height(&|p| reference[p].y);
+    let y_b = lowest - floor;
+    let exact = rho0 * g / k * (h0 * h0 / 3.0 - (h0 * y_b - 0.5 * y_b * y_b));
+    let frames = 60;
+    let (mut drop, mut pressure) = (0.0, vec![0.0; n]);
+    let (mut allowed, mut worst) = (0.0, 0.0f64);
+    for _ in 0..frames {
+        worst = worst.max(stepped(&mut sim, &mut allowed));
+        let state = sim.total_lagrangian.as_ref().expect("on");
+        drop += unloaded - height(&|p| state.x[p].y);
+        for (p, sum) in pressure.iter_mut().enumerate() {
+            *sum += k * (1.0 - state.f[p].determinant());
+        }
+    }
+    let ratio = drop / frames as f64 / exact;
+    let (mut error, mut size) = (0.0, 0.0);
+    for p in 0..n {
+        let exact = rho0 * g * (h0 - (reference[p].y - floor));
+        error += volume[p] * (pressure[p] / frames as f64 - exact).powi(2);
+        size += volume[p] * exact * exact;
+    }
+    (ratio, (error / size).sqrt(), worst)
+}
+
 /// The projection of the particles' velocities on `psi` at their
 /// reference positions, `sum m v . psi / sum m |psi|^2`, each frame, and
 /// the worst balance over its bound.
@@ -275,6 +323,37 @@ fn acoustic(dx: f32) -> (f64, f64, f64) {
     (measured / omega, worst, -(omega * FRAME_S).powi(2) / 12.0)
 }
 
+/// The tank's first standing gravity wave at cell `dx` from the exact
+/// hydrostatic start: its measured frequency over `sqrt(g k tanh(k h))`,
+/// the worst balance, the midpoint rule's derived shift.
+fn gravity_wave(dx: f32) -> (f64, f64, f64) {
+    const FRAME_S: f64 = 1.0 / 60.0;
+    let (mut sim, floor) = tank(dx, FRAME_S as f32);
+    let (rho0, k, g, top) = coefficients(&mut sim);
+    let h0 = top - floor;
+    let wavenumber = std::f64::consts::PI / WIDTH_M;
+    let omega = (g * wavenumber * (wavenumber * h0).tanh()).sqrt();
+    // `phi = cos(k X) cosh(k Y)`, X from the left wall; the surface's
+    // amplitude `A k sinh(k h) / omega` = 0.5 mm.
+    let amplitude = 0.5e-3 * omega / (wavenumber * (wavenumber * h0).sinh());
+    let left = floor;
+    let psi = move |q: DVec2| {
+        let (x, y) = (q.x - left, q.y - floor);
+        DVec2::new(
+            -(wavenumber * x).sin() * (wavenumber * y).cosh(),
+            (wavenumber * x).cos() * (wavenumber * y).sinh(),
+        ) * wavenumber
+    };
+    start(&mut sim, &hydrostatic((rho0, k, g), (floor, h0)), &|q| {
+        amplitude * psi(q)
+    });
+    let period = std::f64::consts::TAU / omega;
+    let frames = (2.0 * period / FRAME_S).ceil() as usize;
+    let (a, worst) = projections(&mut sim, &psi, frames);
+    let measured = crossing_frequency(&a, FRAME_S);
+    (measured / omega, worst, -(omega * FRAME_S).powi(2) / 12.0)
+}
+
 /// The material on the path is the barotropic law with the record's
 /// isentropic modulus, nothing else.
 #[test]
@@ -288,6 +367,69 @@ fn the_path_carries_water_as_the_barotropic_law_of_its_record() {
         (water.record.isentropic_bulk(), 0.0, 0.0, 0.0)
     );
     assert!(!law.is_relaxing());
+}
+
+#[test]
+#[ignore = "long: three resolutions, 60 frames each"]
+fn a_water_column_holds_the_exact_hydrostatic_pressure() {
+    cap::capped(
+        "a_water_column_holds_the_exact_hydrostatic_pressure",
+        3600,
+        || {
+            let runs = [column(0.04), column(0.02), column(0.01)];
+            for (dx, (ratio, error, worst)) in [4, 2, 1].iter().zip(runs) {
+                println!(
+                    "water column at {dx} cm: compression over exact {ratio:.6}, pressure's L2 error {error:.4e}, worst balance {worst:.3} of its bound"
+                );
+                assert!(worst <= 1.0, "{dx} cm: balance {worst} of its bound");
+            }
+            let (order, ratio) = extrapolated(runs.map(|r| r.0));
+            let (error_order, error) = extrapolated(runs.map(|r| r.1));
+            println!(
+                "extrapolated to dx -> 0: compression {ratio:.6} (order {order:.2}), pressure error {error:.4e} (order {error_order:.2})"
+            );
+            assert!((ratio - 1.0).abs() <= 0.05, "compression {ratio} of exact");
+            assert!(error.abs() <= 0.05, "pressure error {error}");
+        },
+    );
+}
+
+#[test]
+#[ignore = "long: three resolutions, two periods each"]
+fn a_free_water_block_rings_at_its_speed_of_sound() {
+    cap::capped(
+        "a_free_water_block_rings_at_its_speed_of_sound",
+        3600,
+        || {
+            let runs = [acoustic(0.04), acoustic(0.02), acoustic(0.01)];
+            for (dx, (ratio, worst, shift)) in [4, 2, 1].iter().zip(runs) {
+                println!(
+                    "free block at {dx} cm: omega over c pi sqrt(2) / L {ratio:.6} (the midpoint's shift {shift:+.2e}), worst balance {worst:.3} of its bound"
+                );
+                assert!(worst <= 1.0, "{dx} cm: balance {worst} of its bound");
+            }
+            let (order, ratio) = extrapolated(runs.map(|r| r.0));
+            println!("extrapolated to dx -> 0: {ratio:.6} (order {order:.2})");
+            assert!((ratio - 1.0).abs() <= 0.05, "frequency {ratio} of exact");
+        },
+    );
+}
+
+#[test]
+#[ignore = "long: three resolutions, two periods each"]
+fn a_standing_gravity_wave_keeps_its_dispersion() {
+    cap::capped("a_standing_gravity_wave_keeps_its_dispersion", 3600, || {
+        let runs = [gravity_wave(0.04), gravity_wave(0.02), gravity_wave(0.01)];
+        for (dx, (ratio, worst, shift)) in [4, 2, 1].iter().zip(runs) {
+            println!(
+                "gravity wave at {dx} cm: omega over sqrt(g k tanh(k h)) {ratio:.6} (the midpoint's shift {shift:+.2e}), worst balance {worst:.3} of its bound"
+            );
+            assert!(worst <= 1.0, "{dx} cm: balance {worst} of its bound");
+        }
+        let (order, ratio) = extrapolated(runs.map(|r| r.0));
+        println!("extrapolated to dx -> 0: {ratio:.6} (order {order:.2})");
+        assert!((ratio - 1.0).abs() <= 0.05, "frequency {ratio} of exact");
+    });
 }
 
 /// The 4 cm column frame by frame from the exact start: each frame's

@@ -14,7 +14,7 @@ fn timed(clock: &Cell<f64>, start: Instant) {
 /// push derivative compared with central differences on every product. A
 /// probe knob, in test builds only.
 #[cfg(all(test, feature = "experimental"))]
-fn push_check() -> bool {
+pub(super) fn push_check() -> bool {
     static SET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *SET.get_or_init(|| std::env::var_os("EMERGE_PROBE_PUSH_CHECK").is_some())
 }
@@ -134,6 +134,10 @@ pub(crate) struct Factors {
     /// The last responses computed, by contact key and direction: each
     /// next response's GMRES starts from its own (`gmres_from`).
     pub(crate) responses: Vec<(ContactKey, bool, Vec<f64>)>,
+    /// T6's stored energies (`persistency::Store`), test-only: per try, as
+    /// the rest of the cache.
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) persistency: super::persistency::Store,
 }
 
 impl Factors {
@@ -197,6 +201,8 @@ pub(crate) fn solve(
     contacts: &[Contact],
     factors: &mut Factors,
 ) -> Solution {
+    #[cfg(all(test, feature = "experimental"))]
+    let solve_clock = Instant::now();
     let Inputs {
         x,
         v,
@@ -438,6 +444,8 @@ pub(crate) fn solve(
     let (residual_clock, jacobian_clock, precondition_clock) =
         (Cell::new(0.0), Cell::new(0.0), Cell::new(0.0));
     let residual = |u: &[f64]| -> Vec<f64> {
+        #[cfg(all(test, feature = "experimental"))]
+        hooks::add_part(6, 1.0);
         let start = Instant::now();
         let mut out = raw(u);
         for (value, &on) in out.iter_mut().zip(&grid.active) {
@@ -892,6 +900,8 @@ pub(crate) fn solve(
         if !exact {
             return None;
         }
+        #[cfg(all(test, feature = "experimental"))]
+        hooks::add_part(5, 1.0);
         let start = Instant::now();
         let unit = [
             DMat2::from_cols(DVec2::X, DVec2::ZERO),
@@ -1021,12 +1031,26 @@ pub(crate) fn solve(
         // frame-long steps and the energy rising 0.3 percent: measured,
         // reverted).
         let scaled: Vec<f64> = d.iter().map(|e| inertia * e / (dt * dt)).collect();
+        #[cfg(all(test, feature = "experimental"))]
+        let part = Instant::now();
+        #[cfg(all(test, feature = "experimental"))]
+        {
+            hooks::add_part(0, 1.0);
+            hooks::add_part(1, part.duration_since(start).as_secs_f64());
+        }
         let mut out = grid.mass_times(&scaled, mass, eps);
+        #[cfg(all(test, feature = "experimental"))]
+        let part = {
+            hooks::add_part(2, part.elapsed().as_secs_f64());
+            Instant::now()
+        };
         match lin {
             Some(lin) => {
                 for (o, value) in out.iter_mut().zip(internal_product(lin, d)) {
                     *o += value;
                 }
+                #[cfg(all(test, feature = "experimental"))]
+                hooks::add_part(3, part.elapsed().as_secs_f64());
             }
             None => {
                 for (o, (p, m)) in out
@@ -1087,11 +1111,15 @@ pub(crate) fn solve(
             }
             timed(&push_clock, pushing);
         }
+        #[cfg(all(test, feature = "experimental"))]
+        let part = Instant::now();
         for (value, &on) in out.iter_mut().zip(&grid.active) {
             if !on {
                 *value = 0.0;
             }
         }
+        #[cfg(all(test, feature = "experimental"))]
+        hooks::add_part(4, part.elapsed().as_secs_f64());
         timed(&jacobian_clock, start);
         out
     };
@@ -1409,6 +1437,12 @@ pub(crate) fn solve(
             u: &u,
             v_n: &v_n,
         }));
+    }
+    #[cfg(all(test, feature = "experimental"))]
+    {
+        hooks::add_part(7, 1.0);
+        hooks::add_part(8, solve_clock.elapsed().as_secs_f64());
+        hooks::add_part(9, f64::from(report.newton));
     }
     Solution {
         u,

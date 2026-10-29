@@ -50,6 +50,12 @@ pub mod transfer;
 #[cfg(test)]
 mod gates;
 
+#[cfg(test)]
+mod bar_dispersion_probes;
+
+#[cfg(test)]
+pub(crate) mod c2_proper_probes;
+
 pub use field::{FaceFlags, Field2, MacLayout, MacVelocity};
 pub use level_set::SurfaceSettings;
 pub use pcg::{Solution, SolverSettings};

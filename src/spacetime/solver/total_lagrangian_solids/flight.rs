@@ -112,6 +112,16 @@ pub(crate) struct Flight {
     /// largest Green strain size `|C - I| / 2` at its end.
     pub(crate) heat: Vec<f64>,
     pub(crate) strain: f64,
+    /// For the probes: the start projection's round-off bound on its own
+    /// `sum m a x b` (ROUTE_A_PAPER.md, (1)): its spin, split and
+    /// projection parts.
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) start_bound: [f64; 3],
+    /// For the probes (ROUTE_A_PAPER.md, (1b)): `det back - 1`, the angle's
+    /// error against `atan2` of the computed entries, the scaling's
+    /// round-off term, and the predicted exact remainder.
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) start_extra: [f64; 4],
 }
 
 /// A damped flight's modes, advanced one frame at a time.
@@ -277,6 +287,90 @@ impl Flight {
                 (state.reference[o] - origin, bound)
             })
             .collect();
+        // The start projection's round-off bound (ROUTE_A_PAPER.md, (1)).
+        #[cfg(all(test, feature = "experimental"))]
+        let start_bound = {
+            let unit = 0.5 * f64::EPSILON;
+            let count = n as f64;
+            let (mut spin_part, mut split_part) = (0.0, 0.0);
+            let mut split = Vec::with_capacity(n);
+            for p in 0..n {
+                let m = state.mass[p];
+                let (arm, w) = (state.x[p] - centre, state.v[p] - velocity);
+                let reference = state.reference[p] - origin;
+                let u = back * arm - reference;
+                let r = back * (w - spin * arm.perp());
+                spin_part += m * ((arm.x * w.y).abs() + (arm.y * w.x).abs());
+                let du = 3.0 * unit * (arm.length() + reference.length());
+                let dr = 4.0 * unit * (w.length() + spin.abs() * arm.length());
+                split_part += m * ((reference + u).length() * dr + du * r.length());
+                split.push(((reference + u).length(), u.length(), r.length()));
+            }
+            let modes_count = (modes.omega.len() - RIGID_MODES) as f64;
+            // Per mode, `sum m |u| |phi_i|` and `sum m |r| |phi_i|`: bounds on
+            // `|q_i|`, `|q'_i|`, and over `n u` on their projections' round-off.
+            let (mut q_size, mut r_size) = (Vec::new(), Vec::new());
+            for at in modes.at.iter().skip(RIGID_MODES) {
+                let (mut a, mut b) = (0.0, 0.0);
+                for (p, &(_, u, r)) in split.iter().enumerate() {
+                    a += state.mass[p] * u * at[p].length();
+                    b += state.mass[p] * r * at[p].length();
+                }
+                q_size.push(a);
+                r_size.push(b);
+            }
+            let dq: Vec<f64> = q_size.iter().map(|a| count * unit * a).collect();
+            let dr: Vec<f64> = r_size.iter().map(|b| count * unit * b).collect();
+            let mut projection_part = 0.0;
+            for (p, &(arm, _, r)) in split.iter().enumerate() {
+                let (mut eu, mut er) = (0.0, 0.0);
+                for (k, at) in modes.at.iter().skip(RIGID_MODES).enumerate() {
+                    let phi = at[p].length();
+                    eu += phi * (dq[k] + modes_count * unit * q_size[k]);
+                    er += phi * (dr[k] + modes_count * unit * r_size[k]);
+                }
+                projection_part += state.mass[p] * (arm * er + eu * r + count * unit * arm * r);
+            }
+            [
+                (2.0 * count + 3.0) * unit * spin_part,
+                split_part + 2.0 * unit * momentum.abs(),
+                projection_part,
+            ]
+        };
+        #[cfg(all(test, feature = "experimental"))]
+        let start_extra = {
+            let unit = 0.5 * f64::EPSILON;
+            let (c, s) = (back.x_axis.x, back.x_axis.y);
+            let det = c.mul_add(c, s.mul_add(s, -1.0));
+            let angle_error = (s.atan2(c) + angle).abs();
+            let (mut vib, mut align, mut reference_inertia, mut scaling) = (0.0, 0.0, 0.0, 0.0);
+            for p in 0..n {
+                let m = state.mass[p];
+                let (arm, w) = (state.x[p] - centre, state.v[p] - velocity);
+                let reference = state.reference[p] - origin;
+                let u = back * arm - reference;
+                let r = back * (w - spin * arm.perp());
+                vib += m * u.perp_dot(r);
+                align += m * (reference + u).dot(reference);
+                reference_inertia += m * reference.length_squared();
+                let mut phis = 0.0;
+                for (i, at) in modes.at.iter().enumerate().skip(RIGID_MODES) {
+                    let q = if modes.omega[i] > 0.0 {
+                        z[i].x / modes.omega[i]
+                    } else {
+                        0.0
+                    };
+                    phis += at[p].length() * q.abs();
+                }
+                scaling += m * r.length() * 2.0 * unit * phis;
+            }
+            [
+                det,
+                angle_error,
+                scaling,
+                vib * align / reference_inertia.max(f64::MIN_POSITIVE),
+            ]
+        };
         Ok(Self {
             t,
             centre,
@@ -292,7 +386,41 @@ impl Flight {
             memory,
             heat: Vec::new(),
             strain: 0.0,
+            #[cfg(all(test, feature = "experimental"))]
+            start_bound,
+            #[cfg(all(test, feature = "experimental"))]
+            start_extra,
         })
+    }
+
+    /// For the probes (MODE_FREE_HANDOFF_PLAN.md M0): each contact point's
+    /// vibration bound, each mode's size `|z_i|`, whether the flight carries
+    /// a memory (then the sizes are `|y_i|`, not used), and the same flight
+    /// with the contact points' bounds replaced.
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) fn arm_bounds(&self) -> Vec<f64> {
+        self.arms.iter().map(|a| a.1).collect()
+    }
+
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) fn mode_sizes(&self) -> Vec<f64> {
+        self.z.iter().map(|z| z.length()).collect()
+    }
+
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) fn has_memory(&self) -> bool {
+        self.memory.is_some()
+    }
+
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) fn with_arm_bounds(&self, bounds: &[f64]) -> Self {
+        let mut flight = self.clone();
+        flight
+            .arms
+            .iter_mut()
+            .zip(bounds)
+            .for_each(|(a, &b)| a.1 = b);
+        flight
     }
 
     /// The centre of mass and its velocity at time `t`.
@@ -354,6 +482,196 @@ impl Flight {
     /// left to detect is the second order and the turning frame's terms
     /// (`flight`'s head), and it does fire (frames 37 and 45 of
     /// `probe_flown_frames_against_the_step`).
+    /// The parts `keeps_angular_momentum` compares, for the probes: the
+    /// rebuilt state's angular momentum, the flight's, and the tolerance
+    /// (the same formula).
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) fn angular_parts(&self, state: &TotalLagrangianState) -> (f64, f64, f64) {
+        let n = state.particles;
+        let total: f64 = state.mass[..n].iter().sum();
+        let (sum_x, sum_v) = (0..n).fold((DVec2::ZERO, DVec2::ZERO), |(a, b), p| {
+            (
+                a + state.mass[p] * state.x[p],
+                b + state.mass[p] * state.v[p],
+            )
+        });
+        let (centre, velocity) = (sum_x / total, sum_v / total);
+        let (momentum, size) = (0..n).fold((0.0, 0.0), |(l, s), p| {
+            let arm = state.x[p] - centre;
+            (
+                l + state.mass[p] * arm.perp_dot(state.v[p] - velocity),
+                s + state.mass[p] * arm.length() * (state.v[p].length() + velocity.length()),
+            )
+        });
+        let carried: f64 = self
+            .leak
+            .iter()
+            .zip(&self.rates)
+            .map(|(l, r)| (l * r).abs())
+            .sum();
+        (
+            momentum,
+            self.angular,
+            2.0 * n as f64 * f64::EPSILON * size + carried,
+        )
+    }
+
+    /// For the probes: the rebuilt angular momentum's change from the
+    /// flight's in EXACT arithmetic, from the modal coordinates alone (body
+    /// frame, `a = X - C + u`, `b = u'`): `L(t) - L0 = Omega (I(t) - I0) +
+    /// [sum m a x b](t) - [sum m a x b](0)`. Returns that total and its
+    /// parts: `Omega (I(t) - I0)`, the reference arm's `sum m (X - C) x
+    /// (u'(t) - u'(0))` (the leak) and the vibration's own `sum m (u x u')`
+    /// change (the modes' gyroscopic coupling), kg m^2/s per m; and the
+    /// modal start's own `[sum m a x b](0)` (zero when the start state lies
+    /// in the modes' span: the projection's remainder otherwise).
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) fn predicted_angular(
+        &self,
+        modes: &Modes,
+        state: &TotalLagrangianState,
+        t: f64,
+    ) -> ((f64, f64, f64, f64), f64) {
+        let n = state.particles;
+        let at = |tau: f64| -> Vec<(f64, f64)> {
+            self.z
+                .iter()
+                .zip(&modes.omega)
+                .map(|(z0, &w)| {
+                    if w <= 0.0 {
+                        return (0.0, 0.0);
+                    }
+                    let zt = DVec2::from_angle(w * tau).rotate(*z0);
+                    (zt.x / w, -zt.y)
+                })
+                .collect()
+        };
+        let (now, then) = (at(t - self.t), at(0.0));
+        let field = |c: &[(f64, f64)], p: usize| -> (DVec2, DVec2) {
+            c.iter()
+                .enumerate()
+                .skip(RIGID_MODES)
+                .fold((DVec2::ZERO, DVec2::ZERO), |(u, v), (i, &(q, r))| {
+                    (u + modes.at[i][p] * q, v + modes.at[i][p] * r)
+                })
+        };
+        let (mut inertia, mut leak, mut gyro, mut start) = (0.0, 0.0, 0.0, 0.0);
+        for p in 0..n {
+            let m = state.mass[p];
+            let arm = state.reference[p] - self.origin;
+            let ((u1, v1), (u0, v0)) = (field(&now, p), field(&then, p));
+            inertia += m * (2.0 * arm.dot(u1 - u0) + u1.length_squared() - u0.length_squared());
+            leak += m * arm.perp_dot(v1 - v0);
+            gyro += m * (u1.perp_dot(v1) - u0.perp_dot(v0));
+            start += m * (arm + u0).perp_dot(v0);
+        }
+        let turning = self.spin * inertia;
+        ((turning + leak + gyro, turning, leak, gyro), start)
+    }
+
+    /// For the probes: the least lower bound on a contact point's gap
+    /// over `[t0, t1]` (`clear`'s own, its largest vibration bound
+    /// subtracted) and that largest vibration bound, m.
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) fn clearance_report(
+        &self,
+        gravity: DVec2,
+        planes: &[Plane],
+        (t0, t1): (f64, f64),
+    ) -> (f64, f64) {
+        let (mut least, mut largest) = (f64::INFINITY, 0.0f64);
+        for plane in planes {
+            let along = |t: f64| plane.inward * self.rigid_at(gravity, t).0[plane.axis];
+            let mut lowest = along(t0).min(along(t1));
+            let acceleration = plane.inward * gravity[plane.axis];
+            if acceleration != 0.0 {
+                let vertex = self.t - plane.inward * self.velocity[plane.axis] / acceleration;
+                if vertex > t0 && vertex < t1 {
+                    lowest = lowest.min(along(vertex));
+                }
+            }
+            let turn = DMat2::from_angle(self.angle + self.spin * (t0 - self.t));
+            for &(reference, bound) in &self.arms {
+                let arm = turn * reference;
+                let turning = self.spin.abs() * reference.length() * (t1 - t0);
+                least = least.min(
+                    lowest + plane.inward * arm[plane.axis]
+                        - plane.inward * plane.at
+                        - bound
+                        - turning,
+                );
+                largest = largest.max(bound);
+            }
+        }
+        (least, largest)
+    }
+
+    /// For the probes: the flight's own trajectory (`rebuild`'s formula)
+    /// sampled at `samples + 1` times over `[t0, t1]`, against the bound
+    /// `clear` uses. Returns the least sampled gap of any contact point,
+    /// m; the first sampled time from which every later sample's gap is
+    /// positive (`t1` when the last is not); and, over points and samples,
+    /// the largest inward vibration displacement over that point's bound.
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) fn sampled_gaps(
+        &self,
+        modes: &Modes,
+        (gravity, planes): (DVec2, &[Plane]),
+        state: &TotalLagrangianState,
+        (t0, t1): (f64, f64),
+        samples: usize,
+    ) -> (f64, f64, f64) {
+        let points: Vec<usize> = state.outlines.iter().flatten().copied().collect();
+        let (mut least, mut used) = (f64::INFINITY, 0.0f64);
+        let mut gaps = Vec::with_capacity(samples + 1);
+        for s in 0..=samples {
+            let t = t0 + (t1 - t0) * s as f64 / samples as f64;
+            let tau = t - self.t;
+            let centre = self.rigid_at(gravity, t).0;
+            let turn = DMat2::from_angle(self.angle + self.spin * tau);
+            let q: Vec<f64> = self
+                .z
+                .iter()
+                .zip(&modes.omega)
+                .map(|(z0, &w)| {
+                    if w <= 0.0 {
+                        0.0
+                    } else {
+                        DVec2::from_angle(w * tau).rotate(*z0).x / w
+                    }
+                })
+                .collect();
+            let mut lowest = f64::INFINITY;
+            for (k, &o) in points.iter().enumerate() {
+                let mut u = DVec2::ZERO;
+                for (i, &qi) in q.iter().enumerate().skip(RIGID_MODES) {
+                    u += modes.at[i][o] * qi;
+                }
+                let x = centre + turn * (state.reference[o] - self.origin + u);
+                let shake = turn * u;
+                for plane in planes {
+                    let gap = plane.inward * (x[plane.axis] - plane.at);
+                    lowest = lowest.min(gap);
+                    let inward = -plane.inward * shake[plane.axis];
+                    used = used.max(inward / self.arms[k].1.max(f64::MIN_POSITIVE));
+                }
+            }
+            least = least.min(lowest);
+            gaps.push((t, lowest));
+        }
+        let from = gaps
+            .iter()
+            .rposition(|&(_, g)| g <= 0.0)
+            .map_or(t0, |k| gaps.get(k + 1).map_or(t1, |&(t, _)| t));
+        (least, from, used)
+    }
+
+    /// Whether the flight carries relaxation memory (a damped flight,
+    /// advanced whole frames at a time).
+    pub(crate) fn is_damped(&self) -> bool {
+        self.memory.is_some()
+    }
+
     pub(crate) fn keeps_angular_momentum(&self, state: &TotalLagrangianState) -> bool {
         let n = state.particles;
         let total: f64 = state.mass[..n].iter().sum();

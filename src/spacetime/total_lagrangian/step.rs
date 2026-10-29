@@ -176,6 +176,17 @@ pub(crate) fn contact_grid(
     (mass, v0): (&[f64], &[f64]),
     settings: &ConservingSettings,
 ) -> Grid {
+    // MIXED_FORMULATION_PLAN.md criterion 6' (test builds): one axis held.
+    #[cfg(all(test, feature = "experimental"))]
+    if let Some(axis) = super::hooks::held_axis() {
+        return Grid::new(
+            layout,
+            reference,
+            (mass, v0),
+            &|a, _, _| (a == axis).then_some(1.0),
+            settings.occupation,
+        );
+    }
     Grid::new(
         layout,
         reference,
@@ -865,6 +876,14 @@ pub fn step_total_lagrangian_contact(
         }
         updates = kinetic(&end_velocity) - before;
     }
+    #[cfg(all(test, feature = "experimental"))]
+    persistency::hook(
+        mode,
+        grid,
+        (x, used, &u, contacts),
+        (factors, mass, settings),
+        (&mut end_velocity, &mut updates),
+    );
     report.work = (
         contacts
             .iter()
@@ -957,6 +976,14 @@ pub fn step_total_lagrangian_contact(
         .collect();
         hooks::set_torque((moment(&dv), moment(&from_push)));
     }
+    #[cfg(all(test, feature = "experimental"))]
+    let traced = hooks::contact_rows_start(
+        grid,
+        (x, v, used, &u),
+        contacts,
+        (penalty, report.residual_allowed),
+        (settings.contact_tolerance, dt),
+    );
     for p in 0..n {
         let mut step_x = DVec2::ZERO;
         let mut step_v = DVec2::ZERO;
@@ -969,6 +996,10 @@ pub fn step_total_lagrangian_contact(
         x[p] += step_x;
         v[p] += step_v;
         f[p] += DMat2::from_cols(DVec2::new(gu.x, gv.x), DVec2::new(gu.y, gv.y));
+    }
+    #[cfg(all(test, feature = "experimental"))]
+    if let Some(traced) = traced {
+        report.trace_id = hooks::record_contact_rows(dt, hooks::contact_rows_end(traced, v));
     }
     phases[4] = finishing.elapsed().as_secs_f64();
     timing.grid = phases[0];

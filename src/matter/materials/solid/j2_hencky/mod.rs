@@ -99,6 +99,12 @@ pub(crate) fn returns_seen() -> u64 {
         .map_or(0, |(counts, _)| counts.iter().sum())
 }
 
+/// Whether the probes watch the returns (`watch_returns`).
+#[cfg(all(test, feature = "experimental"))]
+pub(crate) fn watching_returns() -> bool {
+    RETURNS.lock().expect("returns lock").is_some()
+}
+
 #[cfg(all(test, feature = "experimental"))]
 pub(crate) fn take_returns() -> Returns {
     RETURNS.lock().expect("returns lock").take()

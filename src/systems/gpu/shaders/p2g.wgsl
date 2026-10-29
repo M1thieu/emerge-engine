@@ -264,7 +264,10 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
             let tr_s = sym[0][0] + sym[1][1];
             let dev  = sym - (tr_s * 0.5) * I;
 
-            // Arrhenius thermal thinning: µ_eff = µ₀·exp(−k·T)
+            // Empirical thermal thinning: µ_eff = µ₀·exp(−k·T). This is NOT the
+            // Arrhenius/Andrade law of liquids (µ = A·exp(Ea/(R·T)), exponential in
+            // 1/T); k is an unsourced coefficient. Off by default (k = 0) and set by no
+            // scene. Replace by the sourced law when a scene needs thermal viscosity.
             //
             // No Smagorinsky (1963) eddy viscosity here: at Lilly 1967's Cs ~
             // 0.17 it changed nothing, and at Cs = 8.0, even with a matching

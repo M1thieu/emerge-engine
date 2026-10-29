@@ -25,6 +25,9 @@ use crate::tensor_algebra::symmetric_eigen::jacobi_eigen_symmetric_definite;
 use crate::{CorotatedMaterial, FromSI, SimConfig};
 use glam::IVec2;
 
+#[path = "modal_capture_probes.rs"]
+mod modal_capture_probes;
+
 /// A free body's rigid modes in the plane: two translations and the
 /// linearised rotation.
 pub(super) const RIGID: usize = 3;
@@ -113,6 +116,13 @@ pub(super) struct Modes {
     pub(super) at: Vec<Vec<DVec2>>,
     /// Per mode, its material gradient at every particle.
     pub(super) gradients: Vec<Vec<DMat2>>,
+    /// The grid's active unknowns, and on them (row-major, `n` by `n`) the
+    /// consistent mass, the stiffness at rest and the modes as columns in
+    /// the order above (`modal_capture_probes`).
+    pub(super) unknowns: Vec<usize>,
+    pub(super) mass: Vec<f64>,
+    pub(super) stiffness: Vec<f64>,
+    pub(super) phi: Vec<f64>,
 }
 
 /// The modes, by two-sided Jacobi on `M`, then on `M^-1/2 (K + sigma M)
@@ -273,10 +283,17 @@ pub(super) fn modes(state: &TotalLagrangianState) -> Modes {
             (at, gradients)
         })
         .unzip();
+    let phi = (0..n * n)
+        .map(|ij| phi[ij / n * n + order[ij % n]])
+        .collect();
     Modes {
         omega,
         at,
         gradients,
+        unknowns,
+        mass,
+        stiffness,
+        phi,
     }
 }
 
