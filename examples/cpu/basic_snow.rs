@@ -216,16 +216,7 @@ impl State {
             SNOW_GRAIN_RADIUS_M,
             SNOW_DENSITY_KG_M3 / optical::ICE_DENSITY_KG_M3,
         );
-        renderer.set_optical_params(
-            &queue,
-            MAT_SHATTER as usize,
-            fragment_optics.absorption_m_inv,
-        );
-        renderer.set_optical_scattering(
-            &queue,
-            MAT_SHATTER as usize,
-            fragment_optics.reduced_scattering_m_inv,
-        );
+        renderer.set_optical_coefficients_si(&queue, MAT_SHATTER as usize, fragment_optics);
         // The grid-volume and surface modes threshold on cell mass as a
         // fraction of a full cell of snow, which holds 1/SPACING^2 particles.
         renderer.set_grid_reference_cell_mass(sim.particles().mass[0] / (SPACING * SPACING));

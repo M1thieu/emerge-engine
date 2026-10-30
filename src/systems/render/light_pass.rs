@@ -88,7 +88,11 @@ impl Renderer {
             "light pass fields not grown to {res}"
         );
         let slot_attenuation = std::array::from_fn(|slot| {
-            let [r, g, b] = penetration_attenuation_m_inv(self.sigma_a[slot], self.sigma_s[slot]);
+            let [r, g, b] = penetration_attenuation_m_inv(
+                self.sigma_a[slot],
+                self.sigma_s[slot],
+                self.scattering_asymmetry[slot],
+            );
             [r, g, b, 0.0]
         });
         let (density, material_mass, params, surface_res) = match source {

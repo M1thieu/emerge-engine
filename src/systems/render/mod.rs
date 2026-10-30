@@ -634,6 +634,12 @@ pub struct Renderer {
     /// Reduced scattering coefficient per material slot (single scalar -- see
     /// `OpticalTable`'s doc for why this isn't per-channel).
     sigma_s: [f32; 16],
+    /// Scattering asymmetry `g` per material slot, from which the direct
+    /// beam's scattering coefficient `sigma_s / (1 - g)` follows. 0 (the
+    /// default) means isotropic scattering, `mu_s = mu_s'`. The GPU table
+    /// does not carry it yet: see the KNOWN-LIMIT on
+    /// `energy::radiation::slab_radiance`.
+    scattering_asymmetry: [f32; 16],
     /// Specular Fresnel base reflectance R0 per material slot (see `OpticalTable`'s
     /// doc for the real-but-bounded caveat).
     specular_r0: [f32; 16],
@@ -894,6 +900,7 @@ impl Renderer {
             stress_scale: 1.0,
             sigma_a: [[0.3f32; 3]; 16],
             sigma_s: [0.0f32; 16],
+            scattering_asymmetry: [0.0f32; 16],
             specular_r0: [0.0f32; 16],
             holds_shape: [false; 16],
             refractive_index: [1.0f32; 16],
@@ -1328,6 +1335,7 @@ impl Renderer {
             if let Some(optics) = material.optical_properties() {
                 self.sigma_a[slot] = optics.absorption_m_inv;
                 self.sigma_s[slot] = optics.reduced_scattering_m_inv;
+                self.scattering_asymmetry[slot] = optics.scattering_asymmetry;
                 declared += 1;
             }
         }
@@ -1488,6 +1496,7 @@ impl Renderer {
         let slot = slot % 16;
         self.sigma_a[slot] = coefficients.absorption_m_inv;
         self.sigma_s[slot] = coefficients.reduced_scattering_m_inv;
+        self.scattering_asymmetry[slot] = coefficients.scattering_asymmetry;
         self.upload_optical_params(queue);
     }
 
@@ -1495,6 +1504,10 @@ impl Renderer {
     /// what this represents physically (real subsurface scattering, single-
     /// scattering approximation) and its citation (Jacques 2013). Auto-
     /// uploads immediately -- see `set_optical_params`'s doc for why.
+    ///
+    /// Sets the reduced coefficient and leaves the slot's asymmetry as it
+    /// was (0 unless [`Self::set_optical_coefficients_si`] set one); a scene
+    /// with forward-peaked scattering should use that setter instead.
     pub fn set_optical_scattering(&mut self, queue: &wgpu::Queue, slot: usize, sigma_s: f32) {
         self.sigma_s[slot % 16] = sigma_s;
         self.upload_optical_params(queue);

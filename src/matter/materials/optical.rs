@@ -22,7 +22,9 @@
 //! `SimConfig::slice_thickness_m`; inflating the
 //! coefficient instead would be painting, not measuring.
 
-use crate::energy::radiation::{OpticalCoefficientsSi, spectral_band_average};
+use crate::energy::radiation::{
+    OpticalCoefficientsSi, spectral_band_average, spectral_band_transmittance,
+};
 
 /// Absorption spectrum of pure water, `(wavelength nm, absorption m^-1)`.
 ///
@@ -89,11 +91,44 @@ pub const PURE_WATER_SCATTERING_M_INV: f32 = 0.0029;
 /// Derived from [`PURE_WATER_ABSORPTION`] every call rather than stored: the
 /// derivation is cheap, and a constant that can be recomputed from its source
 /// cannot silently drift away from it.
+///
+/// The absorption here is the band *mean* coefficient `<a>`. It is the right
+/// number for a thin layer (`<a> z << 1`) but `exp(-<a> z)` understates what
+/// a thick layer transmits, because transmission is the band mean of
+/// `exp(-a z)` (`spectral_band_transmittance`). Use [`pure_water_transmittance`]
+/// where the path is known.
+///
+/// KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the renderer's optical table holds
+/// three numbers per material and every consumer applies `exp(-sigma z)` to
+/// them, so rendered water transmits less red than the spectrum says (the
+/// error grows with depth, see `band_mean_coefficient_understates_deep_water_transmission`).
+/// Consumers: `systems/render/shaders/radiative_transfer.inc.wgsl:60`
+/// (`slab_radiance`, `exp(-sigma_t * path)`), `systems/render/shaders/
+/// prep_instances.wgsl:217`, `grid_volume.wgsl:512`, `curvature_flow.wgsl:1726`
+/// (callers), and the CPU `systems/render/color.rs` `ByPhysics` branch | source:
+/// Beer-Lambert per wavelength (pbr-book 3rd ed. sec. 11.1.1), derived in
+/// `spectral_band_transmittance` | replace when: a material record carries its
+/// spectrum (or an exponential-sum fit with a read source) and the renderer
+/// evaluates transmission per path, matching direct spectral integration within
+/// 2 % for 0.1 to 30 m | state: waiting | gap: the table type and the GPU
+/// uniform layout would change, no GPU adapter test in CI
 pub fn pure_water() -> OpticalCoefficientsSi {
     OpticalCoefficientsSi {
         absorption_m_inv: spectral_band_average(&PURE_WATER_ABSORPTION),
         reduced_scattering_m_inv: PURE_WATER_SCATTERING_M_INV,
+        // Molecular scattering is symmetric forward and backward (the
+        // Rayleigh phase function has zero mean cosine), so `mu_s = mu_s'`.
+        scattering_asymmetry: 0.0,
     }
+}
+
+/// Transmission of pure water through `path_m` metres, per linear sRGB
+/// channel: the band mean of `exp(-a(lambda) z)` over
+/// [`PURE_WATER_ABSORPTION`], exact for the measured spectrum. Unlike
+/// `exp(-sigma z)` with [`pure_water`]'s band-mean coefficient, it stays
+/// correct from a glass of water to open sea.
+pub fn pure_water_transmittance(path_m: f32) -> [f32; 3] {
+    spectral_band_transmittance(&PURE_WATER_ABSORPTION, path_m)
 }
 
 /// Imaginary part `k` of the complex refractive index of ice Ih across the
@@ -147,6 +182,7 @@ pub fn pure_ice() -> OpticalCoefficientsSi {
     OpticalCoefficientsSi {
         absorption_m_inv: spectral_band_average(&absorption),
         reduced_scattering_m_inv: 0.0,
+        scattering_asymmetry: 0.0,
     }
 }
 
@@ -196,7 +232,13 @@ pub const SNOW_SCATTERING_ASYMMETRY: f32 = 0.825;
 /// - absorption `sigma_a = B * v_i * alpha_ice`, with `alpha_ice` pure
 ///   ice's own ([`pure_ice`]): snow absorbs less than solid ice, by its ice
 ///   fraction, and a little more per unit ice, by `B`;
-/// - reduced scattering `sigma_s' = 3/2 * (1 - g) * v_i / r_e`.
+/// - reduced scattering `sigma_s' = 3/2 * (1 - g) * v_i / r_e`, i.e. a
+///   scattering coefficient `sigma_s = sigma_s' / (1 - g) = 3/2 v_i / r_e`
+///   (Libois et al. 2013, eqs. 1 and 4 for spheres, `sigma_e = n C_ext`);
+///   the record carries `g` so the direct beam can use `sigma_s`.
+///   Adaptation, declared: Henley's `sigma_s'` is `sigma_e (1 - g)` with
+///   `omega ~ 1`, so `sigma_s` here exceeds Libois's `sigma_e - sigma_a` by
+///   the fraction `sigma_a / sigma_e`, about 1e-5.
 ///
 /// `grain_radius_m` is their optical grain radius `r_e`: the radius of the
 /// ice sphere with the same surface-area-to-volume ratio as the snow's ice,
@@ -216,6 +258,7 @@ pub fn snow(grain_radius_m: f32, ice_volume_fraction: f32) -> OpticalCoefficient
             .absorption_m_inv
             .map(|alpha| SNOW_ABSORPTION_ENHANCEMENT * v_i * alpha),
         reduced_scattering_m_inv,
+        scattering_asymmetry: SNOW_SCATTERING_ASYMMETRY,
     }
 }
 
@@ -252,6 +295,13 @@ pub fn dry_quartz_sand(grain_diameter_m: f32) -> OpticalCoefficientsSi {
     OpticalCoefficientsSi {
         absorption_m_inv: [DRY_QUARTZ_ABSORPTION_M_INV; 3],
         reduced_scattering_m_inv: packed_grain_reduced_scattering(grain_diameter_m),
+        // KNOWN-LIMIT[ASSUMED-VALUE/NO-SOURCE-YET]: the `1/d` transport
+        // argument fixes only the reduced coefficient, not `g`, so the
+        // direct beam is taken to extinguish at `mu_s'` (g = 0); a packed
+        // bed's real `mu_s` is larger | source: none for sand `g` | replace
+        // when: a measured `g` or `mu_s` of a packed quartz bed is recorded
+        // | state: waiting | gap: none
+        scattering_asymmetry: 0.0,
     }
 }
 
@@ -410,11 +460,88 @@ mod tests {
         // At 10 m the band-averaged coefficients give [0.115, 0.573, 0.916]:
         // most of the red is gone, nearly all of the blue survives. Stated as
         // fractions rather than tight numbers, so the claim is "red goes,
-        // blue stays" and not a transcription of today's output.
+        // blue stays" and not a transcription of today's output. (This is
+        // the band-mean coefficient's answer; the exact band transmission
+        // keeps more red, see `band_mean_coefficient_understates_deep_water_transmission`.)
         let sea = beer_lambert_transmittance(sigma, 1.0, 10.0);
         assert!(
             sea[0] < 0.2 && sea[2] > 0.8,
             "10 m of water should have lost its red and kept its blue, got {sea:?}"
         );
+    }
+
+    /// Independent reference for criteria C4 and C5: the transmission of the
+    /// measured spectrum by brute force, `a(lambda)` linearly interpolated
+    /// between the table's samples and the channel sensitivity evaluated every
+    /// 0.01 nm.
+    fn dense_band_transmittance(path_m: f64) -> [f64; 3] {
+        use crate::energy::radiation::srgb_channel_sensitivity;
+        let table = &PURE_WATER_ABSORPTION;
+        let step = 0.01f64;
+        let (lo, hi) = (f64::from(table[0].0), f64::from(table[table.len() - 1].0));
+        let cells = ((hi - lo) / step) as usize;
+        let mut weighted = [0.0f64; 3];
+        let mut weight = [0.0f64; 3];
+        let mut segment = 0;
+        for cell in 0..cells {
+            let nm = lo + (cell as f64 + 0.5) * step;
+            while segment + 2 < table.len() && f64::from(table[segment + 1].0) <= nm {
+                segment += 1;
+            }
+            let (n0, a0) = (f64::from(table[segment].0), f64::from(table[segment].1));
+            let (n1, a1) = (
+                f64::from(table[segment + 1].0),
+                f64::from(table[segment + 1].1),
+            );
+            let a = a0 + (a1 - a0) * (nm - n0) / (n1 - n0);
+            let s = srgb_channel_sensitivity(nm);
+            for channel in 0..3 {
+                weighted[channel] += s[channel] * (-a * path_m).exp();
+                weight[channel] += s[channel];
+            }
+        }
+        [0, 1, 2].map(|c| weighted[c] / weight[c])
+    }
+
+    /// C4: the exact band transmission against an independent dense integral.
+    #[test]
+    fn pure_water_transmittance_matches_a_dense_numerical_integral() {
+        for path in [1.0f32, 3.0, 10.0, 30.0] {
+            let got = pure_water_transmittance(path);
+            let want = dense_band_transmittance(f64::from(path));
+            for channel in 0..3 {
+                let relative = (f64::from(got[channel]) - want[channel]).abs() / want[channel];
+                assert!(
+                    relative < 1.0e-3,
+                    "{path} m channel {channel}: {} vs dense {}, relative {relative:e}",
+                    got[channel],
+                    want[channel]
+                );
+            }
+        }
+    }
+
+    /// C5: using the band-mean coefficient in `exp(-sigma z)` understates the
+    /// red that deep water transmits, and the more so the deeper. The 2026-10
+    /// rendering audit tabulated -0.6 / -4.9 / -42 / -97 % at 1 / 3 / 10 /
+    /// 30 m; the numbers here are printed next to it, the pass bar is the
+    /// sign and the ordering.
+    #[test]
+    fn band_mean_coefficient_understates_deep_water_transmission() {
+        use crate::energy::radiation::beer_lambert_transmittance;
+        let mean = pure_water().absorption_m_inv;
+        let mut previous = 0.0f64;
+        for path in [1.0f32, 3.0, 10.0, 30.0] {
+            let old = f64::from(beer_lambert_transmittance(mean, 1.0, path)[0]);
+            let exact = f64::from(pure_water_transmittance(path)[0]);
+            let error = (old - exact) / exact;
+            eprintln!(
+                "red at {path} m: band-mean {old:.5}, exact {exact:.5}, relative error {:.1} %",
+                100.0 * error
+            );
+            assert!(error < 0.0, "{path} m: error {error}");
+            assert!(error < previous, "{path} m: not more negative than before");
+            previous = error;
+        }
     }
 }

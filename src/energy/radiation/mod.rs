@@ -29,7 +29,8 @@ pub mod spectrum;
 
 pub use attenuation::{
     OpticalCoefficientsError, OpticalCoefficientsSi, beer_lambert_transmittance,
-    penetration_attenuation_m_inv, slab_radiance,
+    mix_by_volume_fraction, penetration_attenuation_m_inv, scattering_from_reduced, slab_radiance,
+    volume_fractions_from_masses,
 };
 pub use blackbody::{
     BOLTZMANN, PLANCK, SPEED_OF_LIGHT, WIEN_DISPLACEMENT, blackbody_radiance_w_m2_sr,
@@ -37,7 +38,9 @@ pub use blackbody::{
 };
 pub use fresnel::{fresnel_r0_dielectric, schlick_reflectance};
 pub use spectrum::{
-    blackbody_chromaticity_xy, blackbody_linear_srgb, blackbody_linear_srgb_locus_fit,
-    chromaticity_to_linear_srgb, cie_1931_observer, spectral_band_average,
+    blackbody_band_luminance_w_m2_sr, blackbody_band_radiance_w_m2_sr, blackbody_chromaticity_xy,
+    blackbody_display_exposure, blackbody_linear_srgb, blackbody_linear_srgb_locus_fit,
+    chromaticity_to_linear_srgb, cie_1931_observer, linear_srgb_luminance_weights,
+    spectral_band_average, spectral_band_effective_absorption, spectral_band_transmittance,
     srgb_channel_sensitivity,
 };
