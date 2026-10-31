@@ -13,6 +13,11 @@ use crate::materials::physical_props::Elastic;
 use crate::{CorotatedMaterial, FromSI, SimConfig, Simulation, SpawnRegion};
 use glam::{IVec2, Vec2};
 
+// FAST_MODE_PLAN.md sec. 19: the capability scorecard in the real-time
+// configuration, beside this harness.
+#[path = "rt_capability_probes.rs"]
+mod capability;
+
 /// The 8 x 4 cm block of the material `made` builds, `props`' density,
 /// dropped `lift` cells, at the step tolerance `tolerance`, its free frames
 /// flown by its modes when `modal`.
