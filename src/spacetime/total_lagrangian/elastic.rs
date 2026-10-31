@@ -613,40 +613,14 @@ impl Elastic {
         if hooks::split() || hooks::trapezoid() {
             return self.step_stress_tangent_by_differences(c0, c1, dt, dc);
         }
-        let neo_hookean = self.law == ElasticLaw::NeoHookean;
-        let ogden = match self.law {
-            ElasticLaw::Ogden(law) => Some(law),
-            _ => None,
-        };
-        let barotropic = self.law == ElasticLaw::Barotropic;
-        if !(self.law == ElasticLaw::Corotated || neo_hookean || barotropic || ogden.is_some())
-            || self.is_relaxing()
-        {
+        if self.is_relaxing() {
             return self.step_stress_tangent_by_differences(c0, c1, dt, dc);
         }
-        let (lambda, mu) = (self.bulk - self.mu, self.mu);
-        let tangent = |c: DMat2, d: DMat2| {
-            if let Some(law) = &ogden {
-                crate::matter::materials::solid::ogden::ogden_second_pk_tangent(c, d, law)
-            } else if barotropic {
-                crate::matter::materials::liquid::barotropic::barotropic_second_pk_tangent(
-                    c,
-                    d,
-                    lambda + mu,
-                )
-            } else if neo_hookean {
-                crate::matter::materials::solid::neo_hookean::neo_hookean_second_pk_tangent(
-                    c, d, lambda, mu,
-                )
-            } else {
-                crate::matter::materials::solid::corotated::stress::corotated_second_pk_tangent(
-                    c, d, lambda, mu,
-                )
-            }
-        };
         let colon = |a: DMat2, b: DMat2| a.x_axis.dot(b.x_axis) + a.y_axis.dot(b.y_axis);
         let mid = 0.5 * (c0 + c1);
-        let d_mid = tangent(mid, 0.5 * dc);
+        let Some(d_mid) = self.second_pk_tangent(mid, 0.5 * dc) else {
+            return self.step_stress_tangent_by_differences(c0, c1, dt, dc);
+        };
         let d = c1 - c0;
         let norm2 = colon(d, d);
         let law = if norm2 <= 1e-28 {
@@ -659,6 +633,85 @@ impl Elastic {
                 + d * (2.0 * dg / norm2 - 4.0 * g * colon(d, dc) / (norm2 * norm2))
                 + dc * (2.0 * g / norm2)
         };
+        if self.is_viscous() {
+            law + newtonian_viscous_stress(
+                dc * (0.5 / dt),
+                self.shear_viscosity,
+                self.bulk_viscosity,
+            )
+        } else {
+            law
+        }
+    }
+
+    /// The derivative of `second_pk` at `c` along `d`, `matter`'s derived
+    /// tangent of the law; `None` for a law without one.
+    fn second_pk_tangent(&self, c: DMat2, d: DMat2) -> Option<DMat2> {
+        let (lambda, mu) = (self.bulk - self.mu, self.mu);
+        match self.law {
+            ElasticLaw::Ogden(law) => {
+                Some(crate::matter::materials::solid::ogden::ogden_second_pk_tangent(c, d, &law))
+            }
+            ElasticLaw::Barotropic => Some(
+                crate::matter::materials::liquid::barotropic::barotropic_second_pk_tangent(
+                    c,
+                    d,
+                    lambda + mu,
+                ),
+            ),
+            ElasticLaw::NeoHookean => Some(
+                crate::matter::materials::solid::neo_hookean::neo_hookean_second_pk_tangent(
+                    c, d, lambda, mu,
+                ),
+            ),
+            ElasticLaw::Corotated => Some(
+                crate::matter::materials::solid::corotated::stress::corotated_second_pk_tangent(
+                    c, d, lambda, mu,
+                ),
+            ),
+            _ => None,
+        }
+    }
+
+    /// Backward Euler's step stress (FAST_MODE_PLAN.md sec. 13): the law's
+    /// at the step's end, `S(C_{n+1})`, plus the dashpot's over the step
+    /// (`viscous_stress_over`). Measured on solids without a state only.
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) fn end_stress(&self, c0: DMat2, c1: DMat2, dt: f64) -> DMat2 {
+        assert!(
+            !self.carries_state(),
+            "the backward Euler step is measured on solids without a state"
+        );
+        let s = self.second_pk(c1);
+        if self.is_viscous() {
+            s + self.viscous_stress_over(c0, c1, dt)
+        } else {
+            s
+        }
+    }
+
+    /// The derivative of `end_stress` in `C_{n+1}` along `dc`: the law's
+    /// derived tangent, or central differences of `second_pk` with
+    /// `step_stress_tangent_by_differences`'s step where there is none; the
+    /// dashpot's exactly.
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) fn end_stress_tangent(&self, c1: DMat2, dt: f64, dc: DMat2) -> DMat2 {
+        let law = self.second_pk_tangent(c1, dc).unwrap_or_else(|| {
+            let size = |m: DMat2| {
+                m.x_axis
+                    .x
+                    .abs()
+                    .max(m.x_axis.y.abs())
+                    .max(m.y_axis.x.abs())
+                    .max(m.y_axis.y.abs())
+            };
+            let along = size(dc);
+            if along == 0.0 {
+                return DMat2::ZERO;
+            }
+            let h = 1e-6 * size(c1).max(1.0) / along;
+            (self.second_pk(c1 + dc * h) - self.second_pk(c1 - dc * h)) * (0.5 / h)
+        });
         if self.is_viscous() {
             law + newtonian_viscous_stress(
                 dc * (0.5 / dt),

@@ -221,14 +221,17 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
 /// and the TEMPORARY solve counters of the snapshot summed over every solve
 /// of the frame (discarded and rejected tries included): Newton iterations,
 /// solves, Jacobian products, linearisations, residual evaluations, the
-/// solves' wall time; and the single-solve steps that fell back to the pair
-/// (returned beside the line).
+/// solves' wall time; the single-solve steps that fell back to the pair
+/// (returned beside the line); and the heat backward Euler's steps booked
+/// (FAST_MODE_PLAN.md sec. 13): total J/m, steps, the lowest step total,
+/// the particles' negative terms (count, sum).
 fn breakdown_json(f: &super::TotalLagrangianFrame) -> (String, u32) {
     let t = &f.timing;
     let p = crate::spacetime::total_lagrangian::hooks::take_parts();
     let fallbacks = crate::spacetime::total_lagrangian::take_single_solve_fallbacks();
+    let scheme = crate::spacetime::total_lagrangian::hooks::take_scheme_heat();
     let line = format!(
-        "{{\"wall_ms\":{:.3},\"steps\":{},\"rejected\":{},\"newton_kept\":{},\"gmres_kept\":{},\"modal\":{},\"contacts\":{},\"newton_all\":{},\"solves_all\":{},\"products_all\":{},\"linearisations_all\":{},\"residuals_all\":{},\"solve_wall_ms\":{:.3},\"ms\":{{\"residual\":{:.3},\"jacobian\":{:.3},\"linearisation\":{:.3},\"push_derivative\":{:.3},\"responses_jacobian\":{:.3},\"preconditioner_build\":{:.3},\"preconditioner_solve\":{:.3},\"gmres\":{:.3},\"responses\":{:.3},\"contact\":{:.3},\"multipliers\":{:.3},\"grid\":{:.3},\"finishing\":{:.3},\"controller\":{:.3}}},\"internal_evaluations\":{},\"factorizations\":{},\"single_solve_fallbacks\":{}}}",
+        "{{\"wall_ms\":{:.3},\"steps\":{},\"rejected\":{},\"newton_kept\":{},\"gmres_kept\":{},\"modal\":{},\"contacts\":{},\"newton_all\":{},\"solves_all\":{},\"products_all\":{},\"linearisations_all\":{},\"residuals_all\":{},\"solve_wall_ms\":{:.3},\"ms\":{{\"residual\":{:.3},\"jacobian\":{:.3},\"linearisation\":{:.3},\"push_derivative\":{:.3},\"responses_jacobian\":{:.3},\"preconditioner_build\":{:.3},\"preconditioner_solve\":{:.3},\"gmres\":{:.3},\"responses\":{:.3},\"contact\":{:.3},\"multipliers\":{:.3},\"grid\":{:.3},\"finishing\":{:.3},\"controller\":{:.3}}},\"internal_evaluations\":{},\"factorizations\":{},\"single_solve_fallbacks\":{},\"scheme_heat\":{:.9e},\"scheme_steps\":{},\"scheme_lowest_step\":{:.3e},\"scheme_negative\":{},\"scheme_negative_sum\":{:.3e}}}",
         1e3 * f.wall,
         f.steps,
         f.rejected,
@@ -258,7 +261,16 @@ fn breakdown_json(f: &super::TotalLagrangianFrame) -> (String, u32) {
         1e3 * t.controller,
         t.internal_evaluations,
         t.factorizations,
-        fallbacks
+        fallbacks,
+        scheme.total,
+        scheme.steps,
+        if scheme.steps > 0 {
+            scheme.lowest_step
+        } else {
+            0.0
+        },
+        scheme.negative,
+        scheme.negative_sum
     );
     (line, fallbacks)
 }

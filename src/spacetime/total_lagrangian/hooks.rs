@@ -848,3 +848,71 @@ pub(crate) fn held_axis() -> Option<usize> {
     let axis = HELD_AXIS.load(std::sync::atomic::Ordering::Relaxed);
     (axis != usize::MAX).then_some(axis)
 }
+
+/// F4 (FAST_MODE_PLAN.md sec. 13): the step solved by backward Euler instead
+/// of the conserving midpoint, set by the contact phase's control for each
+/// controlled step inside it. A process-wide switch: the step's tries run on
+/// the pool's threads.
+static BACKWARD_EULER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn set_backward_euler(on: bool) {
+    BACKWARD_EULER.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn backward_euler() -> bool {
+    BACKWARD_EULER.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// What the backward Euler steps booked as the scheme's heat since the last
+/// `take_scheme_heat`: the total, the steps, the most negative step total,
+/// and the particles' negative terms (count and sum). Every finished try
+/// books, a discarded one included.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SchemeHeat {
+    pub(crate) total: f64,
+    pub(crate) steps: u64,
+    pub(crate) lowest_step: f64,
+    pub(crate) negative: u64,
+    pub(crate) negative_sum: f64,
+}
+
+static SCHEME_HEAT: std::sync::Mutex<SchemeHeat> = std::sync::Mutex::new(SchemeHeat {
+    total: 0.0,
+    steps: 0,
+    lowest_step: f64::INFINITY,
+    negative: 0,
+    negative_sum: 0.0,
+});
+
+pub(super) fn book_scheme_heat(terms: &[f64]) {
+    let mut heat = SCHEME_HEAT.lock().expect("scheme heat lock");
+    let step: f64 = terms.iter().sum();
+    heat.total += step;
+    heat.steps += 1;
+    heat.lowest_step = heat.lowest_step.min(step);
+    for &d in terms.iter().filter(|d| **d < 0.0) {
+        heat.negative += 1;
+        heat.negative_sum += d;
+    }
+}
+
+pub(crate) fn take_scheme_heat() -> SchemeHeat {
+    let mut heat = SCHEME_HEAT.lock().expect("scheme heat lock");
+    let out = *heat;
+    *heat = SchemeHeat {
+        total: 0.0,
+        steps: 0,
+        lowest_step: f64::INFINITY,
+        negative: 0,
+        negative_sum: 0.0,
+    };
+    out
+}
+
+/// `EMERGE_PROBE_TANGENT_CHECK` set (read once): every exact internal-force
+/// product compared with central differences of the force on the same
+/// iterate, the largest gap printed relative to the product's size.
+pub(super) fn tangent_check() -> bool {
+    static SET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SET.get_or_init(|| std::env::var_os("EMERGE_PROBE_TANGENT_CHECK").is_some())
+}

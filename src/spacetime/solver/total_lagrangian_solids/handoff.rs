@@ -138,6 +138,33 @@ pub(super) fn contact_phase_control(
     if let Some(fixed) = super::reach_cut::stepped_phase::control(control, state, remaining) {
         return fixed;
     }
+    // FAST_MODE_PLAN.md sec. 13 (F4): with `EMERGE_PROBE_BACKWARD_EULER=dt`
+    // (seconds), inside a contact phase, each controlled step is `2 dt` by
+    // backward Euler at an infinite tolerance, its two pieces of `dt` kept
+    // (with the single-solve knob, solved alone); the midpoint elsewhere.
+    static BACKWARD: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+    let backward = *BACKWARD.get_or_init(|| {
+        std::env::var("EMERGE_PROBE_BACKWARD_EULER")
+            .ok()
+            .and_then(|v| v.parse().ok())
+    });
+    let in_phase = CONTACT_PHASE.get();
+    crate::spacetime::total_lagrangian::hooks::set_backward_euler(backward.is_some() && in_phase);
+    if let (Some(dt), true) = (backward, in_phase) {
+        static ANNOUNCED: std::sync::Once = std::sync::Once::new();
+        ANNOUNCED.call_once(|| println!("knob active: backward Euler contact step, dt {dt} s"));
+        state.step_length = (2.0 * dt).min(remaining);
+        trace(|| {
+            format!(
+                "F4: backward Euler step {:.6e} s (pieces of {dt:.6e} s)",
+                state.step_length
+            )
+        });
+        return StepControl {
+            tolerance: f64::INFINITY,
+            ..*control
+        };
+    }
     static K: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
     let k = *K.get_or_init(|| {
         std::env::var("EMERGE_PROBE_CONTACT_FIXED_STEP")

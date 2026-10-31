@@ -769,12 +769,19 @@ pub fn step_total_lagrangian_contact(
     // velocities are the massive unknowns' alone, so their kinetic energy
     // is `1/2 v M* v`.
     let massive = grid.massive();
+    // F4 (FAST_MODE_PLAN.md sec. 13): backward Euler's end velocity `u / dt`.
+    #[cfg(all(test, feature = "experimental"))]
+    let backward = hooks::backward_euler();
+    #[cfg(not(all(test, feature = "experimental")))]
+    let backward = false;
     let mut end_velocity: Vec<f64> = (0..grid.len)
         .map(|k| {
-            if massive[k] {
-                2.0 * u[k] / dt - v_n[k]
-            } else {
+            if !massive[k] {
                 0.0
+            } else if backward {
+                u[k] / dt
+            } else {
+                2.0 * u[k] / dt - v_n[k]
             }
         })
         .collect();
@@ -984,6 +991,12 @@ pub fn step_total_lagrangian_contact(
         (penalty, report.residual_allowed),
         (settings.contact_tolerance, dt),
     );
+    // Backward Euler's loss against the external force's and the walls'
+    // work, each particle's own (FAST_MODE_PLAN.md sec. 13.1): `V0 (W(F_n) -
+    // W(F_n+1) + P_n+1 : G) + 1/2 m |dv(x_p)|^2`, less the dashpot's share
+    // already booked; into the particle's heat.
+    #[cfg(all(test, feature = "experimental"))]
+    let mut scheme = Vec::new();
     for p in 0..n {
         let mut step_x = DVec2::ZERO;
         let mut step_v = DVec2::ZERO;
@@ -993,9 +1006,26 @@ pub fn step_total_lagrangian_contact(
             step_x[a] = grid.read(&u, p, a).0;
             step_v[a] = grid.read(&dv, p, a).0;
         }
+        let g = DMat2::from_cols(DVec2::new(gu.x, gv.x), DVec2::new(gu.y, gv.y));
+        #[cfg(all(test, feature = "experimental"))]
+        if backward && mass[p] > 0.0 {
+            let (f0, f1) = (f[p], f[p] + g);
+            let first = f1 * solids[p].end_stress(f0.transpose() * f0, f1.transpose() * f1, dt);
+            let work = first.x_axis.dot(g.x_axis) + first.y_axis.dot(g.y_axis);
+            let lost = v0[p] * (solids[p].energy(f0) - solids[p].energy(f1) + work)
+                + 0.5 * mass[p] * step_v.length_squared()
+                - dissipated.get(p).copied().unwrap_or(0.0);
+            heat.resize(n, 0.0);
+            heat[p] += lost;
+            scheme.push(lost);
+        }
         x[p] += step_x;
         v[p] += step_v;
-        f[p] += DMat2::from_cols(DVec2::new(gu.x, gv.x), DVec2::new(gu.y, gv.y));
+        f[p] += g;
+    }
+    #[cfg(all(test, feature = "experimental"))]
+    if backward {
+        hooks::book_scheme_heat(&scheme);
     }
     #[cfg(all(test, feature = "experimental"))]
     if let Some(traced) = traced {

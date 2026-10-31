@@ -225,8 +225,16 @@ pub(crate) fn solve(
     hooks::begin_solve();
     let n = x.len();
     let eps = settings.epsilon;
-    // The midpoint's inertia, `2 M (u / dt - v_n) / dt`.
-    let inertia = 2.0;
+    // F4 (FAST_MODE_PLAN.md sec. 13), a measurement: the step by backward
+    // Euler, set by the contact phase's control.
+    // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the contact phase is integrated by a dissipative implicit step at <dt>, its dissipation booked as heat | source: REALTIME_LEVERS_STUDY.md sec. 4.4; STEP_SWEEP_RESULT.md | replace when: the conserving step fits the budget | state: researched | gap: none
+    #[cfg(all(test, feature = "experimental"))]
+    let backward = hooks::backward_euler();
+    #[cfg(not(all(test, feature = "experimental")))]
+    let backward = false;
+    // The midpoint's inertia, `2 M (u / dt - v_n) / dt`; backward Euler's
+    // `M (u / dt - v_n) / dt`.
+    let inertia = if backward { 1.0 } else { 2.0 };
     // The grid velocity: the consistent-mass projection (eq. 28).
     let factor = factors
         .mass
@@ -303,7 +311,16 @@ pub(crate) fn solve(
             let (c0, c1) = (f0.transpose() * f0, f1.transpose() * f1);
             // The law's step stress and the Kelvin-Voigt dashpot's in
             // parallel, on the same `F_n+1/2` (`Elastic::step_stress`).
+            #[cfg(all(test, feature = "experimental"))]
+            let s = if backward {
+                solids[p].end_stress(c0, c1, dt)
+            } else {
+                solids[p].step_stress(c0, c1, dt)
+            };
+            #[cfg(not(all(test, feature = "experimental")))]
             let s = solids[p].step_stress(c0, c1, dt);
+            // Backward Euler's stress acts through `F_{n+1}`.
+            let carrier = if backward { f1 } else { 0.5 * (f0 + f1) };
             #[cfg(all(test, feature = "experimental"))]
             let s = match &pressures {
                 Some((cells, pressure)) => solids[p].mixed_stress(
@@ -315,9 +332,9 @@ pub(crate) fn solve(
                 None => s,
             };
             let first = if lagrangian {
-                v0[p] * (0.5 * (f0 + f1)) * s
+                v0[p] * carrier * s
             } else {
-                v0[p] * (0.5 * (f0 + f1)) * s * f0.transpose()
+                v0[p] * carrier * s * f0.transpose()
             };
             // The viscous stress at the step's END velocity, `2 u / dt - v_n`
             // on the grid (TL), times `F_n+1/2`: the force acts on the
@@ -916,6 +933,14 @@ pub(crate) fn solve(
                 }
                 let (f0, f1) = (f_now[p], deformation_at(u, p));
                 let (c0, c1) = (f0.transpose() * f0, f1.transpose() * f1);
+                #[cfg(all(test, feature = "experimental"))]
+                if backward {
+                    return Linearised {
+                        f1,
+                        s: solids[p].end_stress(c0, c1, dt),
+                        ds: unit.map(|e| solids[p].end_stress_tangent(c1, dt, e)),
+                    };
+                }
                 Linearised {
                     f1,
                     s: solids[p].step_stress(c0, c1, dt),
@@ -943,7 +968,12 @@ pub(crate) fn solve(
             let df = if lagrangian { grad } else { grad * f0 };
             let dc = df.transpose() * t.f1 + t.f1.transpose() * df;
             let ds = t.ds[0] * dc.x_axis.x + t.ds[1] * dc.y_axis.y + t.ds[2] * dc.y_axis.x;
-            let first = 0.5 * df * t.s + 0.5 * (f0 + t.f1) * ds;
+            // Backward Euler's `d(F_{n+1} S) = dF S + F_{n+1} dS`.
+            let first = if backward {
+                df * t.s + t.f1 * ds
+            } else {
+                0.5 * df * t.s + 0.5 * (f0 + t.f1) * ds
+            };
             let first = if lagrangian {
                 v0[p] * first
             } else {
@@ -1046,7 +1076,24 @@ pub(crate) fn solve(
         };
         match lin {
             Some(lin) => {
-                for (o, value) in out.iter_mut().zip(internal_product(lin, d)) {
+                let product = internal_product(lin, d);
+                // F4-C1: the exact product against central differences of
+                // the force on the same iterate.
+                #[cfg(all(test, feature = "experimental"))]
+                if hooks::tangent_check() {
+                    let size = product.iter().fold(0.0f64, |m, e| m.max(e.abs()));
+                    let gap = product
+                        .iter()
+                        .zip(internal(&plus).iter().zip(internal(&minus)))
+                        .fold(0.0f64, |m, (e, (p, q))| {
+                            m.max((e - (p - q) / (2.0 * h)).abs())
+                        });
+                    println!(
+                        "tangent check: backward Euler {backward}, product {size:.3e}, relative gap {:.3e}",
+                        gap / size.max(f64::MIN_POSITIVE)
+                    );
+                }
+                for (o, value) in out.iter_mut().zip(product) {
                     *o += value;
                 }
                 #[cfg(all(test, feature = "experimental"))]
