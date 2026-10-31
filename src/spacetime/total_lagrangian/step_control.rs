@@ -328,6 +328,21 @@ fn clear_factors_knob() -> bool {
     })
 }
 
+/// Whether `EMERGE_PROBE_SINGLE_SOLVE_IN_POOL` is set (read once): the
+/// single solve's try runs through `rayon::join`, inside the thread pool as
+/// the pair's tries do, instead of on the calling thread. Test builds only.
+#[cfg(all(test, feature = "experimental"))]
+fn single_solve_in_pool_knob() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("EMERGE_PROBE_SINGLE_SOLVE_IN_POOL").is_some();
+        if on {
+            println!("knob active: single solve inside the thread pool");
+        }
+        on
+    })
+}
+
 /// The single-solve steps that fell back to the pair, a piece left
 /// unconverged (`single_solve_knob`).
 #[cfg(all(test, feature = "experimental"))]
@@ -675,7 +690,14 @@ pub fn controlled_step(
             #[cfg(all(test, feature = "experimental"))]
             if control.tolerance.is_infinite() && single_solve_knob() {
                 let returns_before = crate::matter::materials::solid::j2_hencky::returns_seen();
-                let (halves, halves_reports, _) = timed(&start, pieces, dt);
+                let (halves, halves_reports, _) = if single_solve_in_pool_knob() {
+                    let since = std::time::Instant::now();
+                    let (out, ()) = rayon::join(|| run(&start, pieces, dt), || ());
+                    clocked(since);
+                    out
+                } else {
+                    timed(&start, pieces, dt)
+                };
                 solves += pieces as u32;
                 account(&halves_reports, &mut timing);
                 if halves_reports.iter().all(|r| r.converged || r.stagnated) {
