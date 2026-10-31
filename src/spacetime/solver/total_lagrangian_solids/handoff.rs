@@ -119,6 +119,7 @@ fn contact_phase(on: bool) {
     CONTACT_PHASE.set(on);
 }
 
+// KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: with k above about 20 the fixed contact step is cut to the frame's remaining time, so the whole contact phase is one conserving midpoint step and k no longer sets it | source: FAST_MODE_PLAN.md sec. 14b | replace when: the contact phase is stepped at k <= 1/4 within every frame's budget, or an error-controlled large step bounds the contact's error | state: researched | gap: none
 /// S1's control for the next controlled step: with
 /// `EMERGE_PROBE_CONTACT_FIXED_STEP=k` set and inside a contact phase, an
 /// infinite tolerance and the step `2 k h / c` (its two halves of `k h / c`

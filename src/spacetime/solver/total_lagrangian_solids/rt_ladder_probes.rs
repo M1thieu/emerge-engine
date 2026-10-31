@@ -289,11 +289,50 @@ fn cells_across() -> i32 {
     })
 }
 
+/// The declared real-time baseline (FAST_MODE_PLAN.md secs. 16-17), rung
+/// `RT`: A3 (modal flight, sub-frame handoff) with the conserving midpoint
+/// at the fixed contact step k = 39.33 (pieces of 1/240 s at n = 2, cut to
+/// the frame's remainder), one solve per step, two cells through the
+/// block's thickness. Measured on the 8 x 4 cm clay drop (release, 4
+/// threads, 5 clean runs): every frame <= 13.4 ms; rebound kept at the 50 %
+/// floor's edge. The knobs it needs are checked here, not set, so a run
+/// cannot carry the name with other values. A measurement-branch baseline:
+/// the handoff and the knobs are probes, porting it into the default
+/// configuration is its own step. Its compromises:
+// KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the body is meshed at two cells through its thickness (h = 2 cm on the clay drop), coarser than the reference's four | source: RT_RESOLUTION_SWEEP_PLAN.md sec. 10; FAST_MODE_PLAN.md sec. 16 | replace when: the per-step cost allows n = 4 within every frame's budget | state: researched | gap: none
+// KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the rebound is 50.0 % faster and 43.3 % higher than the precise reference's (the 50 % floor's edge, kept 0.5004), the contact phase being one large midpoint step | source: FAST_MODE_PLAN.md sec. 14b | replace when: apex and rebound vy are within 25 % of A0 n = 4 in the real-time configuration | state: researched | gap: none
+fn rt_baseline() {
+    let want = [
+        ("EMERGE_PROBE_CONTACT_FIXED_STEP", Some("39.33")),
+        ("EMERGE_PROBE_SINGLE_SOLVE", None),
+        ("EMERGE_RT_CELLS_ACROSS", Some("2")),
+    ];
+    for (name, value) in want {
+        let set = std::env::var(name).ok();
+        assert!(
+            set.is_some() && (value.is_none() || set.as_deref() == value),
+            "rung RT needs {name}{}",
+            value.map_or(String::new(), |v| format!("={v}"))
+        );
+    }
+    assert!(
+        std::env::var_os("EMERGE_PROBE_BACKWARD_EULER").is_none(),
+        "rung RT is the conserving midpoint: EMERGE_PROBE_BACKWARD_EULER unset"
+    );
+    println!("knob active: declared real-time baseline (k 39.33, single solve, 2 cells across)");
+}
+
 #[test]
 #[ignore = "real-time ladder harness: run with --ignored --nocapture and EMERGE_REPLAY_DIR, EMERGE_RT_CONFIG set"]
 fn rt_ladder() {
     let rung = std::env::var("EMERGE_RT_CONFIG").expect("EMERGE_RT_CONFIG names the rung");
     println!("knob active: real-time ladder rung {rung}");
+    let rung = if rung == "RT" {
+        rt_baseline();
+        "A3".to_string()
+    } else {
+        rung
+    };
     let clay = Elastic {
         e_pa: 1.125e7,
         nu: 0.3,
@@ -308,6 +347,9 @@ fn rt_ladder() {
         "A0" => "clay_drop_e2",
         "A1" => "clay_drop_e2_modal",
         "A2" => "clay_drop_e2_handoff",
+        "A3" if std::env::var("EMERGE_RT_CONFIG").as_deref() == Ok("RT") => {
+            "clay_drop_e2_rt_baseline"
+        }
         _ => "clay_drop_e2_fixed_step",
     };
     record(

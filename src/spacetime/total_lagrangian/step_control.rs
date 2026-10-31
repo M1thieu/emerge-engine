@@ -301,6 +301,7 @@ fn tries_in_sequence_knob() -> bool {
 /// tolerance (the fixed contact-phase step), a controlled step solves its
 /// pieces only, without the whole step that feeds the error estimate.
 /// Test builds only.
+// KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: inside the contact phase each step is solved once, with no step-doubling error estimate | source: none | replace when: an embedded estimate or the S1'' rule bounds the step's error at no extra solve | state: unexplored | gap: none
 #[cfg(all(test, feature = "experimental"))]
 fn single_solve_knob() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
