@@ -276,9 +276,67 @@ pub(crate) fn estimator_knob(default: Estimator) -> Estimator {
 #[cfg(all(test, feature = "experimental"))]
 fn tries_in_sequence() -> bool {
     rayon::current_num_threads() <= 1
+        || tries_in_sequence_knob()
         || hooks::order_sensitive()
         || crate::matter::materials::solid::j2_hencky::watching_returns()
         || super::solve::push_check()
+}
+
+/// The real-time ladder's "no C" (RT_LEVER_MEASUREMENT_PLAN.md):
+/// `EMERGE_PROBE_TRIES_IN_SEQUENCE` set runs a step's tries one after the
+/// other at any thread count. Test builds only.
+#[cfg(all(test, feature = "experimental"))]
+fn tries_in_sequence_knob() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("EMERGE_PROBE_TRIES_IN_SEQUENCE").is_some();
+        if on {
+            println!("knob active: tries in sequence (no lever C)");
+        }
+        on
+    })
+}
+
+/// Whether `EMERGE_PROBE_SINGLE_SOLVE` is set (read once): with an infinite
+/// tolerance (the fixed contact-phase step), a controlled step solves its
+/// pieces only, without the whole step that feeds the error estimate.
+/// Test builds only.
+#[cfg(all(test, feature = "experimental"))]
+fn single_solve_knob() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("EMERGE_PROBE_SINGLE_SOLVE").is_some();
+        if on {
+            println!("knob active: single solve per fixed contact-phase step");
+        }
+        on
+    })
+}
+
+/// Whether `EMERGE_PROBE_CLEAR_FACTORS` is set (read once): every
+/// controlled step starts with no factor kept from the last one, the
+/// reference the single solve's change is compared with. Test builds only.
+#[cfg(all(test, feature = "experimental"))]
+fn clear_factors_knob() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("EMERGE_PROBE_CLEAR_FACTORS").is_some();
+        if on {
+            println!("knob active: factors cleared at every controlled step");
+        }
+        on
+    })
+}
+
+/// The single-solve steps that fell back to the pair, a piece left
+/// unconverged (`single_solve_knob`).
+#[cfg(all(test, feature = "experimental"))]
+static SINGLE_SOLVE_FALLBACKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The single-solve fallbacks since the last call.
+#[cfg(all(test, feature = "experimental"))]
+pub(crate) fn take_single_solve_fallbacks() -> u32 {
+    SINGLE_SOLVE_FALLBACKS.swap(0, std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(not(all(test, feature = "experimental")))]
@@ -337,6 +395,14 @@ pub fn controlled_step(
         solids: solids.to_vec(),
         cache: cache.take(),
     };
+    // The single solve's reference band: the same run re-solved with no
+    // factor carried from one step to the next (`clear_factors_knob`).
+    #[cfg(all(test, feature = "experimental"))]
+    if clear_factors_knob()
+        && let Some(kept) = start.cache.as_mut()
+    {
+        kept.factors = Factors::default();
+    }
     // The kinetic part on the step's mean velocity, the displacement over
     // the step over its length: the tries end on different parities of
     // the contact points' velocity alternation (route C holds the mean,
@@ -603,6 +669,56 @@ pub fn controlled_step(
         #[cfg(all(test, feature = "experimental"))]
         let pair_clock = std::time::Instant::now();
         if control.estimator == Estimator::Acary {
+            // With an infinite tolerance nothing reads the estimate: the
+            // pieces alone, kept as the pair would keep them; a piece left
+            // unconverged falls back to the pair below (counted).
+            #[cfg(all(test, feature = "experimental"))]
+            if control.tolerance.is_infinite() && single_solve_knob() {
+                let returns_before = crate::matter::materials::solid::j2_hencky::returns_seen();
+                let (halves, halves_reports, _) = timed(&start, pieces, dt);
+                solves += pieces as u32;
+                account(&halves_reports, &mut timing);
+                if halves_reports.iter().all(|r| r.converged || r.stagnated) {
+                    let returns = crate::matter::materials::solid::j2_hencky::returns_seen();
+                    hooks::add_return_split(0, returns - returns_before, true);
+                    let reaching = beyond(&halves.x)
+                        .iter()
+                        .zip(&start_beyond)
+                        .any(|(&e, &s)| e && !s);
+                    hooks::add_try(reaching, 0);
+                    x.copy_from_slice(&halves.x);
+                    solids.copy_from_slice(&halves.solids);
+                    v.copy_from_slice(&halves.v);
+                    f.copy_from_slice(&halves.f);
+                    *cache = halves.cache;
+                    // The pair's proposal at a zero relative error: the
+                    // ratio's upper clamp.
+                    let next = (5.0 * dt).clamp(floor, control.largest);
+                    *tau = next;
+                    let contact = halves_reports
+                        .iter()
+                        .any(|r| r.push > 0.0 || r.contacts > 0);
+                    let stalled = halves_reports.iter().filter(|r| r.stagnated).count() as u32;
+                    timing.controller = controlling.elapsed().as_secs_f64() - trying.get();
+                    hooks::keep_contact_rows(&halves_reports);
+                    return ControlledStep {
+                        timing,
+                        dt,
+                        kept: halves_reports,
+                        rejected,
+                        solves,
+                        error: 0.0,
+                        contact: contact || reaching,
+                        next,
+                        at_floor: false,
+                        error_parts: (0.0, 0.0),
+                        unconverged,
+                        stagnated: stalled,
+                        reaching,
+                    };
+                }
+                SINGLE_SOLVE_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             #[cfg(all(test, feature = "experimental"))]
             let returns_before = crate::matter::materials::solid::j2_hencky::returns_seen();
             // A sampled pair's measured error estimate (`estimate`): the

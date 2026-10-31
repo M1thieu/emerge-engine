@@ -996,4 +996,6 @@ mod multi_body_probes;
 #[cfg(all(test, feature = "experimental"))]
 mod reach_cut;
 #[cfg(all(test, feature = "experimental"))]
+mod rt_ladder_probes;
+#[cfg(all(test, feature = "experimental"))]
 mod step_sweep;
