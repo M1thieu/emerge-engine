@@ -19,6 +19,9 @@ use crate::spacetime::total_lagrangian::{ContactKey, Plane, StepControl};
 /// A body: its particles and its outline points.
 type Body = (Vec<usize>, Vec<usize>);
 
+/// A body's clear window from a state, the walls and a time span.
+type Window = dyn Fn(&TotalLagrangianState, &Body, (&[Plane], DVec2), (f64, f64)) -> (f64, f64);
+
 #[derive(Default, Clone)]
 struct Phase {
     on: bool,
@@ -188,7 +191,7 @@ pub(super) fn after_step(
     walls: (&[Plane], DVec2),
     (tolerance, dt, rejected): (f64, f64, u32),
     is_free: &dyn Fn(&TotalLagrangianState, &Body) -> bool,
-    window: &dyn Fn(&TotalLagrangianState, &Body, (&[Plane], DVec2), (f64, f64)) -> (f64, f64),
+    window: &Window,
 ) {
     if k().is_none() || state.cache.is_none() {
         return;

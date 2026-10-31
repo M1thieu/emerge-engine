@@ -84,6 +84,7 @@ mod relaxation;
 mod solve;
 mod step;
 mod step_control;
+mod tangent;
 #[cfg(all(test, feature = "experimental"))]
 mod tests;
 mod weighted_gap;

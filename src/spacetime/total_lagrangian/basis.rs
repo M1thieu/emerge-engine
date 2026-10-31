@@ -131,6 +131,10 @@ pub(crate) struct Grid {
     /// not change while the masses do not. Shared by the grid's clones (the
     /// controller's tries), which are the same grid.
     pub(crate) mass_matrix: std::sync::Arc<std::sync::Mutex<Option<MassMatrix>>>,
+    /// The sparsity of the internal force's derivative (`tangent`), built
+    /// once: the stencils are fixed on the reference configuration. Shared
+    /// by the grid's clones.
+    pub(crate) tangent_pattern: super::tangent::KeptPattern,
     /// Per particle, per lattice, the weight function of the web-splines
     /// and its gradient at the particle's reference position, when the
     /// basis is weighted (`LagrangianCache::weighted`).
@@ -221,6 +225,7 @@ impl Grid {
             extension: vec![None; len],
             lumped: Vec::new(),
             mass_matrix: Default::default(),
+            tangent_pattern: Default::default(),
             #[cfg(all(test, feature = "experimental"))]
             weights: None,
             #[cfg(all(test, feature = "experimental"))]

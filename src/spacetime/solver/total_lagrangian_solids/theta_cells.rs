@@ -181,14 +181,14 @@ fn probe_theta_inf_sup() {
     // The cells holding particles with volume, and each particle's.
     let mut index: HashMap<(i64, i64), usize> = HashMap::new();
     let mut of = vec![usize::MAX; state.particles];
-    for p in 0..state.particles {
+    for (p, owner) in of.iter_mut().enumerate() {
         if state.v0[p] <= 0.0 {
             continue;
         }
         let q = state.reference[p];
         let key = ((q.x / cell).floor() as i64, (q.y / cell).floor() as i64);
         let next = index.len();
-        of[p] = *index.entry(key).or_insert(next);
+        *owner = *index.entry(key).or_insert(next);
     }
     let cells = index.len();
     let unknowns: Vec<usize> = (0..grid.len).filter(|&k| grid.active[k]).collect();

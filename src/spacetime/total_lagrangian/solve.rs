@@ -1,6 +1,7 @@
 //! One step's nonlinear solve: the residual (inertia, internal force, contact
 //! push, weight) and Newton's method with a Jacobian-free GMRES.
 
+use super::tangent::*;
 use super::*;
 use std::cell::Cell;
 use std::time::Instant;
@@ -894,9 +895,42 @@ pub(crate) fn solve(
     #[cfg(not(all(test, feature = "experimental")))]
     let exact = true;
     let (linearise_clock, push_clock) = (Cell::new(0.0), Cell::new(0.0));
-    // Each particle's linearisation at `u`, once per Newton iterate; `None`
-    // when the product is taken by differences.
-    let linearised_at = |u: &[f64]| -> Option<Vec<Linearised>> {
+    // The first Piola stress's change at particle `p` for the gradient
+    // `grad d` from its linearisation `t`: `dF = grad d` (the force's `F` is
+    // linear in `u`), `dC = dF^T F + F^T dF`, the stress's change from its
+    // three directions, and `V0 (1/2 dF S + F_n+1/2 dS)`. Linear in `grad`.
+    let first_change = |p: usize, t: &Linearised, grad: DMat2| -> DMat2 {
+        let f0 = f_now[p];
+        let df = if lagrangian { grad } else { grad * f0 };
+        let dc = df.transpose() * t.f1 + t.f1.transpose() * df;
+        let ds = t.ds[0] * dc.x_axis.x + t.ds[1] * dc.y_axis.y + t.ds[2] * dc.y_axis.x;
+        let first = 0.5 * df * t.s + 0.5 * (f0 + t.f1) * ds;
+        if lagrangian {
+            v0[p] * first
+        } else {
+            v0[p] * first * f0.transpose()
+        }
+    };
+    // `first_change` with every operand by its absolute value: the sum of
+    // its terms' absolute values (`check_tangent`).
+    #[cfg(all(test, feature = "experimental"))]
+    let first_change_bound = |p: usize, t: &Linearised, grad: DMat2| -> DMat2 {
+        let (f0, f1, s) = (f_now[p].abs(), t.f1.abs(), t.s.abs());
+        let df = if lagrangian { grad } else { grad * f0 };
+        let dc = df.transpose() * f1 + f1.transpose() * df;
+        let ds =
+            t.ds[0].abs() * dc.x_axis.x + t.ds[1].abs() * dc.y_axis.y + t.ds[2].abs() * dc.y_axis.x;
+        let first = 0.5 * df * s + 0.5 * (f0 + f1) * ds;
+        if lagrangian {
+            v0[p] * first
+        } else {
+            v0[p] * first * f0.transpose()
+        }
+    };
+    // Each particle's linearisation at `u`, once per Newton iterate, and the
+    // internal force's derivative assembled from it (`Tangent`); `None` when
+    // the product is taken by differences.
+    let linearised_at = |u: &[f64]| -> Option<(Vec<Linearised>, Tangent)> {
         if !exact {
             return None;
         }
@@ -908,7 +942,7 @@ pub(crate) fn solve(
             DMat2::from_cols(DVec2::ZERO, DVec2::Y),
             DMat2::from_cols(DVec2::Y, DVec2::X),
         ];
-        let out = (0..n)
+        let out: Vec<Linearised> = (0..n)
             .into_par_iter()
             .map(|p| {
                 if v0[p] <= 0.0 {
@@ -923,32 +957,36 @@ pub(crate) fn solve(
                 }
             })
             .collect();
+        let tangent = Tangent::assemble(grid, n, |p| {
+            (v0[p] > 0.0).then(|| UNIT_GRADIENTS.map(|e| first_change(p, &out[p], e)))
+        });
+        #[cfg(all(test, feature = "experimental"))]
+        let tangent = {
+            let mut tangent = tangent;
+            if tangent_check() {
+                let bound = Tangent::assemble_absolute(grid, n, |p| {
+                    (v0[p] > 0.0).then(|| UNIT_GRADIENTS.map(|e| first_change_bound(p, &out[p], e)))
+                });
+                tangent.absolute = Some(Box::new(bound));
+            }
+            tangent
+        };
         timed(&linearise_clock, start);
-        Some(out)
+        Some((out, tangent))
     };
-    // The internal force's derivative along `d` from the linearisations:
-    // `dF = grad d` (the force's `F` is linear in `u`), `dC = dF^T F + F^T
-    // dF`, the stress's change from its three directions, and the first
-    // Piola stress's `V0 (1/2 dF S + F_n+1/2 dS)`, scattered as the force is.
+    // The internal force's derivative along `d` by a pass over the
+    // particles, scattered as the force is: the product the assembled
+    // tangent replaces, kept to check it (`tangent_check`).
+    #[cfg(all(test, feature = "experimental"))]
     let internal_product = |lin: &[Linearised], d: &[f64]| -> Vec<f64> {
         parallel_scatter(grid.len, n, |p, acc| {
             if v0[p] <= 0.0 {
                 return;
             }
-            let t = &lin[p];
             let (_, gu) = grid.read(d, p, 0);
             let (_, gv) = grid.read(d, p, 1);
             let grad = DMat2::from_cols(DVec2::new(gu.x, gv.x), DVec2::new(gu.y, gv.y));
-            let f0 = f_now[p];
-            let df = if lagrangian { grad } else { grad * f0 };
-            let dc = df.transpose() * t.f1 + t.f1.transpose() * df;
-            let ds = t.ds[0] * dc.x_axis.x + t.ds[1] * dc.y_axis.y + t.ds[2] * dc.y_axis.x;
-            let first = 0.5 * df * t.s + 0.5 * (f0 + t.f1) * ds;
-            let first = if lagrangian {
-                v0[p] * first
-            } else {
-                v0[p] * first * f0.transpose()
-            };
+            let first = first_change(p, &lin[p], grad);
             for a in 0..2 {
                 let row = first.row(a);
                 grid.visit(p, a, |k, _, g| acc[k] += row.dot(g));
@@ -1013,7 +1051,7 @@ pub(crate) fn solve(
         out
     };
     let jacobian_at = |u: &[f64],
-                       (held, lin): (&[ContactBranch], Option<&[Linearised]>),
+                       (held, lin): (&[ContactBranch], Option<(&[Linearised], &Tangent)>),
                        d: &[f64]|
      -> Vec<f64> {
         let start = Instant::now();
@@ -1045,8 +1083,13 @@ pub(crate) fn solve(
             Instant::now()
         };
         match lin {
-            Some(lin) => {
-                for (o, value) in out.iter_mut().zip(internal_product(lin, d)) {
+            Some((_lin, tangent)) => {
+                let product = tangent.times(d);
+                #[cfg(all(test, feature = "experimental"))]
+                if tangent_check() {
+                    check_tangent(tangent, &product, &internal_product(_lin, d), d);
+                }
+                for (o, value) in out.iter_mut().zip(product) {
                     *o += value;
                 }
                 #[cfg(all(test, feature = "experimental"))]
@@ -1167,7 +1210,8 @@ pub(crate) fn solve(
         // finite differences.
         let held = branches(&u);
         let lin = linearised_at(&u);
-        let jacobian = |d: &[f64]| jacobian_at(&u, (&held, lin.as_deref()), d);
+        let lin = lin.as_ref().map(|(l, t)| (l.as_slice(), t));
+        let jacobian = |d: &[f64]| jacobian_at(&u, (&held, lin), d);
         #[cfg(all(test, feature = "experimental"))]
         hooks::record_condition(&jacobian, grid, mass);
         #[cfg(all(test, feature = "experimental"))]
@@ -1342,7 +1386,8 @@ pub(crate) fn solve(
     if wants_responses && report.converged && !contacts.is_empty() {
         let held = branches(&u);
         let lin = linearised_at(&u);
-        let jacobian = |d: &[f64]| jacobian_at(&u, (&held, lin.as_deref()), d);
+        let lin = lin.as_ref().map(|(l, t)| (l.as_slice(), t));
+        let jacobian = |d: &[f64]| jacobian_at(&u, (&held, lin), d);
         let base = push_with(&u, Some(&held), None);
         let mut computed = Vec::new();
         for (i, branch) in held.iter().enumerate() {
