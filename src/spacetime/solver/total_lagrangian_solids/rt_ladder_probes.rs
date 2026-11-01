@@ -161,10 +161,14 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
     let mut breakdown = Vec::with_capacity(frames);
     let mut single_solve_fallbacks = 0;
     crate::spacetime::total_lagrangian::hooks::take_parts();
+    let rest = REST.with(|r| r.get());
     for k in 1..=frames {
         sim.step();
         if super::handoff::tracing() {
             vibration_count(&sim, k);
+        }
+        if rest || super::handoff::tracing() {
+            rest_sample(&sim, k);
         }
         let f = sim.total_lagrangian_frame().expect("the path is on");
         allowed += f.residual_work + f.contact_work_bound;
@@ -178,6 +182,9 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
         single_solve_fallbacks += fallbacks;
     }
     println!("single-solve fallbacks over the run: {single_solve_fallbacks}");
+    if rest {
+        rest_report();
+    }
     // FAST_MODE_PLAN.md sec. 25 (T-7): the turning flight's own accounting.
     if super::exponential_flight::knob().on {
         let state = sim.total_lagrangian.as_ref().expect("the path is on");
@@ -352,6 +359,120 @@ fn rt_baseline() {
 #[test]
 #[ignore = "real-time ladder harness: run with --ignored --nocapture and EMERGE_REPLAY_DIR, EMERGE_RT_CONFIG set"]
 fn rt_ladder() {
+    ladder();
+}
+
+/// FAST_MODE_PLAN.md sec. 34: the same block resting from `F = I` (no
+/// lift), the ladder's rungs, cells, materials and tolerance; per frame
+/// the centroid's sag and the volume-mean `sigma_yy` against the exact
+/// static answer (`rest_sample`), and over frames 31-60 their means and
+/// spreads.
+#[test]
+#[ignore = "rest harness: run with --ignored --nocapture and EMERGE_REPLAY_DIR, EMERGE_RT_CONFIG set"]
+fn rt_rest() {
+    REST.with(|r| r.set(true));
+    ladder();
+}
+
+thread_local! {
+    /// The rest scene (`rt_rest`) and its samples `(sag, sigma_yy)` over the
+    /// exact ones, frame by frame.
+    static REST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SAMPLES: std::cell::RefCell<Vec<(f64, f64)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The block's lift above the floor in quarter-thickness cells: the drop's
+/// 10, none in the rest scene.
+fn lift() -> f32 {
+    if REST.with(|r| r.get()) { 0.0 } else { 10.0 }
+}
+
+/// FAST_MODE_PLAN.md sec. 34: after frame `k`, the centroid's sag (from its
+/// start in the rest scene, from the floor plus half the thickness
+/// otherwise) and the volume-mean Cauchy `sigma_yy` (`F S F^T / J`, `S` the
+/// solid's own `second_pk`), each over the exact static answer (C4's,
+/// derived there): `s = rho g H^2 / (3 E'')`, `E'' = 4 mu (lambda + mu) /
+/// (lambda + 2 mu)`, mean `sigma_yy = -rho g H / 2`, from the run's own
+/// moduli, density, gravity and thickness.
+fn rest_sample(sim: &Simulation, k: usize) {
+    let Some(state) = sim.total_lagrangian.as_ref() else {
+        return;
+    };
+    let n = state.particles;
+    let mass: f64 = state.mass[..n].iter().sum();
+    let volume: f64 = state.v0[..n].iter().sum();
+    let rho = mass / volume;
+    let g = sim.total_lagrangian_gravity().y.abs();
+    let (lambda, mu) = state.solids[0].lame();
+    let thickness = f64::from(cells_across()) * f64::from(sim.config().dx_meters);
+    let plane_modulus = 4.0 * mu * (lambda + mu) / (lambda + 2.0 * mu);
+    let exact_sag = rho * g * thickness * thickness / (3.0 * plane_modulus);
+    let exact_sigma = -rho * g * thickness / 2.0;
+    let centroid = (0..n).map(|p| state.mass[p] * state.x[p].y).sum::<f64>() / mass;
+    let floor = sim
+        .total_lagrangian_walls()
+        .0
+        .iter()
+        .filter(|plane| plane.axis == 1 && plane.inward > 0.0)
+        .map(|plane| plane.at)
+        .fold(f64::NEG_INFINITY, f64::max);
+    // The rest scene's sag is from the start's own centroid (C4's measure):
+    // the reference configuration is the start.
+    let reference = if REST.with(|r| r.get()) {
+        (0..n)
+            .map(|p| state.mass[p] * state.reference[p].y)
+            .sum::<f64>()
+            / mass
+    } else {
+        floor + 0.5 * thickness
+    };
+    let (mut kirchhoff, mut current) = (0.0, 0.0);
+    for p in 0..n {
+        let f = state.f[p];
+        let s = state.solids[p].second_pk(f.transpose() * f);
+        kirchhoff += state.v0[p] * (f * s * f.transpose()).y_axis.y;
+        current += state.v0[p] * f.determinant();
+    }
+    let sag = (reference - centroid) / exact_sag;
+    let sigma = kirchhoff / current / exact_sigma;
+    // Beside: the sag from the floor plus half the thickness, and the start's
+    // own offset from it, both over the exact sag.
+    let from_floor = (floor + 0.5 * thickness - centroid) / exact_sag;
+    let start = (0..n)
+        .map(|p| state.mass[p] * state.reference[p].y)
+        .sum::<f64>()
+        / mass;
+    let start_offset = (start - floor - 0.5 * thickness) / exact_sag;
+    println!(
+        "REST frame {k}: sag over the exact {sag:+.4e} (exact {exact_sag:.4e} m), mean sigma_yy over the exact {sigma:+.4e} (exact {exact_sigma:.4e} Pa); from the floor {from_floor:+.4e}, the start's offset {start_offset:+.4e}"
+    );
+    SAMPLES.with(|v| v.borrow_mut().push((sag, sigma)));
+}
+
+/// The rest scene's frames 31-60: each ratio's mean and the standard
+/// deviation of its samples.
+fn rest_report() {
+    SAMPLES.with(|v| {
+        let v = v.borrow();
+        let window: Vec<&(f64, f64)> = v.iter().skip(30).take(30).collect();
+        if window.is_empty() {
+            return;
+        }
+        let stats = |f: &dyn Fn(&(f64, f64)) -> f64| {
+            let n = window.len() as f64;
+            let mean = window.iter().map(|w| f(w)).sum::<f64>() / n;
+            let spread = (window.iter().map(|w| (f(w) - mean).powi(2)).sum::<f64>() / n).sqrt();
+            (mean, spread)
+        };
+        let (sag, sag_spread) = stats(&|w| w.0);
+        let (sigma, sigma_spread) = stats(&|w| w.1);
+        println!(
+            "REST frames 31-60: sag over the exact mean {sag:.4e}, standard deviation {sag_spread:.4e}; mean sigma_yy over the exact mean {sigma:.4e}, standard deviation {sigma_spread:.4e}"
+        );
+    });
+}
+
+fn ladder() {
     let rung = std::env::var("EMERGE_RT_CONFIG").expect("EMERGE_RT_CONFIG names the rung");
     println!("knob active: real-time ladder rung {rung}");
     let rung = if rung == "RT" {
@@ -417,7 +538,7 @@ fn rt_ladder() {
             &format!("{name}_norton"),
             block(
                 (labels.tolerance, rung.as_str()),
-                10.0,
+                lift(),
                 &|config| Box::new(plasticine.material((e_pa, rho), config)),
                 &props,
             ),
@@ -442,7 +563,7 @@ fn rt_ladder() {
             &format!("{name}_plasticine"),
             block(
                 (labels.tolerance, rung.as_str()),
-                10.0,
+                lift(),
                 &|config| {
                     let mut material =
                         CorotatedMaterial::from_physical(&plasticine.relaxed, config);
@@ -460,7 +581,7 @@ fn rt_ladder() {
         name,
         block(
             (clay_labels.tolerance, rung.as_str()),
-            10.0,
+            lift(),
             &|config| Box::new(CorotatedMaterial::from_physical(&clay, config)),
             &clay,
         ),
