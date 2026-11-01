@@ -177,6 +177,33 @@ pub(super) fn contact_phase_control(
     planes: &[Plane],
     remaining: f64,
 ) -> StepControl {
+    // FAST_MODE_PLAN.md sec. 31 (C-1): the held contacts' total normal
+    // multiplier and the least point gap to a wall before each step.
+    if tracing() {
+        let (held, force) = state.cache.as_ref().map_or((0, 0.0), |c| {
+            (
+                c.contacts.len(),
+                c.contacts.iter().map(|k| k.multiplier).sum::<f64>(),
+            )
+        });
+        let x = &state.x;
+        let gap = state
+            .outlines
+            .iter()
+            .flatten()
+            .flat_map(|&o| {
+                planes
+                    .iter()
+                    .map(move |plane| plane.inward * (x[o][plane.axis] - plane.at))
+            })
+            .fold(f64::INFINITY, f64::min);
+        trace(|| {
+            format!(
+                "C-1: before the step: {held} contacts held, normal multiplier sum {force:+.4e}, least point gap {gap:+.4e} m, contact phase {}",
+                CONTACT_PHASE.get()
+            )
+        });
+    }
     // MIXED_FORMULATION_PLAN.md: the Theta cells, once, at the first step.
     theta_cells::ensure(state);
     // S1PP_STEPPED_PLAN.md: the stepped path's own contact phase first.

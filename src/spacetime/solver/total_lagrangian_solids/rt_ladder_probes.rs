@@ -42,6 +42,14 @@ fn block(
     let lift = lift * n as f32 / 4.0;
     let mut config = SimConfig::earth(10 * n as usize, cell_m, 1.0 / 60.0);
     let path = TotalLagrangianConfig::new(tolerance);
+    // FAST_MODE_PLAN.md sec. 31 (C-2): the engine's modal rest asked for on
+    // the rung (`EMERGE_RT_MODAL_REST`), nothing else changed.
+    let path = if std::env::var_os("EMERGE_RT_MODAL_REST").is_some() {
+        println!("knob active: modal rest");
+        path.with_modal_rest()
+    } else {
+        path
+    };
     config.total_lagrangian = Some(match rung {
         "A0" => path,
         "A1" => path.with_modal_flight(),

@@ -373,6 +373,27 @@ impl Rest {
         }
         let multiplier = basis.multipliers(&start_force);
         if multiplier.iter().any(|&l| l <= 0.0) {
+            // FAST_MODE_PLAN.md sec. 31: the rest's multipliers against the
+            // step's own, per held contact.
+            #[cfg(all(test, feature = "experimental"))]
+            super::handoff::trace(|| {
+                let step: Vec<String> = state
+                    .cache
+                    .as_ref()
+                    .map(|c| {
+                        c.contacts
+                            .iter()
+                            .map(|k| format!("{:+.4e}", k.multiplier))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let own: Vec<String> = multiplier.iter().map(|l| format!("{l:+.4e}")).collect();
+                format!(
+                    "rest: multipliers, the rest's [{}], the step's [{}]",
+                    own.join(", "),
+                    step.join(", ")
+                )
+            });
             return Err(Refused {
                 basis: Box::new(basis),
                 beyond_limit: false,
@@ -621,6 +642,15 @@ pub(crate) fn rest_frame(
     if state.rest.is_none() {
         let keys = held_keys(state);
         if keys.is_empty() || keys != state.last_held || state.flight.is_some() {
+            #[cfg(all(test, feature = "experimental"))]
+            super::handoff::trace(|| {
+                format!(
+                    "rest: not attempted (held {}, same set as the last stepped frame {}, a flight under way {})",
+                    keys.len(),
+                    keys == state.last_held,
+                    state.flight.is_some()
+                )
+            });
             return false;
         }
         let Some(cache) = state.cache.as_ref() else {
@@ -640,12 +670,29 @@ pub(crate) fn rest_frame(
                 .iter()
                 .any(|s| s.is_relaxing());
             state.modal_rest_refused += u64::from(relaxing && friction == 0.0);
+            #[cfg(all(test, feature = "experimental"))]
+            super::handoff::trace(|| format!("rest: refused, no basis (friction {friction})"));
             return false;
         };
         let cache = state.cache.as_ref().expect("checked above");
         match Rest::start(basis, state, (&cache.grid, planes), (gravity, t0, length)) {
-            Ok(rest) => state.rest = Some(rest),
+            Ok(rest) => {
+                #[cfg(all(test, feature = "experimental"))]
+                super::handoff::trace(|| format!("rest: started at {t0:.6}"));
+                state.rest = Some(rest);
+            }
             Err(refused) => {
+                #[cfg(all(test, feature = "experimental"))]
+                super::handoff::trace(|| {
+                    format!(
+                        "rest: refused at the start, {}",
+                        if refused.beyond_limit {
+                            "the strain bound beyond the record's linear limit"
+                        } else {
+                            "a held multiplier not compressive"
+                        }
+                    )
+                });
                 state.modal_rest_refused += u64::from(refused.beyond_limit);
                 state.rest_basis = Some(*refused.basis);
                 return false;
@@ -656,6 +703,10 @@ pub(crate) fn rest_frame(
         return false;
     };
     if !rest.holds(planes, t1) {
+        #[cfg(all(test, feature = "experimental"))]
+        super::handoff::trace(|| {
+            format!("rest: handed back at {t0:.6}, the bounds do not hold to {t1:.6}")
+        });
         state.rest_hand_backs += 1;
         state.rest_basis = Some(rest.basis);
         return false;
