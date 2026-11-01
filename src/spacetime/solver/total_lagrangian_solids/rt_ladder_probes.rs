@@ -163,6 +163,9 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
     crate::spacetime::total_lagrangian::hooks::take_parts();
     for k in 1..=frames {
         sim.step();
+        if super::handoff::tracing() {
+            vibration_count(&sim, k);
+        }
         let f = sim.total_lagrangian_frame().expect("the path is on");
         allowed += f.residual_work + f.contact_work_bound;
         walls.push(1e3 * f.wall);
@@ -464,4 +467,111 @@ fn rt_ladder() {
         frames,
         &clay_labels,
     );
+}
+
+thread_local! {
+    /// The body's free modes, built once (the grid stays on the reference).
+    static MODES: std::cell::RefCell<Option<crate::spacetime::total_lagrangian::Modes>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// FAST_MODE_PLAN.md sec. 33 (a, b): each free elastic mode's kinetic
+/// energy in the body frame after frame `k` (`q_i' = sum_p m_p v_p .
+/// phi_i(X_p)`, the rigid translation and the spin `L / I` removed as
+/// `Flight::start` does, `q_i'^2 / 2`, J/m), and once, each mode's
+/// frequency with the loss factor the solid's relaxation spectrum gives
+/// there (`M / M_r = a + i b`, `a = 1 + sum kappa omega^2 / (theta^2 +
+/// omega^2)`, `b = sum kappa omega theta / (theta^2 + omega^2)`, `eta = b /
+/// a`: the record's modulus, Blanc et al. eq. 10). Printed only; nothing
+/// is changed.
+fn vibration_count(sim: &Simulation, k: usize) {
+    use crate::spacetime::total_lagrangian::{RIGID_MODES, body_modes};
+    use glam::{DMat2, DVec2};
+    let Some(state) = sim.total_lagrangian.as_ref() else {
+        return;
+    };
+    let Some(cache) = state.cache.as_ref() else {
+        return;
+    };
+    let n = state.particles;
+    MODES.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = body_modes(
+                &cache.grid,
+                (&state.mass, &state.v0, &state.solids),
+                (n, state.x.len()),
+            );
+            if let Some(modes) = slot.as_ref() {
+                let spectrum = state.solids[0].relaxation.proportional();
+                let line: Vec<String> = modes
+                    .omega
+                    .iter()
+                    .enumerate()
+                    .skip(RIGID_MODES)
+                    .map(|(i, &w)| {
+                        let eta = spectrum.map_or(0.0, |(mechanisms, _)| {
+                            let (a, b) = mechanisms.iter().fold((1.0, 0.0), |(a, b), m| {
+                                let d = m.theta * m.theta + w * w;
+                                (
+                                    a + m.kappa_shear * w * w / d,
+                                    b + m.kappa_shear * w * m.theta / d,
+                                )
+                            });
+                            b / a
+                        });
+                        format!("{i}:{:.1}Hz/eta{eta:.4}", w / (2.0 * std::f64::consts::PI))
+                    })
+                    .collect();
+                println!("VIB modes {}", line.join(" "));
+            }
+        }
+        let Some(modes) = slot.as_ref() else {
+            return;
+        };
+        let total: f64 = state.mass[..n].iter().sum();
+        let (sum_x, sum_v) = (0..n).fold((DVec2::ZERO, DVec2::ZERO), |(a, b), p| {
+            (
+                a + state.mass[p] * state.x[p],
+                b + state.mass[p] * state.v[p],
+            )
+        });
+        let (centre, velocity) = (sum_x / total, sum_v / total);
+        let origin =
+            (0..n).fold(DVec2::ZERO, |a, p| a + state.mass[p] * state.reference[p]) / total;
+        let (momentum, inertia) = (0..n).fold((0.0, 0.0), |(l, i), p| {
+            let arm = state.x[p] - centre;
+            (
+                l + state.mass[p] * arm.perp_dot(state.v[p] - velocity),
+                i + state.mass[p] * arm.length_squared(),
+            )
+        });
+        let spin = momentum / inertia.max(f64::MIN_POSITIVE);
+        let a = (0..n).fold(DMat2::ZERO, |a, p| {
+            let (r, s) = (state.x[p] - centre, state.reference[p] - origin);
+            a + state.mass[p] * DMat2::from_cols(r * s.x, r * s.y)
+        });
+        let back = DMat2::from_angle(-(a.x_axis.y - a.y_axis.x).atan2(a.x_axis.x + a.y_axis.y));
+        let energies: Vec<f64> = modes
+            .at
+            .iter()
+            .skip(RIGID_MODES)
+            .map(|at| {
+                let rate: f64 = (0..n)
+                    .map(|p| {
+                        let arm = state.x[p] - centre;
+                        let v = back * (state.v[p] - velocity - spin * arm.perp());
+                        state.mass[p] * v.dot(at[p])
+                    })
+                    .sum();
+                0.5 * rate * rate
+            })
+            .collect();
+        let line: Vec<String> = energies.iter().map(|e| format!("{e:.3e}")).collect();
+        println!(
+            "VIB frame {k}: kinetic {:.6e} J/m [{}]",
+            energies.iter().sum::<f64>(),
+            line.join(" ")
+        );
+    });
 }
