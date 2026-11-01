@@ -116,6 +116,9 @@ thread_local! {
     /// kept through the phase's free runs between pushes (no contact held
     /// there), forgotten once a flight is kept to a frame's end.
     static CONTACT_TIME: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
+    /// FAST_MODE_PLAN.md sec. 24 (C2'): whether the last hand-back attempt
+    /// was refused by the angular-momentum check.
+    static ANGULAR_REFUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(all(test, feature = "experimental"))]
@@ -123,18 +126,28 @@ fn contact_phase(on: bool) {
     CONTACT_PHASE.set(on);
 }
 
-/// Whether `EMERGE_PROBE_REFUSAL_PHASE` is set (FAST_MODE_PLAN.md sec. 23,
-/// C2), announced once.
+/// Whether a refusal after a held contact is a contact phase:
+/// `EMERGE_PROBE_REFUSAL_PHASE` set (FAST_MODE_PLAN.md sec. 23, C2), or
+/// `=angular` and the refusal the angular-momentum check's (sec. 24, C2');
+/// announced once.
 #[cfg(all(test, feature = "experimental"))]
 fn refusal_phase() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| {
-        let on = std::env::var_os("EMERGE_PROBE_REFUSAL_PHASE").is_some();
-        if on {
+    static MODE: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+    let mode = *MODE.get_or_init(|| {
+        let set = std::env::var("EMERGE_PROBE_REFUSAL_PHASE").ok()?;
+        let angular = set == "angular";
+        if angular {
+            println!("knob active: a refusal by the angular check after a held contact is a contact phase");
+        } else {
             println!("knob active: a refusal after a held contact is a contact phase");
         }
-        on
-    })
+        Some(angular)
+    });
+    match mode {
+        None => false,
+        Some(true) => ANGULAR_REFUSED.get(),
+        Some(false) => true,
+    }
 }
 
 // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: with k above about 20 the fixed contact step is cut to the frame's remaining time, so the whole contact phase is one conserving midpoint step and k no longer sets it | source: FAST_MODE_PLAN.md sec. 14b, 21a | replace when: the contact phase is stepped at k <= 1/4 within every frame's budget, or an error-controlled large step bounds the contact's error | state: researched; the sourced contact-time rule (sec. 21) measured and not adopted | gap: k is chosen, not derived (sec. 21a)
@@ -354,8 +367,10 @@ impl Simulation {
         (planes, gravity): (&[Plane], DVec2),
         (t0, t1): (f64, f64),
     ) -> (f64, f64) {
+        #[cfg(all(test, feature = "experimental"))]
+        ANGULAR_REFUSED.set(false);
         let reached = self.fly_or_refuse(state, (planes, gravity), (t0, t1));
-        // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: C2 takes a refused body's frame at the fixed contact step; on the hopping clay it keeps the floor (long run 0.66), on the Norton plasticine the impact at that step turns nearly elastic (plastic work 8.4e-3 against 1.12 J/m) | source: FAST_MODE_PLAN.md sec. 23a | replace when: a refused flight is stepped at a step that resolves the law's own rate | state: measured, not adopted | gap: none
+        // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: C2 takes a refused body's frame at the fixed contact step; on the hopping clay it keeps the floor (long run 0.66), on the Norton plasticine the impact at that step turns nearly elastic (plastic work 8.4e-3 against 1.12 J/m) | source: FAST_MODE_PLAN.md sec. 23a, 24a | replace when: a refused flight is stepped at a step that resolves the law's own rate | state: measured, not adopted (C2' limited to the angular check: no regression on V0, the rows or Norton; the clay run keeps 66 contact episodes against RT's 77) | gap: the energy rise's two shares (fixed step, flights) not named
         // FAST_MODE_PLAN.md sec. 23 (C2): with
         // `EMERGE_PROBE_REFUSAL_PHASE` set, an attempt that took no flight
         // after a contact held since the last one is a contact phase, so
@@ -503,6 +518,8 @@ impl Simulation {
             (state.x, state.v, state.f) = start;
             state.modes = Some(Some(modes));
             state.hand_backs += 1;
+            #[cfg(all(test, feature = "experimental"))]
+            ANGULAR_REFUSED.set(true);
             return (t0, 0.0);
         }
         flight.carry_branches(&modes, state, &start.2);
