@@ -502,9 +502,8 @@ impl Simulation {
         let gravity = self.total_lagrangian_gravity();
         (0..state.particles)
             .map(|p| {
-                0.5 * state.mass[p] * state.v[p].length_squared()
-                    + state.v0[p] * state.solids[p].energy(state.f[p])
-                    - state.mass[p] * gravity.dot(state.x[p])
+                let (kinetic, stored, potential) = frame::particle_energy(state, gravity, p);
+                kinetic + stored - potential
             })
             .sum()
     }

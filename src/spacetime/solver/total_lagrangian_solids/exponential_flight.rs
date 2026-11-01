@@ -42,6 +42,9 @@ pub(super) struct Knob {
     pub(super) on: bool,
     pub(super) truncated: bool,
     pub(super) steps: usize,
+    /// The law's own energy in the Hamiltonian (`law`, FAST_MODE_PLAN.md
+    /// sec. 26): `EMERGE_PROBE_FLIGHT=law`.
+    pub(super) law: bool,
 }
 
 thread_local! {
@@ -55,18 +58,21 @@ pub(super) fn set_knob(knob: Option<Knob>) {
 
 pub(super) fn knob() -> Knob {
     static ANNOUNCED: std::sync::Once = std::sync::Once::new();
+    let flight = std::env::var("EMERGE_PROBE_FLIGHT");
     let knob = KNOB.with(|k| k.get()).unwrap_or_else(|| Knob {
-        on: std::env::var("EMERGE_PROBE_FLIGHT").as_deref() == Ok("exponential"),
+        on: matches!(flight.as_deref(), Ok("exponential" | "law")),
         truncated: std::env::var_os("EMERGE_PROBE_FLIGHT_TRUNCATED").is_some(),
         steps: std::env::var("EMERGE_PROBE_FLIGHT_STEPS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1),
+        law: flight.as_deref() == Ok("law"),
     });
     if knob.on {
         ANNOUNCED.call_once(|| {
             println!(
-                "knob active: turning flight (exponential discrete gradient), {} scheme steps a frame{}",
+                "knob active: turning flight (exponential discrete gradient){}, {} scheme steps a frame{}",
+                if knob.law { " with the law's own energy" } else { "" },
                 knob.steps,
                 if knob.truncated {
                     ", truncated model"
@@ -117,6 +123,16 @@ pub(super) struct Record {
     /// iteration's noise floor `2 eps_F / (1 - rho_pred)` (plan, 7.3).
     pub(super) ratio_deltas: (f64, f64),
     pub(super) noise_floor: f64,
+    /// With the law's energy (sec. 26), on a flown attempt's last step: the
+    /// step's energy change from the attempt's start to its rebuilt end,
+    /// J/m, and the round-off bound of the two evaluations (part (a)); on
+    /// a flight's first step, the start's projection remainder (part (d));
+    /// on every step, `|P - I|_F` (part (c)).
+    pub(super) law: bool,
+    pub(super) step_energy_change: f64,
+    pub(super) step_energy_bound: f64,
+    pub(super) start_remainder: Option<f64>,
+    pub(super) gram_defect: f64,
 }
 
 /// The body's invariants (plan, 7.2; ROUTE_A_PAPER.md), over its elastic
@@ -139,6 +155,9 @@ struct Invariants {
     g_norm: f64,
     i0: f64,
     truncated: bool,
+    /// The law's part of the Hamiltonian (`law`), and `|P - I|_F`.
+    law: Option<law::Law>,
+    gram_defect: f64,
 }
 
 /// `U~` at a point, its error bound and, when asked, its gradient in
@@ -150,6 +169,8 @@ struct Eval {
     grad_theta: f64,
     theta_dot: f64,
     k: Vec<f64>,
+    /// The law's term (`law::Term`) when the Hamiltonian carries it.
+    law: Option<law::Term>,
 }
 
 /// Counts of the operations, for the flops (plan, 2.3): matrix-vector
@@ -198,6 +219,7 @@ impl Invariants {
                 grad_theta: 0.0,
                 theta_dot: p_theta / self.i0,
                 k: vec![0.0; n],
+                law: None,
             };
         }
         let q: Vec<f64> = zeta.iter().zip(&self.omega).map(|(z, w)| z.x / w).collect();
@@ -228,6 +250,11 @@ impl Invariants {
         let a2 = p_theta * p_theta * a_ims / (2.0 * s_lo * self.i0);
         let error = gamma(2 * n + 16) * (a1 + a2) * (a_s / s_lo) + UNIT * u.abs();
         let theta_dot = (p_theta - kp) / s;
+        let term = self.law.as_ref().map(|law| law.at(&q, &self.omega, grad));
+        let (u, error) = match &term {
+            Some(t) => (u + t.u, error + t.error + UNIT * (u + t.u).abs()),
+            None => (u, error),
+        };
         if !grad {
             return Eval {
                 u,
@@ -236,6 +263,7 @@ impl Invariants {
                 grad_theta: 0.0,
                 theta_dot,
                 k,
+                law: term,
             };
         }
         let grad_theta = (-kp * self.i0 + p_theta * ims) / (s * self.i0);
@@ -246,6 +274,7 @@ impl Invariants {
                 let dq_i =
                     -theta_dot * gp[i] - theta_dot * theta_dot * ((self.d[i] + q[i]) - gk[i]);
                 let dp_i = -theta_dot * k[i];
+                let dq_i = dq_i + term.as_ref().map_or(0.0, |t| t.grad_q[i]);
                 // `zeta = (omega q, -p)`: `dU~/dzeta = (dU/dq / omega, -dU/dp)`.
                 DVec2::new(dq_i / self.omega[i], -dp_i)
             })
@@ -257,6 +286,22 @@ impl Invariants {
             grad_theta,
             theta_dot,
             k,
+            law: term,
+        }
+    }
+
+    /// `U~(z1) - U~(z0)`, the law's term (when carried) from its exact
+    /// increments (`law::Law::change`), and that part's round-off bound.
+    fn difference(&self, (z0, e0): (&[DVec2], &Eval), (z1, e1): (&[DVec2], &Eval)) -> (f64, f64) {
+        match (&self.law, &e0.law, &e1.law) {
+            (Some(law), Some(t0), Some(t1)) => {
+                let q = |z: &[DVec2]| -> Vec<f64> {
+                    z.iter().zip(&self.omega).map(|(z, w)| z.x / w).collect()
+                };
+                let (change, error) = law.change((t0, t1), (&q(z0), &q(z1)), &self.omega);
+                ((e1.u - t1.u) - (e0.u - t0.u) + change, error)
+            }
+            _ => (e1.u - e0.u, 0.0),
         }
     }
 
@@ -329,6 +374,9 @@ pub(super) struct Exponential {
     leak: Vec<f64>,
     /// `H_int` at `t`.
     h_int: f64,
+    /// With the law's energy: the start's projection remainder, J/m, until
+    /// the first attempt records it (sec. 26, part (d)).
+    start_remainder: Option<f64>,
 }
 
 /// `e^(i a)` as `(cos, sin)`, its measured norm defect `|c^2 + s^2 - 1|`
@@ -355,7 +403,7 @@ impl Exponential {
         state: &TotalLagrangianState,
         modes: &Modes,
         t: f64,
-        truncated: bool,
+        (truncated, with_law): (bool, bool),
     ) -> Option<Self> {
         let n = state.particles;
         let total: f64 = state.mass[..n].iter().sum();
@@ -444,6 +492,7 @@ impl Exponential {
                 }
             }
         }
+        let mut gram_defect = 0.0;
         let g_norm = if truncated {
             0.0
         } else {
@@ -457,6 +506,7 @@ impl Exponential {
                     defect += e * e;
                 }
             }
+            gram_defect = defect.sqrt();
             1.0 + defect.sqrt() + gamma(2 * n + 4) * m as f64
         };
         let omega_1 = omega.iter().copied().fold(f64::INFINITY, f64::min);
@@ -481,7 +531,10 @@ impl Exponential {
                 (state.reference[o] - origin, today, schwarz)
             })
             .collect();
+        let law = (with_law && !truncated).then(|| law::Law::new(state, modes, &elastic));
         let inv = Invariants {
+            law,
+            gram_defect,
             elastic,
             omega,
             omega_1,
@@ -514,6 +567,7 @@ impl Exponential {
             rates: Vec::new(),
             leak,
             h_int,
+            start_remainder: None,
         })
     }
 
@@ -545,6 +599,9 @@ impl Exponential {
     /// one with the plan's 7.5.
     fn clear(&self, gravity: DVec2, planes: &[Plane], (t0, t1): (f64, f64)) -> bool {
         let inv = &self.inv;
+        if let Some(law) = &inv.law {
+            return self.clear_with_law(law, gravity, planes, (t0, t1));
+        }
         let (spin_bound, vibration) = if inv.truncated {
             (self.spin.abs(), None)
         } else {
@@ -615,18 +672,32 @@ impl Exponential {
                 adot += (g.x * d.x).abs() + (g.y * d.y).abs();
                 squared += d.length_squared();
             }
-            let r = e1.u - e0.u - dot;
+            // With the law's term, its difference from the law's exact
+            // increments (`law::Law::change`).
+            let (difference, change_error) = inv.difference((&zeta0, &e0), (z, &e1));
+            let r = difference - dot;
             let r_error = e1.error
                 + e0.error
+                + change_error
                 + gamma(2 * n + 2) * adot
                 + 3.0 * UNIT * (e1.u.abs() + e0.u.abs());
             let mut g = at_mid.grad.clone();
             let mut dropped = 0.0;
-            if squared > 0.0 && 0.25 * m2 * squared > r_error {
+            // With the law's term `M2` does not bound its curvature (sec.
+            // 26): the quotient is formed whenever `r` exceeds its own
+            // round-off, and dropped (`|r|` booked) otherwise.
+            let formed = if inv.law.is_some() {
+                squared > 0.0 && r.abs() > r_error
+            } else {
+                squared > 0.0 && 0.25 * m2 * squared > r_error
+            };
+            if formed {
                 let c = r / squared;
                 for i in 0..n {
                     g[i] += c * delta[i];
                 }
+            } else if inv.law.is_some() {
+                dropped = r.abs();
             } else {
                 dropped = 0.25 * m2 * squared;
             }
@@ -645,10 +716,16 @@ impl Exponential {
             .sum::<f64>()
             .sqrt();
         let Some((m2, _)) = inv.m2(norm0 + 2.0 * delta_1, p_theta) else {
+            handoff::trace(|| {
+                format!("t {ta:.6}: exponential flight: unproven, s_min not positive")
+            });
             return Err(Outcome::Unproven);
         };
         let rho = 3.5 * sigma * m2;
         if rho > 0.5 {
+            handoff::trace(|| {
+                format!("t {ta:.6}: exponential flight: unproven, rho_pred {rho:.3e}")
+            });
             return Err(Outcome::Unproven);
         }
         // `eps_F`: one evaluation's round-off in `|.|_E` (plan, 7.3): the
@@ -661,17 +738,37 @@ impl Exponential {
                     + g_first[i].length() * (rot_h[i].1 + rot_h[i].2 + 2.0 * UNIT);
                 sum += e * e;
             }
-            sum.sqrt() + gamma(2 * n + 30) * length(&g_first)
+            // With the law's term, its gradient's own round-off (absolute
+            // near the reference: `law::Law::at`), per mode through the
+            // update `(e^(i omega h) - 1) gbar` (sec. 26, addendum 2).
+            let law_noise = inv.law.as_ref().map_or(0.0, |law| {
+                let q: Vec<f64> = (0..n)
+                    .map(|i| 0.5 * (zeta0[i].x + free[i].x) / inv.omega[i])
+                    .collect();
+                law.at(&q, &inv.omega, true)
+                    .noise
+                    .iter()
+                    .zip(&eh)
+                    .zip(&inv.omega)
+                    .map(|((e, h), w)| (h.length() * e / w).powi(2))
+                    .sum::<f64>()
+                    .sqrt()
+            });
+            sum.sqrt() + gamma(2 * n + 30) * length(&g_first) + law_noise
         };
-        let tau = 3.0 * eps_f / (1.0 - rho);
-        let k_max = if delta_1 <= tau || rho == 0.0 {
-            1
-        } else {
-            1 + ((eps_f / ((1.0 - rho) * delta_1)).ln() / rho.ln())
-                .ceil()
-                .max(0.0) as u32
-                + 2
+        let stop = |rho: f64| -> (f64, u32) {
+            let tau = 3.0 * eps_f / (1.0 - rho);
+            let k_max = if delta_1 <= tau || rho == 0.0 {
+                1
+            } else {
+                1 + ((eps_f / ((1.0 - rho) * delta_1)).ln() / rho.ln())
+                    .ceil()
+                    .max(0.0) as u32
+                    + 2
+            };
+            (tau, k_max)
         };
+        let (mut tau, mut k_max) = stop(rho);
         let (mut previous, mut zeta) = (free.clone(), next);
         let (mut g, mut g_theta, mut defect) = (g_first, g_theta_first, defect_first);
         let (mut iterations, mut last_delta, mut rho_obs) = (1u32, delta_1, 0.0f64);
@@ -689,6 +786,20 @@ impl Exponential {
             if last_delta > 0.0 && delta / last_delta > rho_obs {
                 rho_obs = delta / last_delta;
                 ratio_deltas = (last_delta, delta);
+                // The law's curvature is not in `M2` (sec. 26): the stop rule
+                // and `K_max` from the observed ratio when it is larger.
+                if inv.law.is_some() && rho_obs > rho && delta > 2.0 * eps_f / (1.0 - rho) {
+                    if rho_obs > 0.5 {
+                        handoff::trace(|| {
+                            format!(
+                                "t {ta:.6}: exponential flight: unproven, observed ratio {rho_obs:.3e} (deltas {last_delta:.3e} then {delta:.3e}, noise floor {:.3e}, iteration {iterations})",
+                                2.0 * eps_f / (1.0 - rho)
+                            )
+                        });
+                        return Err(Outcome::Unproven);
+                    }
+                    (tau, k_max) = stop(rho_obs);
+                }
             }
             previous = std::mem::replace(&mut zeta, next);
             (g, g_theta, defect) = (g_new, g_theta_new, defect_new);
@@ -712,7 +823,7 @@ impl Exponential {
         let e1 = inv.eval(&zeta1, p_theta, true, &mut count);
         let k0: f64 = 0.5 * zeta0.iter().map(|z| z.length_squared()).sum::<f64>();
         let k1: f64 = 0.5 * zeta1.iter().map(|z| z.length_squared()).sum::<f64>();
-        let delta_h = (k1 - k0) + (e1.u - e0.u);
+        let delta_h = (k1 - k0) + inv.difference((&zeta0, &e0), (&zeta1, &e1)).0;
         // `B_H` (plan, 7.4).
         let step_delta = (0..n)
             .map(|i| (zeta1[i] - previous[i]).length_squared())
@@ -761,6 +872,7 @@ impl Exponential {
             wall: clock.elapsed().as_secs_f64(),
             ratio_deltas,
             noise_floor: 2.0 * eps_f / (1.0 - rho),
+            ..Default::default()
         };
         self.w = w_new;
         if g_theta != 0.0 {
@@ -849,220 +961,8 @@ impl Exponential {
     }
 }
 
-/// Whether every outline point of the rebuilt state lies inside every wall.
-fn inside(state: &TotalLagrangianState, planes: &[Plane]) -> bool {
-    state.outlines.iter().flatten().all(|&o| {
-        planes
-            .iter()
-            .all(|plane| plane.inward * (state.x[o][plane.axis] - plane.at) > 0.0)
-    })
-}
-
-/// Starts a flight when none is under way (today's conditions); `None` when
-/// the trial does not take this body (today's flight then), `Some(false)`
-/// when no flight could start.
-fn ensure(state: &mut TotalLagrangianState, t0: f64, truncated: bool) -> Option<bool> {
-    if state.exponential.is_some() {
-        return Some(true);
-    }
-    let free =
-        state.outlines.len() == 1 && state.cache.as_ref().is_some_and(|c| c.contacts.is_empty());
-    if !free {
-        return Some(false);
-    }
-    let undamped = state.solids[..state.particles].iter().all(|s| {
-        s.law == ElasticLaw::Corotated && s.shear_viscosity == 0.0 && s.bulk_viscosity == 0.0
-    });
-    if !undamped {
-        return None;
-    }
-    if state.modes.is_none() {
-        let grid = &state.cache.as_ref().expect("checked above").grid;
-        state.modes = Some(body_modes(
-            grid,
-            (&state.mass, &state.v0, &state.solids),
-            (state.particles, state.x.len()),
-        ));
-    }
-    let Some(Some(modes)) = &state.modes else {
-        state.modal_refused[0] += 1;
-        return Some(false);
-    };
-    if !modes.memory.is_empty() {
-        return None;
-    }
-    state.exponential = Exponential::start(state, modes, t0, truncated);
-    Some(state.exponential.is_some())
-}
-
-/// Advances the flight to `t1` in `steps` steps, rebuilds, checks; the
-/// outcome, the flight kept in `state` only when flown.
-fn advance(
-    state: &mut TotalLagrangianState,
-    mut flight: Exponential,
-    (planes, gravity): (&[Plane], DVec2),
-    t1: f64,
-    steps: usize,
-) -> Outcome {
-    let t0 = flight.t;
-    let mut records = Vec::with_capacity(steps);
-    for k in 1..=steps {
-        let to = if k == steps {
-            t1
-        } else {
-            t0 + (t1 - t0) * k as f64 / steps as f64
-        };
-        match flight.step(to) {
-            Ok(r) => records.push(r),
-            Err(outcome) => {
-                state.exponential_log.push(Record {
-                    t0,
-                    t1,
-                    outcome,
-                    ..Default::default()
-                });
-                state.hand_backs += 1;
-                return outcome;
-            }
-        }
-    }
-    let Some(Some(modes)) = state.modes.take() else {
-        return Outcome::NotClear;
-    };
-    let start = (state.x.clone(), state.v.clone(), state.f.clone());
-    flight.rebuild(&modes, gravity, state);
-    state.modes = Some(Some(modes));
-    let outcome = if !inside(state, planes) {
-        Outcome::EndGap
-    } else if !flight.keeps_angular_momentum(state) {
-        Outcome::AngularMomentum
-    } else {
-        Outcome::Flown
-    };
-    if outcome != Outcome::Flown {
-        (state.x, state.v, state.f) = start;
-        state.hand_backs += 1;
-        if let Some(last) = records.last_mut() {
-            last.outcome = outcome;
-        }
-    }
-    state.exponential_log.extend(records);
-    if outcome == Outcome::Flown {
-        state.exponential = Some(flight);
-    }
-    outcome
-}
-
-/// `fly_total_lagrangian_frame` under the trial: `None` when the trial is
-/// off or does not take this body.
-pub(super) fn fly_frame(
-    state: &mut TotalLagrangianState,
-    (planes, gravity): (&[Plane], DVec2),
-    length: f64,
-) -> Option<bool> {
-    let knob = knob();
-    if !knob.on {
-        return None;
-    }
-    let (t0, t1) = (state.time, state.time + length);
-    if !ensure(state, t0, knob.truncated)? {
-        return Some(false);
-    }
-    let flight = state.exponential.take().expect("started");
-    if !flight.clear(gravity, planes, (t0, t1)) {
-        state.exponential_log.push(Record {
-            t0,
-            t1,
-            outcome: Outcome::NotClear,
-            ..Default::default()
-        });
-        state.hand_backs += 1;
-        handoff::trace(|| format!("t {t0:.6}: whole frame: exponential flight: NotClear"));
-        return Some(false);
-    }
-    let outcome = advance(state, flight, (planes, gravity), t1, knob.steps);
-    if outcome == Outcome::Flown {
-        state.modal_frames += 1;
-    } else {
-        handoff::trace(|| format!("t {t0:.6}: whole frame: exponential flight: {outcome:?}"));
-    }
-    Some(outcome == Outcome::Flown)
-}
-
-impl Simulation {
-    /// `fly_as_far_as_clear` under the trial: `None` when the trial is off
-    /// or does not take this body.
-    pub(super) fn fly_exponential_as_far_as_clear(
-        &self,
-        state: &mut TotalLagrangianState,
-        (planes, gravity): (&[Plane], DVec2),
-        (t0, t1): (f64, f64),
-    ) -> Option<(f64, f64)> {
-        let knob = knob();
-        if !knob.on {
-            return None;
-        }
-        // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: on the real-time baseline this flight removes the angular-check refusals and the long-run chatter of the hopping clay, but each hand-back keeps the linear basis's residual (the law's energy of the rebuilt state against the modes' quadratic energy, -7.5e-2 to +6.7e-2 J/m per segment), a net gain of 0.17 J/m over 420 frames: higher hops, fewer contacts (long run kept 0.46) | source: FAST_MODE_PLAN.md sec. 25a | replace when: the flight's energy is the law's own, so a hand-back keeps the step's energy | state: measured, not adopted | gap: none
-        // The contact-phase flags as today's flight sets them (handoff.rs;
-        // FAST_MODE_PLAN.md sec. 25): a contact phase on a held contact, a
-        // stop at the clearance bound or a partial reach, never on a refusal.
-        if !ensure(state, t0, knob.truncated)? {
-            let held = state.cache.as_ref().is_some_and(|c| !c.contacts.is_empty());
-            handoff::contact_phase(held);
-            handoff::trace(|| {
-                format!("t {t0:.6}: exponential flight: not started (contact held {held})")
-            });
-            return Some((t0, 0.0));
-        }
-        let flight = state.exponential.take().expect("started");
-        let reach = if flight.clear(gravity, planes, (t0, t1)) {
-            t1
-        } else {
-            let (mut low, mut high) = (t0, t1);
-            while high - low > 4.0 * f64::EPSILON * high.abs().max(t1 - t0) {
-                let middle = 0.5 * (low + high);
-                if flight.clear(gravity, planes, (t0, middle)) {
-                    low = middle;
-                } else {
-                    high = middle;
-                }
-            }
-            low
-        };
-        if reach <= t0 {
-            state.exponential_log.push(Record {
-                t0,
-                t1,
-                outcome: Outcome::NotClear,
-                ..Default::default()
-            });
-            state.hand_backs += 1;
-            handoff::contact_phase(true);
-            handoff::trace(|| format!("t {t0:.6}: exponential flight: NotClear"));
-            return Some((t0, 0.0));
-        }
-        let before = self.total_lagrangian_energy(state);
-        let outcome = advance(state, flight, (planes, gravity), reach, knob.steps);
-        if outcome != Outcome::Flown {
-            if outcome == Outcome::AngularMomentum {
-                handoff::mark_angular_refusal();
-            }
-            handoff::trace(|| format!("t {t0:.6}: exponential flight: {outcome:?}"));
-            return Some((t0, 0.0));
-        }
-        let change = self.total_lagrangian_energy(state) - before;
-        handoff::trace(|| {
-            format!(
-                "t {t0:.6}: exponential flight: flown to {reach:.6}, energy change {change:+.4e} J/m"
-            )
-        });
-        if reach < t1 {
-            state.exponential = None;
-            state.hand_backs += 1;
-            handoff::contact_phase(true);
-        } else {
-            handoff::forget_contact_time();
-        }
-        Some((reach, change))
-    }
-}
+#[path = "exponential_flight_driver.rs"]
+mod driver;
+#[path = "exponential_flight_law.rs"]
+mod law;
+pub(super) use driver::fly_frame;

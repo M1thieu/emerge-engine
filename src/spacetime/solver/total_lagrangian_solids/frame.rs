@@ -140,3 +140,19 @@ pub struct TotalLagrangianFrame {
     /// do not carry, or a strain that could pass the record's limit.
     pub modal_rest_refused: u64,
 }
+
+/// One particle's share of the step's energy, J/m: its kinetic energy, the
+/// law's stored energy and gravity's work term `m g . x` (the energy is
+/// `kinetic + stored - m g . x`). The one definition the step's energy and
+/// the turning flight's energy check read.
+pub(super) fn particle_energy(
+    state: &super::TotalLagrangianState,
+    gravity: DVec2,
+    p: usize,
+) -> (f64, f64, f64) {
+    (
+        0.5 * state.mass[p] * state.v[p].length_squared(),
+        state.v0[p] * state.solids[p].energy(state.f[p]),
+        state.mass[p] * gravity.dot(state.x[p]),
+    )
+}

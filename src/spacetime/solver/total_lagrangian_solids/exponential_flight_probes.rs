@@ -14,6 +14,7 @@ fn knob(truncated: bool, steps: usize) -> Option<Knob> {
         on: true,
         truncated,
         steps,
+        law: false,
     })
 }
 
@@ -22,6 +23,7 @@ fn off() -> Option<Knob> {
         on: false,
         truncated: false,
         steps: 1,
+        law: false,
     })
 }
 
@@ -124,6 +126,66 @@ pub(super) fn summary(label: &str, log: &[Record]) {
         first = Some((h0, r.start));
     }
     println!("{label} H_int over each flight: largest accumulated change {drift:.3e} of its start");
+    // FAST_MODE_PLAN.md sec. 26 (E-1): the step's energy change over each
+    // flown attempt against the round-off bound of its two evaluations.
+    if log.iter().any(|r| r.law) {
+        let attempts: Vec<&Record> = log
+            .iter()
+            .filter(|r| r.law && r.outcome == Outcome::Flown && r.step_energy_bound > 0.0)
+            .collect();
+        let within = attempts
+            .iter()
+            .filter(|r| r.step_energy_change.abs() <= r.step_energy_bound)
+            .count();
+        let total: f64 = attempts.iter().map(|r| r.step_energy_change.abs()).sum();
+        let mut ratios: Vec<f64> = attempts
+            .iter()
+            .map(|r| r.step_energy_change.abs() / r.step_energy_bound)
+            .collect();
+        ratios.sort_by(f64::total_cmp);
+        let remainders: Vec<f64> = log.iter().filter_map(|r| r.start_remainder).collect();
+        println!(
+            "{label} E-1: flown attempts {}, within the round-off bound {within} ({} not); sum |dE| {total:.4e} J/m, largest |dE| {:.4e} J/m; |dE| / bound median {:.3e}, largest {:.3e}; start remainders {} (largest |.| {:.3e} J/m, sum |.| {:.3e} J/m); |P - I|_F largest {:.3e}",
+            attempts.len(),
+            attempts.len() - within,
+            attempts
+                .iter()
+                .map(|r| r.step_energy_change.abs())
+                .fold(0.0, f64::max),
+            pick(&ratios, 0.5),
+            ratios.last().copied().unwrap_or(f64::NAN),
+            remainders.len(),
+            remainders.iter().map(|e| e.abs()).fold(0.0, f64::max),
+            remainders.iter().map(|e| e.abs()).sum::<f64>(),
+            log.iter().map(|r| r.gram_defect).fold(0.0, f64::max)
+        );
+        for r in attempts
+            .iter()
+            .filter(|r| r.step_energy_change.abs() > r.step_energy_bound)
+            .take(40)
+        {
+            // The parts, by count: the scheme's own `Delta H` over the
+            // attempt (b), the start's projection remainder when the attempt
+            // opens its flight (d), and what is left, the representation and
+            // the rebuild (c, e).
+            let same: Vec<&Record> = log
+                .iter()
+                .filter(|s| s.law && s.start == r.start && s.t0 >= r.t0 && s.t1 <= r.t1)
+                .collect();
+            let delta_h: f64 = same.iter().map(|s| s.delta_h).sum();
+            let remainder: f64 = same.iter().filter_map(|s| s.start_remainder).sum();
+            println!(
+                "{label} E-1 beyond the bound at {:.6} to {:.6} s: dE {:+.4e} J/m, bound {:.4e} J/m; scheme dH {:+.4e}, start remainder {:+.4e}, left {:+.4e} J/m",
+                r.t0,
+                r.t1,
+                r.step_energy_change,
+                r.step_energy_bound,
+                delta_h,
+                remainder,
+                r.step_energy_change - delta_h - remainder
+            );
+        }
+    }
 }
 
 /// Every point's `(x, v, F)` of the path's state.
@@ -202,7 +264,7 @@ fn probe_exponential_identical_digits() {
         let mut today_state = copy.clone();
         let mut trial_state = copy.clone();
         let mut old = super::flight::Flight::start(&copy, &modes, (t0, FRAME_S)).expect("starts");
-        let mut new = Exponential::start(&copy, &modes, t0, true).expect("starts");
+        let mut new = Exponential::start(&copy, &modes, t0, (true, false)).expect("starts");
         for k in 1..=30 {
             let t = t0 + k as f64 * FRAME_S;
             assert!(old.rebuild(&modes, gravity, t, &mut today_state));

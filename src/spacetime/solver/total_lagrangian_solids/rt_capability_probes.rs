@@ -84,12 +84,13 @@ fn label() -> &'static str {
         (true, true) => "rt_rule",
         (true, false) => match (
             std::env::var("EMERGE_PROBE_REFUSAL_PHASE").as_deref(),
-            std::env::var("EMERGE_PROBE_FLIGHT").as_deref() == Ok("exponential"),
+            std::env::var("EMERGE_PROBE_FLIGHT").as_deref(),
         ) {
             (Ok("angular"), _) => "rt_c2a",
             (Ok(_), _) => "rt_c2",
-            (Err(_), true) => "rt_c1p",
-            (Err(_), false) => "rt",
+            (Err(_), Ok("exponential")) => "rt_c1p",
+            (Err(_), Ok("law")) => "rt_law",
+            (Err(_), _) => "rt",
         },
         (false, _) => "precise",
     }
