@@ -114,6 +114,9 @@ fn advance(
     state.modes = Some(Some(modes));
     // With the law's energy (sec. 26, E-1): the step's energy change over
     // the attempt and the round-off bound of its two evaluations.
+    // FAST_MODE_PLAN.md sec. 29 (L-2): the lemma's inequalities on the
+    // rebuilt state, measured only.
+    law::lemma::check_state(&flight, state);
     if let Some((e0, b0)) = before {
         let (e1, b1) = law::step_energy(state, gravity);
         let remainder = flight.start_remainder.take();
@@ -206,6 +209,9 @@ impl Simulation {
         if !ensure(state, (t0, gravity), knob)? {
             let held = state.cache.as_ref().is_some_and(|c| !c.contacts.is_empty());
             handoff::contact_phase(held);
+            if held {
+                law::lemma::contact_held();
+            }
             handoff::trace(|| {
                 format!("t {t0:.6}: exponential flight: not started (contact held {held})")
             });

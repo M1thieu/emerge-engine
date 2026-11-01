@@ -18,6 +18,9 @@ use super::*;
 use crate::matter::kinematics::polar_decomposition::polar_decomposition_2d;
 use crate::spacetime::total_lagrangian::Elastic;
 
+#[path = "exponential_flight_lemma.rs"]
+pub(super) mod lemma;
+
 // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the kinetic form takes the modes' mass Gram matrix as the identity (`|P - I|_F` at most 6.1e-14 measured); its share of each hand-back's energy change is within the "left" part counted in sec. 26a (at most 9.5e-14 J/m) | source: FAST_MODE_PLAN.md sec. 26, 26a | replace when: the kinetic form carries `P` | state: measured | gap: none
 // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: one scheme step a frame keeps the energy and the angular momentum but leaves the trajectory pre-asymptotic in the coupled fast terms | source: LI_WU_TRIAL_RESULT.md 2.1 | replace when: an `omega h`-uniform error bound or a step count from one is derived | state: measured on the trial | gap: none
 fn colon(a: DMat2, b: DMat2) -> f64 {
@@ -43,6 +46,8 @@ pub(super) struct Law {
     e_k: f64,
     beta: f64,
     moduli: (f64, f64),
+    /// The sharper lemma's constants, when it is measured (sec. 29).
+    lemma: Option<lemma::Lemma>,
 }
 
 /// `U_e` at a point: its value, its round-off bound, its gradient in `q`
@@ -136,6 +141,7 @@ impl Law {
             e_k: e_k.sqrt() * (1.0 + 4.0 * unit),
             beta: beta.sqrt() * (1.0 + 4.0 * unit),
             moduli,
+            lemma: lemma::on().then(|| lemma::Lemma::new(state, modes, (elastic, omega))),
         }
     }
 
@@ -527,8 +533,22 @@ impl Exponential {
             refuse(false);
             return None;
         }
-        let amplitude = (2.0 * h / c).sqrt();
-        let (_, s_min) = inv.m2(amplitude, self.angular)?;
+        let clear = self.clear_within((2.0 * h / c).sqrt(), (gravity, planes), (t0, t1))?;
+        Some((clear, c, candidate))
+    }
+
+    /// Whether `[t0, t1]` is clear when the vibration's energy coordinates
+    /// stay within `amplitude` (`|xi| <= amplitude`): each contact point's
+    /// vibration within `s_o amplitude`, its turning within `Omega_max dt
+    /// (|X_o - C| + s_o amplitude)`. `None` without a spin bound there.
+    fn clear_within(
+        &self,
+        amplitude: f64,
+        (gravity, planes): (DVec2, &[Plane]),
+        (t0, t1): (f64, f64),
+    ) -> Option<bool> {
+        let h = self.h_int.max(0.0) * (1.0 + gamma(4 * self.inv.n()));
+        let (_, s_min) = self.inv.m2(amplitude, self.angular)?;
         let spin = (2.0 * h / s_min).sqrt();
         let dt = t1 - t0;
         let turned = DMat2::from_angle(self.angle_at(t0));
@@ -544,7 +564,7 @@ impl Exponential {
                     > 0.0
             })
         });
-        Some((clear, c, candidate))
+        Some(clear)
     }
 
     /// Whether `[t0, t1]` is clear by either of the law's two bounds (each a
@@ -559,6 +579,14 @@ impl Exponential {
         let amplitude = self.clear_by_amplitude(law, gravity, planes, span);
         let by_amplitude = amplitude.is_some_and(|a| a.0);
         let by_speed = !by_amplitude && self.clear_by_speed(law, gravity, planes, span);
+        if let Some(lemma) = &law.lemma {
+            self.measure_lemma(
+                (law, lemma),
+                (gravity, planes),
+                span,
+                by_amplitude || by_speed,
+            );
+        }
         PROOFS.with(|cell| {
             let mut p = cell.get();
             match amplitude {

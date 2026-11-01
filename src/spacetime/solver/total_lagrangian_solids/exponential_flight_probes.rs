@@ -160,6 +160,11 @@ pub(super) fn summary(label: &str, log: &[Record]) {
             log.iter().map(|r| r.gram_defect).fold(0.0, f64::max)
         );
         println!("{label} A-8: {}", super::exponential_flight::proof_report());
+        if std::env::var_os("EMERGE_PROBE_CLEARANCE_LEMMA").is_some() {
+            for line in super::exponential_flight::lemma_report().lines() {
+                println!("{label} {line}");
+            }
+        }
         for r in attempts
             .iter()
             .filter(|r| r.step_energy_change.abs() > r.step_energy_bound)

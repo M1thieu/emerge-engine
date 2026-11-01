@@ -966,4 +966,5 @@ mod driver;
 #[path = "exponential_flight_law.rs"]
 mod law;
 pub(super) use driver::fly_frame;
+pub(super) use law::lemma::report as lemma_report;
 pub(super) use law::proof_report;
