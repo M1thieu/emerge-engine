@@ -123,6 +123,20 @@ fn contact_phase(on: bool) {
     CONTACT_PHASE.set(on);
 }
 
+/// Whether `EMERGE_PROBE_REFUSAL_PHASE` is set (FAST_MODE_PLAN.md sec. 23,
+/// C2), announced once.
+#[cfg(all(test, feature = "experimental"))]
+fn refusal_phase() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("EMERGE_PROBE_REFUSAL_PHASE").is_some();
+        if on {
+            println!("knob active: a refusal after a held contact is a contact phase");
+        }
+        on
+    })
+}
+
 // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: with k above about 20 the fixed contact step is cut to the frame's remaining time, so the whole contact phase is one conserving midpoint step and k no longer sets it | source: FAST_MODE_PLAN.md sec. 14b, 21a | replace when: the contact phase is stepped at k <= 1/4 within every frame's budget, or an error-controlled large step bounds the contact's error | state: researched; the sourced contact-time rule (sec. 21) measured and not adopted | gap: k is chosen, not derived (sec. 21a)
 /// S1's control for the next controlled step: with
 /// `EMERGE_PROBE_CONTACT_FIXED_STEP=k` set and inside a contact phase, an
@@ -335,6 +349,28 @@ impl Simulation {
     /// change (kinetic, stored and gravity's), J/m. The flight is kept when
     /// it reaches `t1` and ends otherwise (a hand-back).
     pub(super) fn fly_as_far_as_clear(
+        &self,
+        state: &mut TotalLagrangianState,
+        (planes, gravity): (&[Plane], DVec2),
+        (t0, t1): (f64, f64),
+    ) -> (f64, f64) {
+        let reached = self.fly_or_refuse(state, (planes, gravity), (t0, t1));
+        // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: C2 takes a refused body's frame at the fixed contact step; on the hopping clay it keeps the floor (long run 0.66), on the Norton plasticine the impact at that step turns nearly elastic (plastic work 8.4e-3 against 1.12 J/m) | source: FAST_MODE_PLAN.md sec. 23a | replace when: a refused flight is stepped at a step that resolves the law's own rate | state: measured, not adopted | gap: none
+        // FAST_MODE_PLAN.md sec. 23 (C2): with
+        // `EMERGE_PROBE_REFUSAL_PHASE` set, an attempt that took no flight
+        // after a contact held since the last one is a contact phase, so
+        // the fixed contact step takes the frame instead of the error
+        // controller.
+        #[cfg(all(test, feature = "experimental"))]
+        if reached.0 <= t0 && state.held_since_flight && !CONTACT_PHASE.get() && refusal_phase() {
+            trace(|| format!("t {t0:.6}: C2: the refusal after a held contact is a contact phase"));
+            contact_phase(true);
+        }
+        reached
+    }
+
+    /// `fly_as_far_as_clear`'s attempt itself.
+    fn fly_or_refuse(
         &self,
         state: &mut TotalLagrangianState,
         (planes, gravity): (&[Plane], DVec2),

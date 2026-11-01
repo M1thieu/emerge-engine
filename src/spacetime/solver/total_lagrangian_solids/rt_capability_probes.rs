@@ -82,6 +82,7 @@ fn label() -> &'static str {
         std::env::var_os("EMERGE_PROBE_CONTACT_STEP_RULE").is_some(),
     ) {
         (true, true) => "rt_rule",
+        (true, false) if std::env::var_os("EMERGE_PROBE_REFUSAL_PHASE").is_some() => "rt_c2",
         (true, false) => "rt",
         (false, _) => "precise",
     }
