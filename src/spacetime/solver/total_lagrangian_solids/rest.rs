@@ -372,28 +372,88 @@ impl Rest {
             }
         }
         let multiplier = basis.multipliers(&start_force);
+        // FAST_MODE_PLAN.md sec. 32: the multipliers split by term against
+        // the step's own, and the vertical resultants (the unit vertical
+        // translation `t_y` against each force), at every start.
+        #[cfg(all(test, feature = "experimental"))]
+        super::handoff::trace(|| {
+            let t_y = project(&|_| DVec2::Y);
+            let unload: Vec<f64> = load.iter().map(|f| -f).collect();
+            let mut branches = vec![0.0; n];
+            for f in &memory_force {
+                for (s, e) in branches.iter_mut().zip(f) {
+                    *s += e;
+                }
+            }
+            let list = |v: &[f64]| -> String {
+                v.iter()
+                    .map(|l| format!("{l:+.4e}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let step: Vec<f64> = state
+                .cache
+                .as_ref()
+                .map(|c| c.contacts.iter().map(|k| k.multiplier).collect())
+                .unwrap_or_default();
+            // The state's actual internal forces, the step's own stress at
+            // `C`: the law's (`corotated_second_pk`, relaxed moduli) and the
+            // branches' (`Relaxation::stress`), each `sum_p V0_p (F S) : grad N`.
+            let (mut law_force, mut branch_force) = (vec![0.0; n], vec![0.0; n]);
+            for p in 0..particles {
+                let solid = &state.solids[p];
+                let (f, (lambda, mu)) = (state.f[p], solid.lame());
+                let c = f.transpose() * f;
+                let law = f
+                    * crate::matter::materials::solid::corotated::stress::corotated_second_pk(
+                        c, lambda, mu,
+                    );
+                let branch = f * solid.relaxation.stress(c, (lambda, mu));
+                for a in 0..2 {
+                    let (rl, rb) = (
+                        DVec2::new(law.x_axis[a], law.y_axis[a]),
+                        DVec2::new(branch.x_axis[a], branch.y_axis[a]),
+                    );
+                    grid.visit(p, a, |kk, _, grad| {
+                        if slot[kk] != usize::MAX {
+                            law_force[slot[kk]] += state.v0[p] * rl.dot(grad);
+                            branch_force[slot[kk]] += state.v0[p] * rb.dot(grad);
+                        }
+                    });
+                }
+            }
+            let actual: Vec<f64> = law_force
+                .iter()
+                .zip(&branch_force)
+                .zip(&load)
+                .map(|((l, b), f)| l + b - f)
+                .collect();
+            let mt = times(&basis.m, (n, n), &t_y, 1);
+            let rigid = dot(&mt, &u0) / dot(&mt, &t_y);
+            let elastic: f64 = u0
+                .iter()
+                .zip(&t_y)
+                .map(|(u, t)| (u - rigid * t).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            format!(
+                "rest: start multipliers [{}] = K u0 [{}] + gravity [{}] + branches [{}]; the step's [{}]; from the actual forces [{}] = law [{}] + gravity + branches [{}]; vertical resultants: K u0 {:+.4e}, branches {:+.4e}, gravity (the weight) {:+.4e} N/m; u0's vertical translation {:+.4e} m, its remainder {:.4e} m",
+                list(&multiplier),
+                list(&basis.multipliers(&ku0)),
+                list(&basis.multipliers(&unload)),
+                list(&basis.multipliers(&branches)),
+                list(&step),
+                list(&basis.multipliers(&actual)),
+                list(&basis.multipliers(&law_force)),
+                list(&basis.multipliers(&branch_force)),
+                dot(&t_y, &ku0),
+                dot(&t_y, &branches),
+                dot(&t_y, &unload),
+                rigid,
+                elastic
+            )
+        });
         if multiplier.iter().any(|&l| l <= 0.0) {
-            // FAST_MODE_PLAN.md sec. 31: the rest's multipliers against the
-            // step's own, per held contact.
-            #[cfg(all(test, feature = "experimental"))]
-            super::handoff::trace(|| {
-                let step: Vec<String> = state
-                    .cache
-                    .as_ref()
-                    .map(|c| {
-                        c.contacts
-                            .iter()
-                            .map(|k| format!("{:+.4e}", k.multiplier))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let own: Vec<String> = multiplier.iter().map(|l| format!("{l:+.4e}")).collect();
-                format!(
-                    "rest: multipliers, the rest's [{}], the step's [{}]",
-                    own.join(", "),
-                    step.join(", ")
-                )
-            });
             return Err(Refused {
                 basis: Box::new(basis),
                 beyond_limit: false,
