@@ -159,6 +159,7 @@ pub(super) fn summary(label: &str, log: &[Record]) {
             remainders.iter().map(|e| e.abs()).sum::<f64>(),
             log.iter().map(|r| r.gram_defect).fold(0.0, f64::max)
         );
+        println!("{label} A-8: {}", super::exponential_flight::proof_report());
         for r in attempts
             .iter()
             .filter(|r| r.step_energy_change.abs() > r.step_energy_bound)

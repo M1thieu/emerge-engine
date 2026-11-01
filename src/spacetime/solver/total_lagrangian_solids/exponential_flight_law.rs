@@ -35,6 +35,14 @@ pub(super) struct Law {
     gradients: Vec<Vec<DMat2>>,
     points: Vec<Vec<DVec2>>,
     sigma: Vec<f64>,
+    /// For the amplitude bound (FAST_MODE_PLAN.md sec. 27.2): per particle
+    /// `g_p = (sum_i |grad phi_i(X_p)|^2 / omega_i^2)^(1/2)`; `e_K = |Omega^-1
+    /// A Omega^-1 - I|_F` and `beta = |Omega^-1 B Omega^-1|_F` with their
+    /// computed entries' round-off added; the largest `(lambda, mu)`.
+    reach: Vec<f64>,
+    e_k: f64,
+    beta: f64,
+    moduli: (f64, f64),
 }
 
 /// `U_e` at a point: its value, its round-off bound, its gradient in `q`
@@ -49,8 +57,62 @@ pub(super) struct Term {
 }
 
 impl Law {
-    pub(super) fn new(state: &TotalLagrangianState, modes: &Modes, elastic: &[usize]) -> Self {
+    pub(super) fn new(
+        state: &TotalLagrangianState,
+        modes: &Modes,
+        (elastic, omega): (&[usize], &[f64]),
+    ) -> Self {
         let n = state.particles;
+        let unit = 0.5 * f64::EPSILON;
+        // Sec. 27.2 (ii): `A_ij = sum_p V0 (2 mu sym g_i : sym g_j + lambda tr
+        // g_i tr g_j)` and `B_ij = sum_p V0 g_i : g_j` in energy coordinates,
+        // each entry's sum within `(n + 4) u` of its terms' magnitudes
+        // (Jeannerod and Rump 2013, Prop. 3.1, with the products).
+        let m = elastic.len();
+        let trace = |g: DMat2| g.x_axis.x + g.y_axis.y;
+        let (mut e_k, mut beta) = (0.0, 0.0);
+        for a in 0..m {
+            for b in 0..m {
+                let (ga, gb) = (&modes.gradients[elastic[a]], &modes.gradients[elastic[b]]);
+                let (mut sa, mut size_a, mut sb, mut size_b) = (0.0, 0.0, 0.0, 0.0);
+                for p in 0..n {
+                    let (lambda, mu) = state.solids[p].lame();
+                    let (x, y) = (ga[p], gb[p]);
+                    let (sx, sy) = ((x + x.transpose()) * 0.5, (y + y.transpose()) * 0.5);
+                    let ta =
+                        state.v0[p] * (2.0 * mu * colon(sx, sy) + lambda * trace(x) * trace(y));
+                    let tb = state.v0[p] * colon(x, y);
+                    sa += ta;
+                    size_a += ta.abs();
+                    sb += tb;
+                    size_b += tb.abs();
+                }
+                let scale = omega[a] * omega[b];
+                let identity = if a == b { 1.0 } else { 0.0 };
+                let round = (n as f64 + 4.0) * unit;
+                let ea = (sa / scale - identity).abs() + round * size_a / scale;
+                let eb = sb.abs() / scale + round * size_b / scale;
+                e_k += ea * ea;
+                beta += eb * eb;
+            }
+        }
+        let reach = (0..n)
+            .map(|p| {
+                elastic
+                    .iter()
+                    .zip(omega)
+                    .map(|(&i, w)| {
+                        let g = modes.gradients[i][p];
+                        colon(g, g) / (w * w)
+                    })
+                    .sum::<f64>()
+                    .sqrt()
+            })
+            .collect();
+        let moduli = state.solids[..n]
+            .iter()
+            .map(|s| s.lame())
+            .fold((0.0f64, 0.0f64), |(l, u), (a, b)| (l.max(a), u.max(b)));
         let points: Vec<Vec<DVec2>> = state
             .outlines
             .iter()
@@ -70,6 +132,10 @@ impl Law {
                 .collect(),
             points,
             sigma,
+            reach,
+            e_k: e_k.sqrt() * (1.0 + 4.0 * unit),
+            beta: beta.sqrt() * (1.0 + 4.0 * unit),
+            moduli,
         }
     }
 
@@ -272,7 +338,7 @@ pub(super) fn step_energy(state: &TotalLagrangianState, gravity: DVec2) -> (f64,
 }
 
 impl Exponential {
-    // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: this bound moves each contact point by a speed bound times the interval, about `omega_1 dt` (some 60) times looser over a frame than the quadratic flight's amplitude bound, so most frames are cut early and the rest is taken at the fixed contact step in the air (long clay run: 0 frames flown whole and 298 stepped without contact after frame 100; row P3: 7 of 30 frames flown whole against 25) | source: FAST_MODE_PLAN.md sec. 26a | replace when: an amplitude bound from the law's energy (a derived coercivity of the corotated energy against the modes' quadratic energy) | state: measured, not adopted | gap: the long run's higher hops not isolated between this and the fixed step
+    // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: this bound moves each contact point by a speed bound times the interval, about `omega_1 dt` (some 60) times looser over a frame than the quadratic flight's amplitude bound, so most frames are cut early and the rest is taken at the fixed contact step in the air (long clay run: 0 frames flown whole and 298 stepped without contact after frame 100; row P3: 7 of 30 frames flown whole against 25) | source: FAST_MODE_PLAN.md sec. 26a | replace when: an amplitude bound from the law's energy (a derived coercivity of the corotated energy against the modes' quadratic energy) | state: measured, not adopted | gap: the long run's higher hops are the fixed step's unresolved vibration in the air (sec. 27.1: the fixed step only while a contact is held brings the hop to 0.97)
     /// The clearance bound with the law's energy (sec. 26): over `[t0, t1]`,
     /// `t0` the flight's own time, `T <= H` (`W >= 0`), so `|p| <= sqrt(2
     /// H)`, `|Omega| <= sqrt(2 H / s)`, `|q'| <= V(Q) = sqrt(2 H) (1 + K(Q)
@@ -280,7 +346,7 @@ impl Exponential {
     /// V(Q) < Q` bounds `|q|` over the whole interval, and each contact
     /// point's offset from the centre moves by at most `(t1 - t0) [Omega_max
     /// (|X_o - C| + sigma_o Q) + sigma_o V(Q)]` from its position at `t0`.
-    pub(super) fn clear_with_law(
+    fn clear_by_speed(
         &self,
         law: &Law,
         gravity: DVec2,
@@ -353,4 +419,230 @@ impl Exponential {
             )
         })
     }
+
+    /// The lower bound of the centre's position over `[t0, t1]` along
+    /// `plane`'s inward normal (the parabola's ends and vertex).
+    fn lowest_centre(&self, gravity: DVec2, plane: &Plane, (t0, t1): (f64, f64)) -> f64 {
+        let along = |t: f64| plane.inward * self.rigid_at(gravity, t).0[plane.axis];
+        let mut lowest = along(t0).min(along(t1));
+        let acceleration = plane.inward * gravity[plane.axis];
+        if acceleration != 0.0 {
+            let vertex = self.t_start - plane.inward * self.velocity[plane.axis] / acceleration;
+            if vertex > t0 && vertex < t1 {
+                lowest = lowest.min(along(vertex));
+            }
+        }
+        lowest
+    }
+
+    // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the bound is proven but admissible only before the first impact on the hopping clay block (56 of 18052 clearance evaluations): its step (iii) fails, the energy's worst-case strain bound by Cauchy-Schwarz (at least 6.4e-2 at c = 1) exceeding the coercivity's range (r < 4.4e-2, set by the gradient Gram bound beta = 1.47e-6 1/Pa); the speed bound then decides, so frames are still cut early | source: FAST_MODE_PLAN.md sec. 27.2, 27a | replace when: a sharper coercivity (the cubic term bounded per particle, not through beta) or a sharper strain bound than Cauchy-Schwarz over the whole energy | state: measured, not loosened | gap: none
+    /// The amplitude bound from the law's energy (FAST_MODE_PLAN.md sec.
+    /// 27.2): `W >= c(r) 1/2 sum omega_i^2 q_i^2` while every `|G_p| <= r`,
+    /// `c(r) = 1 - e_K - 2 r k(r) beta`, `k(r) = sqrt(2) mu / (2 - sqrt(2) r) +
+    /// lambda / sqrt(2)`; `W <= H` then bounds `sum omega_i^2 q_i^2` by `2 H /
+    /// c(r)`, each `|G_p|` by `g_p` times its root, and each contact point's
+    /// vibration by `A_o = s_o (2 H / c(r))^(1/2)` over the whole flight, once
+    /// `r` holds itself (`max_p g_p (2 H / c(r))^(1/2) < r`) and holds at
+    /// `t0`. `None` when no admissible `r` exists; else whether the frame is
+    /// clear, with `(c, r)`.
+    fn clear_by_amplitude(
+        &self,
+        law: &Law,
+        gravity: DVec2,
+        planes: &[Plane],
+        (t0, t1): (f64, f64),
+    ) -> Option<(bool, f64, f64)> {
+        let inv = &self.inv;
+        let h = self.h_int.max(0.0) * (1.0 + gamma(4 * inv.n()));
+        let q: Vec<f64> = self
+            .zeta_at(t0)
+            .iter()
+            .zip(&inv.omega)
+            .map(|(z, w)| z.x / w)
+            .collect();
+        let start = (0..law.volume.len())
+            .map(|p| {
+                let g = law.deformation(&q, p) - DMat2::IDENTITY;
+                colon(g, g).sqrt()
+            })
+            .fold(0.0, f64::max)
+            * (1.0 + gamma(q.len() + 4));
+        let (lambda, mu) = law.moduli;
+        let (root2, min_j) = (
+            std::f64::consts::SQRT_2,
+            f64::from(crate::matter::kinematics::volume_ratio::MIN_J),
+        );
+        let reach = law.reach.iter().copied().fold(0.0, f64::max);
+        // `c(r)` where `r` is admissible (sec. 27.2 and its addendum), and the
+        // bound `max_p g_p (2 H / c(r))^(1/2)` on `|G|` it implies.
+        let implied = |r: f64| -> Option<(f64, f64)> {
+            if r >= root2 || 1.0 - root2 * r - 0.5 * r * r <= min_j {
+                return None;
+            }
+            let k = root2 * mu / (2.0 - root2 * r) + lambda / root2;
+            let c = (1.0 - law.e_k - 2.0 * r * k * law.beta) * (1.0 - gamma(8));
+            (c > 0.0).then(|| (c, reach * (2.0 * h / c).sqrt() * (1.0 + gamma(4))))
+        };
+        // Why a bound is not admissible, for the probes (sec. 27.3, A-8): the
+        // start's own strain outside the law's range, or the energy's strain
+        // bound at `c = 1`, `max_p g_p (2 H)^(1/2)`, against the largest `r`
+        // with `c(r) > 0`.
+        let refuse = |at_start: bool| {
+            PROOFS.with(|cell| {
+                let mut p = cell.get();
+                if at_start {
+                    p.start_outside += 1;
+                } else {
+                    p.iteration_outside += 1;
+                }
+                p.energy_strain = p.energy_strain.min(reach * (2.0 * h).sqrt());
+                cell.set(p);
+            });
+        };
+        if implied(start).is_none() {
+            refuse(true);
+            return None;
+        }
+        let mut r = start;
+        loop {
+            let Some((_, bound)) = implied(r) else {
+                refuse(false);
+                return None;
+            };
+            let next = start.max(bound);
+            if !next.is_finite() {
+                return None;
+            }
+            if next <= r {
+                break;
+            }
+            r = next;
+        }
+        let candidate = 2.0 * r - start;
+        let Some((c, bound)) = implied(candidate) else {
+            refuse(false);
+            return None;
+        };
+        if !(bound < candidate && start < candidate) {
+            refuse(false);
+            return None;
+        }
+        let amplitude = (2.0 * h / c).sqrt();
+        let (_, s_min) = inv.m2(amplitude, self.angular)?;
+        let spin = (2.0 * h / s_min).sqrt();
+        let dt = t1 - t0;
+        let turned = DMat2::from_angle(self.angle_at(t0));
+        let clear = planes.iter().all(|plane| {
+            let lowest = self.lowest_centre(gravity, plane, (t0, t1));
+            self.arms.iter().all(|&(reference, _, schwarz)| {
+                let arm = turned * reference;
+                let vibration = schwarz * amplitude;
+                let turning = spin * dt * (reference.length() + vibration);
+                lowest + plane.inward * arm[plane.axis]
+                    - plane.inward * plane.at
+                    - (vibration + turning) * (1.0 + gamma(8))
+                    > 0.0
+            })
+        });
+        Some((clear, c, candidate))
+    }
+
+    /// Whether `[t0, t1]` is clear by either of the law's two bounds (each a
+    /// proof: sec. 27.2 (iv)), counted for the probes (`proof_report`).
+    pub(super) fn clear_with_law(
+        &self,
+        law: &Law,
+        gravity: DVec2,
+        planes: &[Plane],
+        span: (f64, f64),
+    ) -> bool {
+        let amplitude = self.clear_by_amplitude(law, gravity, planes, span);
+        let by_amplitude = amplitude.is_some_and(|a| a.0);
+        let by_speed = !by_amplitude && self.clear_by_speed(law, gravity, planes, span);
+        PROOFS.with(|cell| {
+            let mut p = cell.get();
+            match amplitude {
+                None => p.inadmissible += 1,
+                Some((_, c, r)) => {
+                    p.admissible += 1;
+                    p.c = (p.c.0.min(c), p.c.1.max(c));
+                    p.r = (p.r.0.min(r), p.r.1.max(r));
+                }
+            }
+            p.by_amplitude += u64::from(by_amplitude);
+            p.by_speed += u64::from(by_speed);
+            p.e_k = p.e_k.max(law.e_k);
+            p.beta = p.beta.max(law.beta);
+            // The largest `r` with `c(r) > 0` to first order, `(1 - e_K) / (2
+            // k(0) beta)`.
+            let (lambda, mu) = law.moduli;
+            let k0 = std::f64::consts::SQRT_2 * mu / 2.0 + lambda / std::f64::consts::SQRT_2;
+            p.range = p.range.max((1.0 - law.e_k) / (2.0 * k0 * law.beta));
+            p.calls += 1;
+            cell.set(p);
+        });
+        by_amplitude || by_speed
+    }
+}
+
+/// The clearance proofs' record (sec. 27.3, A-8), over every evaluation of
+/// `clear_with_law` on this thread.
+#[derive(Clone, Copy, Debug)]
+struct Proofs {
+    calls: u64,
+    admissible: u64,
+    inadmissible: u64,
+    by_amplitude: u64,
+    by_speed: u64,
+    c: (f64, f64),
+    r: (f64, f64),
+    e_k: f64,
+    beta: f64,
+    start_outside: u64,
+    iteration_outside: u64,
+    energy_strain: f64,
+    range: f64,
+}
+
+thread_local! {
+    static PROOFS: std::cell::Cell<Proofs> = const {
+        std::cell::Cell::new(Proofs {
+            calls: 0,
+            admissible: 0,
+            inadmissible: 0,
+            by_amplitude: 0,
+            by_speed: 0,
+            c: (f64::INFINITY, 0.0),
+            r: (f64::INFINITY, 0.0),
+            e_k: 0.0,
+            beta: 0.0,
+            start_outside: 0,
+            iteration_outside: 0,
+            energy_strain: f64::INFINITY,
+            range: 0.0,
+        })
+    };
+}
+
+/// One line: the clearance proofs counted on this thread (sec. 27.3, A-8).
+pub(in super::super) fn proof_report() -> String {
+    let p = PROOFS.with(|p| p.get());
+    format!(
+        "clearance evaluations {}: the amplitude bound admissible {} (not {}: the start outside the range {}, the iteration leaving it {}), c from {:.6} to {:.6}, r from {:.3e} to {:.3e}; clear by the amplitude bound {}, by the speed bound only {}; e_K largest {:.3e}, beta largest {:.3e} 1/Pa; the range r < {:.4e} (first order), the energy's strain bound at c = 1 at least {:.4e}",
+        p.calls,
+        p.admissible,
+        p.inadmissible,
+        p.start_outside,
+        p.iteration_outside,
+        p.c.0,
+        p.c.1,
+        p.r.0,
+        p.r.1,
+        p.by_amplitude,
+        p.by_speed,
+        p.e_k,
+        p.beta,
+        p.range,
+        p.energy_strain
+    )
 }

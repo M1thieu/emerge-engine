@@ -531,7 +531,7 @@ impl Exponential {
                 (state.reference[o] - origin, today, schwarz)
             })
             .collect();
-        let law = (with_law && !truncated).then(|| law::Law::new(state, modes, &elastic));
+        let law = (with_law && !truncated).then(|| law::Law::new(state, modes, (&elastic, &omega)));
         let inv = Invariants {
             law,
             gram_defect,
@@ -966,3 +966,4 @@ mod driver;
 #[path = "exponential_flight_law.rs"]
 mod law;
 pub(super) use driver::fly_frame;
+pub(super) use law::proof_report;

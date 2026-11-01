@@ -258,7 +258,33 @@ pub(super) fn contact_phase_control(
             ..*control
         };
     }
-    let (Some(k), true) = (k, CONTACT_PHASE.get()) else {
+    // FAST_MODE_PLAN.md sec. 27.1, a diagnostic only: with
+    // `EMERGE_PROBE_FIXED_STEP_WHERE=held` the fixed step applies only while
+    // a contact is held at the last step, with `=air` only while none is; the
+    // other frames of the phase go to the error controller.
+    static WHERE: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+    let place = *WHERE.get_or_init(|| {
+        let place = match std::env::var("EMERGE_PROBE_FIXED_STEP_WHERE").as_deref() {
+            Ok("held") => Some(true),
+            Ok("air") => Some(false),
+            Ok(other) => panic!("EMERGE_PROBE_FIXED_STEP_WHERE is held or air, not {other}"),
+            Err(_) => None,
+        };
+        if let Some(held) = place {
+            println!(
+                "knob active: fixed step only {} (diagnostic)",
+                if held {
+                    "while a contact is held"
+                } else {
+                    "while no contact is held"
+                }
+            );
+        }
+        place
+    });
+    let held = state.cache.as_ref().is_some_and(|c| !c.contacts.is_empty());
+    let allowed = place.is_none_or(|want| want == held);
+    let (Some(k), true) = (k, CONTACT_PHASE.get() && allowed) else {
         return *control;
     };
     // The knob's confirmation, once, from inside the patched path.
