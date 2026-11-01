@@ -10,6 +10,7 @@
 use super::TotalLagrangianConfig;
 use crate::materials::MaterialModel;
 use crate::materials::physical_props::Elastic;
+use crate::materials::solid::viscoplastic_records::ViscoplasticRecord;
 use crate::{CorotatedMaterial, FromSI, SimConfig, Simulation, SpawnRegion};
 use glam::{IVec2, Vec2};
 
@@ -306,6 +307,7 @@ fn cells_across() -> i32 {
 /// configuration is its own step. Its compromises:
 // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the body is meshed at two cells through its thickness (h = 2 cm on the clay drop), coarser than the reference's four | source: RT_RESOLUTION_SWEEP_PLAN.md sec. 10; FAST_MODE_PLAN.md sec. 16 | replace when: the per-step cost allows n = 4 within every frame's budget | state: researched | gap: none
 // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the rebound is 50.0 % faster and 43.3 % higher than the precise reference's (the 50 % floor's edge, kept 0.5004), the contact phase being one large midpoint step | source: FAST_MODE_PLAN.md sec. 14b | replace when: apex and rebound vy are within 25 % of A0 n = 4 in the real-time configuration | state: researched | gap: none
+// KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the frame bound (every frame <= 13.4 ms) was measured over 40 frames only; over 420 frames the hopping block's flights are refused by the angular-momentum check and its frames fall to the error controller (about 90 kept and 45 rejected steps per heavy frame, up to 633 ms in the release viewer) | source: FAST_MODE_PLAN.md sec. 22a | replace when: every frame of a 420-frame run is within the budget | state: measured | gap: none
 fn rt_baseline() {
     let want = [
         ("EMERGE_PROBE_CONTACT_FIXED_STEP", Some("39.33")),
@@ -357,6 +359,44 @@ fn rt_ladder() {
         }
         _ => "clay_drop_e2_fixed_step",
     };
+    // FAST_MODE_PLAN.md sec. 22: the long run (`EMERGE_RT_FRAMES`, default
+    // 40) and the dissipative clay (`EMERGE_RT_MATERIAL=norton`: the
+    // plasticine record of tests/norton.rs at E 30 MPa, its stand-in
+    // density) in the same cell.
+    let frames = std::env::var("EMERGE_RT_FRAMES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40);
+    if frames != 40 {
+        println!("knob active: {frames} frames");
+    }
+    if std::env::var("EMERGE_RT_MATERIAL").as_deref() == Ok("norton") {
+        println!("knob active: Norton plasticine record");
+        let plasticine = ViscoplasticRecord::technical_plasticine_sapozhnikov_2014();
+        let (e_pa, rho) = (30.0e6, 119.0 * 0.453_592_37 / (0.3048 * 0.3048 * 0.3048));
+        let props = Elastic {
+            e_pa: e_pa as f32,
+            nu: plasticine.nu as f32,
+            rho_kg_m3: rho as f32,
+        };
+        let labels = Labels {
+            tolerance: 1e-1,
+            material: "technical plasticine, Norton record (Sapozhnikov 2014), E 30 MPa, stand-in density",
+            honoured: "not measured for this record",
+        };
+        record(
+            &format!("{name}_norton"),
+            block(
+                (labels.tolerance, rung.as_str()),
+                10.0,
+                &|config| Box::new(plasticine.material((e_pa, rho), config)),
+                &props,
+            ),
+            frames,
+            &labels,
+        );
+        return;
+    }
     record(
         name,
         block(
@@ -365,7 +405,7 @@ fn rt_ladder() {
             &|config| Box::new(CorotatedMaterial::from_physical(&clay, config)),
             &clay,
         ),
-        40,
+        frames,
         &clay_labels,
     );
 }
