@@ -122,8 +122,20 @@ thread_local! {
 }
 
 #[cfg(all(test, feature = "experimental"))]
-fn contact_phase(on: bool) {
+pub(super) fn contact_phase(on: bool) {
     CONTACT_PHASE.set(on);
+}
+
+/// A flight kept to its frame's end: the contact time forgotten.
+#[cfg(all(test, feature = "experimental"))]
+pub(super) fn forget_contact_time() {
+    CONTACT_TIME.set(None);
+}
+
+/// The last hand-back attempt refused by the angular-momentum check.
+#[cfg(all(test, feature = "experimental"))]
+pub(super) fn mark_angular_refusal() {
+    ANGULAR_REFUSED.set(true);
 }
 
 /// Whether a refusal after a held contact is a contact phase:
@@ -391,17 +403,17 @@ impl Simulation {
         (planes, gravity): (&[Plane], DVec2),
         (t0, t1): (f64, f64),
     ) -> (f64, f64) {
+        // Not a contact phase unless the flight stops at the clearance bound
+        // or on a held contact (a refusal is not one: no modes, yielded, a
+        // bound refused, damped, a failed rebuild or angular check).
+        #[cfg(all(test, feature = "experimental"))]
+        contact_phase(false);
         #[cfg(all(test, feature = "experimental"))]
         if let Some(reached) =
             self.fly_exponential_as_far_as_clear(state, (planes, gravity), (t0, t1))
         {
             return reached;
         }
-        // Not a contact phase unless the flight stops at the clearance bound
-        // or on a held contact (a refusal is not one: no modes, yielded, a
-        // bound refused, damped, a failed rebuild or angular check).
-        #[cfg(all(test, feature = "experimental"))]
-        contact_phase(false);
         if state.flight.is_none() {
             let free = state.outlines.len() == 1
                 && state.cache.as_ref().is_some_and(|c| c.contacts.is_empty());

@@ -27,7 +27,7 @@ fn off() -> Option<Knob> {
 
 /// The records against criteria 1, 3 and 5, one line each, and the
 /// outcomes.
-fn summary(label: &str, log: &[Record]) {
+pub(super) fn summary(label: &str, log: &[Record]) {
     let flown: Vec<&Record> = log
         .iter()
         .filter(|r| r.outcome == Outcome::Flown && r.iterations > 0)

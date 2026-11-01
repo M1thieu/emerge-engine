@@ -166,6 +166,11 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
         single_solve_fallbacks += fallbacks;
     }
     println!("single-solve fallbacks over the run: {single_solve_fallbacks}");
+    // FAST_MODE_PLAN.md sec. 25 (T-7): the turning flight's own accounting.
+    if super::exponential_flight::knob().on {
+        let state = sim.total_lagrangian.as_ref().expect("the path is on");
+        super::exponential_flight_probes::summary(name, &state.exponential_log);
+    }
     // The fast-mode plan's cost breakdown (RT_LEVER_MEASUREMENT_PLAN.md's
     // harness; test-only): a sidecar file, so the replay itself is unchanged.
     if let Some(dir) = std::env::var_os("EMERGE_REPLAY_DIR") {

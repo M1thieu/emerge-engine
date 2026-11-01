@@ -54,14 +54,29 @@ pub(super) fn set_knob(knob: Option<Knob>) {
 }
 
 pub(super) fn knob() -> Knob {
-    KNOB.with(|k| k.get()).unwrap_or_else(|| Knob {
+    static ANNOUNCED: std::sync::Once = std::sync::Once::new();
+    let knob = KNOB.with(|k| k.get()).unwrap_or_else(|| Knob {
         on: std::env::var("EMERGE_PROBE_FLIGHT").as_deref() == Ok("exponential"),
         truncated: std::env::var_os("EMERGE_PROBE_FLIGHT_TRUNCATED").is_some(),
         steps: std::env::var("EMERGE_PROBE_FLIGHT_STEPS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1),
-    })
+    });
+    if knob.on {
+        ANNOUNCED.call_once(|| {
+            println!(
+                "knob active: turning flight (exponential discrete gradient), {} scheme steps a frame{}",
+                knob.steps,
+                if knob.truncated {
+                    ", truncated model"
+                } else {
+                    ""
+                }
+            );
+        });
+    }
+    knob
 }
 
 /// How an attempt ended.
@@ -962,13 +977,16 @@ pub(super) fn fly_frame(
             ..Default::default()
         });
         state.hand_backs += 1;
+        handoff::trace(|| format!("t {t0:.6}: whole frame: exponential flight: NotClear"));
         return Some(false);
     }
-    let flown = advance(state, flight, (planes, gravity), t1, knob.steps) == Outcome::Flown;
-    if flown {
+    let outcome = advance(state, flight, (planes, gravity), t1, knob.steps);
+    if outcome == Outcome::Flown {
         state.modal_frames += 1;
+    } else {
+        handoff::trace(|| format!("t {t0:.6}: whole frame: exponential flight: {outcome:?}"));
     }
-    Some(flown)
+    Some(outcome == Outcome::Flown)
 }
 
 impl Simulation {
@@ -984,7 +1002,16 @@ impl Simulation {
         if !knob.on {
             return None;
         }
+        // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: on the real-time baseline this flight removes the angular-check refusals and the long-run chatter of the hopping clay, but each hand-back keeps the linear basis's residual (the law's energy of the rebuilt state against the modes' quadratic energy, -7.5e-2 to +6.7e-2 J/m per segment), a net gain of 0.17 J/m over 420 frames: higher hops, fewer contacts (long run kept 0.46) | source: FAST_MODE_PLAN.md sec. 25a | replace when: the flight's energy is the law's own, so a hand-back keeps the step's energy | state: measured, not adopted | gap: none
+        // The contact-phase flags as today's flight sets them (handoff.rs;
+        // FAST_MODE_PLAN.md sec. 25): a contact phase on a held contact, a
+        // stop at the clearance bound or a partial reach, never on a refusal.
         if !ensure(state, t0, knob.truncated)? {
+            let held = state.cache.as_ref().is_some_and(|c| !c.contacts.is_empty());
+            handoff::contact_phase(held);
+            handoff::trace(|| {
+                format!("t {t0:.6}: exponential flight: not started (contact held {held})")
+            });
             return Some((t0, 0.0));
         }
         let flight = state.exponential.take().expect("started");
@@ -1010,16 +1037,31 @@ impl Simulation {
                 ..Default::default()
             });
             state.hand_backs += 1;
+            handoff::contact_phase(true);
+            handoff::trace(|| format!("t {t0:.6}: exponential flight: NotClear"));
             return Some((t0, 0.0));
         }
         let before = self.total_lagrangian_energy(state);
-        if advance(state, flight, (planes, gravity), reach, knob.steps) != Outcome::Flown {
+        let outcome = advance(state, flight, (planes, gravity), reach, knob.steps);
+        if outcome != Outcome::Flown {
+            if outcome == Outcome::AngularMomentum {
+                handoff::mark_angular_refusal();
+            }
+            handoff::trace(|| format!("t {t0:.6}: exponential flight: {outcome:?}"));
             return Some((t0, 0.0));
         }
         let change = self.total_lagrangian_energy(state) - before;
+        handoff::trace(|| {
+            format!(
+                "t {t0:.6}: exponential flight: flown to {reach:.6}, energy change {change:+.4e} J/m"
+            )
+        });
         if reach < t1 {
             state.exponential = None;
             state.hand_backs += 1;
+            handoff::contact_phase(true);
+        } else {
+            handoff::forget_contact_time();
         }
         Some((reach, change))
     }

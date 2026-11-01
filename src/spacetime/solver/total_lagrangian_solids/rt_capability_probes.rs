@@ -82,10 +82,14 @@ fn label() -> &'static str {
         std::env::var_os("EMERGE_PROBE_CONTACT_STEP_RULE").is_some(),
     ) {
         (true, true) => "rt_rule",
-        (true, false) => match std::env::var("EMERGE_PROBE_REFUSAL_PHASE").as_deref() {
-            Ok("angular") => "rt_c2a",
-            Ok(_) => "rt_c2",
-            Err(_) => "rt",
+        (true, false) => match (
+            std::env::var("EMERGE_PROBE_REFUSAL_PHASE").as_deref(),
+            std::env::var("EMERGE_PROBE_FLIGHT").as_deref() == Ok("exponential"),
+        ) {
+            (Ok("angular"), _) => "rt_c2a",
+            (Ok(_), _) => "rt_c2",
+            (Err(_), true) => "rt_c1p",
+            (Err(_), false) => "rt",
         },
         (false, _) => "precise",
     }
