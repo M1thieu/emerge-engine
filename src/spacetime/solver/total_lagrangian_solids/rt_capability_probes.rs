@@ -27,26 +27,34 @@ use crate::{
 use glam::{IVec2, Vec2};
 
 /// Whether the run is in the real-time configuration (`EMERGE_CAP_CONFIG
-/// = rt`) or the test's own (`precise`); anything else stops the run.
+/// = rt`, or `rt_rule` with the contact step rule of sec. 21 in place of
+/// k) or the test's own (`precise`); anything else stops the run.
 fn rt() -> bool {
     match std::env::var("EMERGE_CAP_CONFIG").as_deref() {
-        Ok("rt") => {
-            rt_knobs();
+        Ok(config @ ("rt" | "rt_rule")) => {
+            rt_knobs(config == "rt_rule");
             true
         }
         Ok("precise") => false,
-        other => panic!("EMERGE_CAP_CONFIG {other:?}: precise or rt"),
+        other => panic!("EMERGE_CAP_CONFIG {other:?}: precise, rt or rt_rule"),
     }
 }
 
-/// The real-time configuration's knobs, checked, not set (sec. 17).
-fn rt_knobs() {
+/// The real-time configuration's knobs, checked, not set (sec. 17): the
+/// fixed step k = 39.33, or with `rule` the contact step rule at one of the
+/// N fixed in sec. 21 and no k.
+fn rt_knobs(rule: bool) {
     let fixed = std::env::var("EMERGE_PROBE_CONTACT_FIXED_STEP").ok();
+    let n = std::env::var("EMERGE_PROBE_CONTACT_STEP_RULE").ok();
+    let step = if rule {
+        fixed.is_none() && matches!(n.as_deref(), Some("18" | "40"))
+    } else {
+        fixed.as_deref() == Some("39.33") && n.is_none()
+    };
     assert!(
-        fixed.as_deref() == Some("39.33")
-            && std::env::var_os("EMERGE_PROBE_SINGLE_SOLVE").is_some()
+        step && std::env::var_os("EMERGE_PROBE_SINGLE_SOLVE").is_some()
             && std::env::var_os("EMERGE_PROBE_BACKWARD_EULER").is_none(),
-        "rt needs EMERGE_PROBE_CONTACT_FIXED_STEP=39.33 and EMERGE_PROBE_SINGLE_SOLVE, backward Euler unset"
+        "rt needs EMERGE_PROBE_CONTACT_FIXED_STEP=39.33 (rt_rule: EMERGE_PROBE_CONTACT_STEP_RULE=18 or 40 instead) and EMERGE_PROBE_SINGLE_SOLVE, backward Euler unset"
     );
 }
 
@@ -69,7 +77,14 @@ fn cell(precise: f32, thinnest: f32) -> f32 {
 }
 
 fn label() -> &'static str {
-    if rt() { "rt" } else { "precise" }
+    match (
+        rt(),
+        std::env::var_os("EMERGE_PROBE_CONTACT_STEP_RULE").is_some(),
+    ) {
+        (true, true) => "rt_rule",
+        (true, false) => "rt",
+        (false, _) => "precise",
+    }
 }
 
 fn clay() -> Elastic {

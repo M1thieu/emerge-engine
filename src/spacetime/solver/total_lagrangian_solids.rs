@@ -616,7 +616,7 @@ impl Simulation {
             let cut = proposed > remaining;
             state.step_length = proposed.min(remaining);
             #[cfg(all(test, feature = "experimental"))]
-            let control = handoff::contact_phase_control(&control, &mut state, remaining);
+            let control = handoff::contact_phase_control(&control, &mut state, &planes, remaining);
             let take = |state: &mut TotalLagrangianState, settings: &ConservingSettings| {
                 controlled_step(
                     &layout,
