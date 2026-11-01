@@ -10,6 +10,7 @@
 use super::TotalLagrangianConfig;
 use crate::materials::MaterialModel;
 use crate::materials::physical_props::Elastic;
+use crate::materials::relaxation::ViscoelasticRecord;
 use crate::materials::solid::viscoplastic_records::ViscoplasticRecord;
 use crate::{CorotatedMaterial, FromSI, SimConfig, Simulation, SpawnRegion};
 use glam::{IVec2, Vec2};
@@ -242,7 +243,7 @@ fn breakdown_json(f: &super::TotalLagrangianFrame) -> (String, u32) {
     let fallbacks = crate::spacetime::total_lagrangian::take_single_solve_fallbacks();
     let scheme = crate::spacetime::total_lagrangian::hooks::take_scheme_heat();
     let line = format!(
-        "{{\"wall_ms\":{:.3},\"steps\":{},\"rejected\":{},\"newton_kept\":{},\"gmres_kept\":{},\"modal\":{},\"contacts\":{},\"newton_all\":{},\"solves_all\":{},\"products_all\":{},\"linearisations_all\":{},\"residuals_all\":{},\"solve_wall_ms\":{:.3},\"ms\":{{\"residual\":{:.3},\"jacobian\":{:.3},\"linearisation\":{:.3},\"push_derivative\":{:.3},\"responses_jacobian\":{:.3},\"preconditioner_build\":{:.3},\"preconditioner_solve\":{:.3},\"gmres\":{:.3},\"responses\":{:.3},\"contact\":{:.3},\"multipliers\":{:.3},\"grid\":{:.3},\"finishing\":{:.3},\"controller\":{:.3}}},\"internal_evaluations\":{},\"factorizations\":{},\"single_solve_fallbacks\":{},\"scheme_heat\":{:.9e},\"scheme_steps\":{},\"scheme_lowest_step\":{:.3e},\"scheme_negative\":{},\"scheme_negative_sum\":{:.3e}}}",
+        "{{\"wall_ms\":{:.3},\"steps\":{},\"rejected\":{},\"newton_kept\":{},\"gmres_kept\":{},\"modal\":{},\"contacts\":{},\"newton_all\":{},\"solves_all\":{},\"products_all\":{},\"linearisations_all\":{},\"residuals_all\":{},\"solve_wall_ms\":{:.3},\"ms\":{{\"residual\":{:.3},\"jacobian\":{:.3},\"linearisation\":{:.3},\"push_derivative\":{:.3},\"responses_jacobian\":{:.3},\"preconditioner_build\":{:.3},\"preconditioner_solve\":{:.3},\"gmres\":{:.3},\"responses\":{:.3},\"contact\":{:.3},\"multipliers\":{:.3},\"grid\":{:.3},\"finishing\":{:.3},\"controller\":{:.3}}},\"internal_evaluations\":{},\"factorizations\":{},\"single_solve_fallbacks\":{},\"scheme_heat\":{:.9e},\"scheme_steps\":{},\"scheme_lowest_step\":{:.3e},\"scheme_negative\":{},\"scheme_negative_sum\":{:.3e},\"relaxation_heat\":{:.9e},\"relaxation_strain\":{:.3e},\"relaxation_beyond\":{}}}",
         1e3 * f.wall,
         f.steps,
         f.rejected,
@@ -281,7 +282,10 @@ fn breakdown_json(f: &super::TotalLagrangianFrame) -> (String, u32) {
             0.0
         },
         scheme.negative,
-        scheme.negative_sum
+        scheme.negative_sum,
+        f.relaxation_heat,
+        f.relaxation_strain,
+        f.relaxation_beyond
     );
     (line, fallbacks)
 }
@@ -350,8 +354,17 @@ fn rt_ladder() {
         nu: 0.3,
         rho_kg_m3: 1700.0,
     };
+    // FAST_MODE_PLAN.md sec. 30: the rung's step tolerance (`EMERGE_RT_TOLERANCE`,
+    // default 1e-1, the ladder's own) for the damped reference.
+    let tolerance = std::env::var("EMERGE_RT_TOLERANCE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1e-1);
+    if tolerance != 1e-1 {
+        println!("knob active: step tolerance {tolerance:e}");
+    }
     let clay_labels = Labels {
-        tolerance: 1e-1,
+        tolerance,
         material: "medium clay, corotated, E 11.25 MPa, nu 0.3, 1700 kg/m3 (elastic: no heat)",
         honoured: "kept local error about 2.31 times the tolerance (median; 95th 3.26, largest 4.72): probe_estimator_effectivity, 2026-10-20",
     };
@@ -385,7 +398,7 @@ fn rt_ladder() {
             rho_kg_m3: rho as f32,
         };
         let labels = Labels {
-            tolerance: 1e-1,
+            tolerance,
             material: "technical plasticine, Norton record (Sapozhnikov 2014), E 30 MPa, stand-in density",
             honoured: "not measured for this record",
         };
@@ -396,6 +409,36 @@ fn rt_ladder() {
                 10.0,
                 &|config| Box::new(plasticine.material((e_pa, rho), config)),
                 &props,
+            ),
+            frames,
+            &labels,
+        );
+        return;
+    }
+    // FAST_MODE_PLAN.md sec. 30: Crandall et al.'s Plasticine, the record whole
+    // (`ViscoelasticRecord::plasticine_crandall_1970_fresh`: its relaxed
+    // moduli, Poisson's ratio, density and relaxation spectrum), the same
+    // drop.
+    if std::env::var("EMERGE_RT_MATERIAL").as_deref() == Ok("plasticine") {
+        println!("knob active: Crandall Plasticine record (fresh)");
+        let plasticine = ViscoelasticRecord::plasticine_crandall_1970_fresh();
+        let labels = Labels {
+            tolerance,
+            material: "Harbutt's Plasticine, Crandall et al. 1970 record, fresh state: relaxed E 20.2 MPa, nu 0.434, 1906 kg/m3, three Zener mechanisms (loss factor 0.225, 100-3000 Hz)",
+            honoured: "not measured for this record",
+        };
+        record(
+            &format!("{name}_plasticine"),
+            block(
+                (labels.tolerance, rung.as_str()),
+                10.0,
+                &|config| {
+                    let mut material =
+                        CorotatedMaterial::from_physical(&plasticine.relaxed, config);
+                    material.relaxation = Some(plasticine.spectrum);
+                    Box::new(material)
+                },
+                &plasticine.relaxed,
             ),
             frames,
             &labels,
