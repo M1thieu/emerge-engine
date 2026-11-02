@@ -39,6 +39,10 @@ use crate::matter::materials::solid::corotated::stress::{
     corotated_second_pk, corotated_second_pk_increment, corotated_second_pk_tangent,
 };
 
+#[cfg(all(test, feature = "experimental"))]
+#[path = "branch_update_probes.rs"]
+mod branch_update;
+
 /// One branch on the step: its spring and dashpot, and its internal strain
 /// `E = Gamma - I`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -253,6 +257,10 @@ impl Relaxation {
                     corotated_second_pk(c0, l, m),
                     corotated_second_pk(c1, l, m),
                 );
+                #[cfg(all(test, feature = "experimental"))]
+                if let Some(update) = branch_update::active() {
+                    return branch_update::stress(b, (s0, s1), (c0, c1, dt), (l, m), update);
+                }
                 let half = b.strain + 0.5 * strain_change(b, s0, s1, dt);
                 let q_mid = corotated_second_pk(mid, l, m) - half * mu_b;
                 let s_neq = corotated_second_pk_tangent(mid, q_mid, l, m) * mu_b.recip();
@@ -285,12 +293,16 @@ impl Relaxation {
                 .zip([(0.0, mu), (lambda, 0.0)])
                 .filter_map(|(b, moduli)| b.as_mut().map(|b| (b, moduli)))
             {
-                let change = strain_change(
-                    b,
-                    corotated_second_pk(c0, l, m),
-                    corotated_second_pk(c1, l, m),
-                    dt,
-                );
+                let (s0, s1) = (corotated_second_pk(c0, l, m), corotated_second_pk(c1, l, m));
+                #[cfg(all(test, feature = "experimental"))]
+                if let Some(update) = branch_update::active() {
+                    let (end, branch_heat) = branch_update::advance(b, (s0, s1), dt, update);
+                    branch_update::count_negative(branch_heat);
+                    heat += branch_heat;
+                    b.strain = end;
+                    continue;
+                }
+                let change = strain_change(b, s0, s1, dt);
                 heat += b.branch.viscosity * colon(change, change) / (2.0 * dt);
                 b.strain += change;
             }
