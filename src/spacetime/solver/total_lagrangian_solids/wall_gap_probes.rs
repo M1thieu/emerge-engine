@@ -173,6 +173,18 @@ pub(super) fn before_step(state: &TotalLagrangianState, planes: &[Plane]) {
             });
         }
     }
+    // FAST_MODE_PLAN.md sec. 40: every condition NOT held with a member
+    // below its wall, with its in-patch bound (`in_patch_bound`, W-1's form).
+    for &(key, gap, rate, least) in all.iter().filter(|m| m.3 < 0.0 && !held.contains(&m.0)) {
+        trace(|| {
+            format!(
+                "K-1 unheld {key:?}: weighted wall gap {gap:+.4e} m, least member {least:+.4e} m, rate {rate:+.4e} m/s"
+            )
+        });
+        if let Some(line) = in_patch_bound(state, planes, key) {
+            trace(|| format!("unheld {line}"));
+        }
+    }
     LAST.with(|last| {
         if let Some((before, held_before, dt)) = last.borrow().as_ref() {
             for &key in held.iter().filter(|k| !held_before.contains(k)) {

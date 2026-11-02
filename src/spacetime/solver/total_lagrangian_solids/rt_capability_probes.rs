@@ -59,8 +59,21 @@ fn rt_knobs(rule: bool) {
 }
 
 /// The path: the test's own (`tolerance`, modal flight when `modal`), or
-/// the real-time one.
+/// the real-time one. FAST_MODE_PLAN.md sec. 40:
+/// `EMERGE_CAP_PRECISE_TOLERANCE` caps the precise rows' tolerance (the
+/// finer of the two kept), for references converged in `dt`.
 fn path(tolerance: f64, modal: bool) -> TotalLagrangianConfig {
+    static CAP: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+    let cap = *CAP.get_or_init(|| {
+        let cap = std::env::var("EMERGE_CAP_PRECISE_TOLERANCE")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok());
+        if let Some(cap) = cap {
+            println!("knob active: precise rows' tolerance at most {cap}");
+        }
+        cap
+    });
+    let tolerance = cap.map_or(tolerance, |cap| tolerance.min(cap));
     if rt() {
         TotalLagrangianConfig::new(1e-1).with_subframe_handoff()
     } else if modal {
