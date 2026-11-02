@@ -11,7 +11,7 @@
 //! frictionless only. Test-only, switched by `EMERGE_PROBE_T6`.
 
 use super::*;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// T6's state, carried in the step's cache (`Factors::persistency`) so that
 /// every try of the step controller starts from the step's own and only the
@@ -24,7 +24,10 @@ pub(crate) struct Store {
     /// held step: route C rebuilds the contacts each step, so a released one
     /// returns its energy along the row it was last held by (the grid's
     /// stencils stay on the reference configuration, so that row stays valid).
-    kappa: HashMap<ContactKey, (f64, Vec<Share>)>,
+    /// Ordered by key: the released contacts' rows and every sum over the
+    /// store are taken in that order, so a run's digits do not depend on a
+    /// hash seed.
+    kappa: BTreeMap<ContactKey, (f64, Vec<Share>)>,
     /// Since the last `take_accounts`: stored, returned, dropped by the
     /// guard, rows skipped as dependent, the steps it acted on, and the
     /// release excess (substep 3's kinetic change less the energy it returns:
