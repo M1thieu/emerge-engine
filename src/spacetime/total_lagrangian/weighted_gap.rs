@@ -81,10 +81,19 @@ pub(crate) fn outline_trace(
     // `EMERGE_PROBE_PATCH_CELLS`, a measurement: the patch's length in
     // cells instead of 2.
     #[cfg(all(test, feature = "experimental"))]
-    let patch = std::env::var("EMERGE_PROBE_PATCH_CELLS")
-        .ok()
-        .and_then(|v| v.parse::<f64>().ok())
-        .map_or(patch, |cells| cells * cell);
+    let patch = {
+        static CELLS: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+        let cells = *CELLS.get_or_init(|| {
+            let cells = std::env::var("EMERGE_PROBE_PATCH_CELLS")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok());
+            if let Some(cells) = cells {
+                println!("knob active: multiplier patches of {cells} cells");
+            }
+            cells
+        });
+        cells.map_or(patch, |cells| cells * cell)
+    };
     let mut functions = Vec::new();
     for (k, &start) in starts.iter().enumerate() {
         let end = if starts.len() == 1 {
@@ -391,7 +400,7 @@ fn inside(x: &[DVec2], polygon: &[usize], q: DVec2) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     /// A block's outline, `width` by `height` cells from `corner`, points
@@ -448,7 +457,7 @@ mod tests {
 
     /// The eigenvalues of the symmetric matrix `a`, by cyclic Jacobi
     /// rotations until the off-diagonal is round-off.
-    fn eigenvalues(mut a: Vec<Vec<f64>>) -> Vec<f64> {
+    pub(in crate::spacetime::total_lagrangian) fn eigenvalues(mut a: Vec<Vec<f64>>) -> Vec<f64> {
         let n = a.len();
         for _ in 0..100 {
             let off: f64 = (0..n)

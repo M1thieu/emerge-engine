@@ -79,9 +79,13 @@ mod krylov;
 mod modes;
 mod multipliers;
 #[cfg(all(test, feature = "experimental"))]
+mod nitsche_probes;
+#[cfg(all(test, feature = "experimental"))]
 pub(crate) mod persistency;
 mod relaxation;
 mod solve;
+#[cfg(all(test, feature = "experimental"))]
+mod stabilized_probes;
 mod step;
 mod step_control;
 #[cfg(all(test, feature = "experimental"))]

@@ -102,7 +102,7 @@ pub(crate) fn newton_on_multipliers(
 
 /// `a y = b` by Gaussian elimination with partial pivoting; `None` when a
 /// pivot vanishes against the matrix's size (singular to round-off).
-fn dense_solve(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
+pub(super) fn dense_solve(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
     let n = b.len();
     let size = a
         .iter()
