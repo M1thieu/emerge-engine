@@ -188,6 +188,20 @@ pub(super) fn apply(
     }
     let rows: Vec<Vec<f64>> = shares.iter().map(|s| row_of(s)).collect();
     let (mut stored, mut skipped) = (0.0, 0.0);
+    // With the walls held at the step's end (sec. 36.3, Part I), the walls
+    // do work: `-(g_{n+1} - g^_n) lambda` per contact, Puso eqs. 19 and
+    // 26-27, `g^_n` the start gap on a flat rigid wall (eq. 22). It is stored
+    // with the contact's kappa (eq. 40) and returned at its release, as the
+    // persistency update's own: `lambda` times the contact's weighted normal
+    // displacement over the step, `G u`, is the walls' work, and minus it the
+    // energy taken.
+    if super::hooks::end_gap_on() {
+        for (c, row) in held.iter().zip(&rows) {
+            let taken = -c.multiplier * dot(row, u);
+            store.kappa.entry(c.key).or_insert((0.0, Vec::new())).0 += taken;
+            stored += taken;
+        }
+    }
     if !rows.is_empty() {
         let columns: Vec<Vec<f64>> = rows.iter().map(|g| inverse(g)).collect();
         let size = rows.len();

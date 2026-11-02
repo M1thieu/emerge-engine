@@ -52,6 +52,28 @@ pub(super) fn no_resolution_floor() -> bool {
             .get_or_init(|| std::env::var_os("EMERGE_PROBE_NO_RESOLUTION_FLOOR").is_some())
 }
 
+/// FAST_MODE_PLAN.md sec. 36.3 (Part I): the walls held at the step's end.
+/// With `EMERGE_PROBE_CONTACT_END_GAP` set, every wall condition (an
+/// outline's weighted gap, a contact point) is held against the wall itself
+/// instead of a plane at its points' start positions, so the held quantity
+/// is the gap at the step's end (Signorini there, Puso, Porter and Slavik
+/// eq. 16; against a flat rigid wall their `g^_n` is the gap, eq. 22, so
+/// their case (23)1 holds at every activation); every wall condition is a
+/// candidate, joining in the passes when its end gap is beyond its
+/// tolerance; and the tolerance is the resolution alone (`contact_allowance`
+/// without its relative term). Contacts between bodies stay route C's.
+/// Announced once.
+pub(crate) fn end_gap_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("EMERGE_PROBE_CONTACT_END_GAP").is_some();
+        if on {
+            println!("knob active: walls held at the step's end (Part I)");
+        }
+        on
+    })
+}
+
 /// The MAC grid's staggered lattices instead of the collocated ones
 /// (`lattices`), to compare: on when the environment variable
 /// `EMERGE_PROBE_STAGGERED` is set.
@@ -614,6 +636,22 @@ pub(crate) fn add_part(i: usize, v: f64) {
 
 pub(crate) fn take_parts() -> [f64; 10] {
     std::mem::take(&mut *PARTS.lock().expect("parts"))
+}
+
+/// FAST_MODE_PLAN.md sec. 36.2 (K-2): over the kept and tried steps since
+/// the last take, how many held conditions' allowances were bound by the
+/// relative term, the round-off and the resolution, and the largest
+/// relative term, m.
+static ALLOWANCE_TERMS: std::sync::Mutex<[f64; 4]> = std::sync::Mutex::new([0.0; 4]);
+
+pub(crate) fn add_allowance_term(binding: usize, relative: f64) {
+    let mut terms = ALLOWANCE_TERMS.lock().expect("allowance terms");
+    terms[binding] += 1.0;
+    terms[3] = terms[3].max(relative);
+}
+
+pub(crate) fn take_allowance_terms() -> [f64; 4] {
+    std::mem::take(&mut *ALLOWANCE_TERMS.lock().expect("allowance terms"))
 }
 
 /// One held contact of one step in the probes' contact trace

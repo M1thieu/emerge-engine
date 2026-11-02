@@ -24,6 +24,11 @@ use super::*;
 #[path = "mode_free_probes.rs"]
 pub(super) mod mode_free_probes;
 
+/// FAST_MODE_PLAN.md sec. 36.2 (K-1, K-2): the walls' gaps before each step.
+#[cfg(all(test, feature = "experimental"))]
+#[path = "wall_gap_probes.rs"]
+mod wall_gap_probes;
+
 /// MIXED_FORMULATION_PLAN.md: the mean-dilatation cells on this path.
 #[cfg(all(test, feature = "experimental"))]
 #[path = "theta_cells.rs"]
@@ -172,6 +177,22 @@ fn refusal_phase() -> bool {
 /// `control` unchanged.
 #[cfg(all(test, feature = "experimental"))]
 pub(super) fn contact_phase_control(
+    control: &StepControl,
+    state: &mut TotalLagrangianState,
+    planes: &[Plane],
+    remaining: f64,
+) -> StepControl {
+    let control = probes_control(control, state, planes, remaining);
+    // FAST_MODE_PLAN.md sec. 36.2 (K-1, K-2), with the step's length set.
+    if tracing() {
+        wall_gap_probes::before_step(state, planes);
+    }
+    control
+}
+
+/// `contact_phase_control`'s choice of the step.
+#[cfg(all(test, feature = "experimental"))]
+fn probes_control(
     control: &StepControl,
     state: &mut TotalLagrangianState,
     planes: &[Plane],

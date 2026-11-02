@@ -118,6 +118,41 @@ pub(crate) fn contact_allowance(
         .max(f64::MIN_POSITIVE)
 }
 
+/// FAST_MODE_PLAN.md sec. 36.2 (K-2): for each held condition at a step's
+/// end, which of `contact_allowance`'s terms binds (the relative term, the
+/// round-off, the resolution) and the relative term's value, m, counted in
+/// `hooks::add_allowance_term`. Test-only.
+#[cfg(all(test, feature = "experimental"))]
+pub(crate) fn count_allowance_terms(
+    grid: &Grid,
+    (x, v, planes, u): (&[DVec2], &[DVec2], &[Plane], &[f64]),
+    contacts: &[Contact],
+    (contact_tolerance, dt): (f64, f64),
+    (penalty, residual): (&[f64], f64),
+) {
+    for c in contacts {
+        let (_, shares) = contact_geometry(grid, x, planes, u, c);
+        let motion: f64 = shares
+            .iter()
+            .map(|s| {
+                let relative: DVec2 = s.spread.iter().map(|&(r, w)| w * v[r]).sum();
+                s.weight * relative.length()
+            })
+            .sum();
+        let relative = contact_tolerance * motion * dt;
+        let round_off = 8.0 * f64::EPSILON * contact_round_off_scale(grid, x, planes, u, &shares);
+        let resolution = gap_resolution(c, penalty, residual);
+        let binding = if relative >= round_off && relative >= resolution {
+            0
+        } else if round_off >= resolution {
+            1
+        } else {
+            2
+        };
+        super::hooks::add_allowance_term(binding, relative);
+    }
+}
+
 /// The gap the solve resolves at a contact: Newton stops with residual
 /// entries up to `residual` (`StepReport::residual_allowed`), and the push
 /// `max(0, lambda - k g)` adds the contact's penalty `k` to the Jacobian
