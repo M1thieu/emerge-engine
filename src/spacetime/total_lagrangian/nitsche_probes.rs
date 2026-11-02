@@ -69,13 +69,19 @@ fn wall_points(
     all
 }
 
-/// The Nitsche terms of the step (`Theta = 1`) as `U C U^T`, balanced by
-/// a diagonal congruence so that `C^-1`'s blocks are of order one: an
-/// active point adds `(w / gamma) G G^T - w (G P^T + P G^T)` (its columns
-/// `G sqrt(w / gamma)`, `P sqrt(w gamma)`, `C^-1` block `[[0, -1], [-1,
-/// -1]]`); an inactive one keeps only `A^Theta`'s `-w gamma P P^T` (column
-/// `P sqrt(w gamma)`, `C^-1` entry -1). Returns the columns and `C^-1`.
-fn nitsche_terms(points: &[Point], active: &[bool], gamma: f64) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+/// The Nitsche terms of the step as `U C U^T`, balanced by a diagonal
+/// congruence so that `C^-1`'s blocks are of order one: an active point
+/// adds `(w / gamma) G G^T - w G P^T - Theta w P G^T` (rows test, columns
+/// trial: `(w / gamma) (G - Theta gamma P)(G - gamma P)^T` with `A^Theta`'s
+/// `-Theta w gamma P P^T`; its columns `G sqrt(w / gamma)`, `P sqrt(w
+/// gamma)`, `C^-1` block `-(1 / Theta) [[0, 1], [Theta, 1]]`); an inactive
+/// one keeps only `-Theta w gamma P P^T` (column `P sqrt(w gamma)`, `C^-1`
+/// entry `-1 / Theta`). `Theta` is 1 or -1. Returns the columns and `C^-1`.
+fn nitsche_terms(
+    points: &[Point],
+    active: &[bool],
+    (gamma, theta): (f64, f64),
+) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
     let mut columns: Vec<Vec<f64>> = Vec::new();
     let mut blocks: Vec<Vec<(usize, f64)>> = Vec::new();
     for (p, &on) in points.iter().zip(active) {
@@ -84,11 +90,11 @@ fn nitsche_terms(points: &[Point], active: &[bool], gamma: f64) -> (Vec<Vec<f64>
         if on {
             columns.push(p.gap.iter().map(|g| a * g).collect());
             columns.push(p.pressure.iter().map(|q| b * q).collect());
-            blocks.push(vec![(i + 1, -1.0)]);
-            blocks.push(vec![(i, -1.0), (i + 1, -1.0)]);
+            blocks.push(vec![(i + 1, -1.0 / theta)]);
+            blocks.push(vec![(i, -1.0), (i + 1, -1.0 / theta)]);
         } else {
             columns.push(p.pressure.iter().map(|q| b * q).collect());
-            blocks.push(vec![(i, -1.0)]);
+            blocks.push(vec![(i, -1.0 / theta)]);
         }
     }
     let k = columns.len();
@@ -158,7 +164,7 @@ fn gamma0(a: &Band, points: &[Point], h: f64) -> f64 {
 /// for the balancing congruence). Every point active. Returns the two
 /// counts and the eigenvalue of `-C^-1 - U^T A^-1 U` nearest zero.
 fn inertia(a: &Band, points: &[Point], gamma: f64) -> (usize, usize, f64) {
-    let (columns, c_inverse) = nitsche_terms(points, &vec![true; points.len()], gamma);
+    let (columns, c_inverse) = nitsche_terms(points, &vec![true; points.len()], (gamma, 1.0));
     let rows: Vec<&[f64]> = columns.iter().map(|c| c.as_slice()).collect();
     let z: Vec<Vec<f64>> = rows.iter().map(|u| a.solve(u)).collect();
     let q = products(&rows, &z);
@@ -180,8 +186,13 @@ fn inertia(a: &Band, points: &[Point], gamma: f64) -> (usize, usize, f64) {
 /// rest, with Nitsche (`Theta = 1`, active set iterated until it repeats)
 /// and with today's two-cell multipliers held at the step's end (Part I);
 /// the outline points' end gaps, and Nitsche's contact pressure `[-g +
-/// gamma p]_+ / gamma` at the midpoint against the exact law's.
-fn tank_step(h: f64, dt: f64) {
+/// gamma p]_+ / gamma` at the midpoint against the exact law's. With
+/// `(theta, penalty)` other than `(1, 1)` (N-5, sec. 36.18b) the penalty
+/// `1 / gamma` is `penalty` times K-6's minimum and one N-5 line is printed
+/// instead, with the stiffness `1 + lambda_max(C U^T A^-1 U)` (power
+/// iteration).
+fn tank_step(h: f64, dt: f64, (theta, penalty): (f64, f64)) {
+    let reported = theta == 1.0 && penalty == 1.0;
     let water = LiquidWater::at(293.15).expect("in range");
     let (rho, bulk) = (water.density(), water.isentropic_bulk());
     let g = EARTH_GRAVITY_M_S2 as f64;
@@ -220,7 +231,7 @@ fn tank_step(h: f64, dt: f64) {
     ];
     let points = wall_points(&grid, (&x, &outline, &corners), &walls, (0.0, bulk, h));
     let k6 = grid.approximate_jacobian((&mass, &volume, &solids), 0.0, 2.0 / (dt * dt), &[]);
-    let gamma = gamma0(&k6, &points, h) * h;
+    let gamma = gamma0(&k6, &points, h) * h / penalty;
     let a = grid.approximate_jacobian((&mass, &volume, &solids), 0.0, 4.0 / (dt * dt), &[]);
     // The start: the exact displacement projected (K-7), at rest.
     let displacement: Vec<DVec2> = x
@@ -268,7 +279,7 @@ fn tank_step(h: f64, dt: f64) {
     let mut passes = 0;
     let u_m = loop {
         passes += 1;
-        let (columns, c_inverse) = nitsche_terms(&points, &active, gamma);
+        let (columns, c_inverse) = nitsche_terms(&points, &active, (gamma, theta));
         let Some(u_m) = woodbury(&a, (&columns, &c_inverse), &b) else {
             println!(
                 "N-2 water tank, cell {h} m: the Woodbury inner matrix is singular; not measured"
@@ -302,20 +313,61 @@ fn tank_step(h: f64, dt: f64) {
         let corner = p.weight < 0.375 * h;
         let d = &mut diagnostic[p.wall];
         if corner {
-            println!(
-                "N-3 diagnostic, cell {h} m, wall {} corner at ({:.3}, {:.3}) m: returned {returned:.4e} Pa, exact {truth:.4e} Pa, end gap over gamma {:.4e} Pa",
-                p.wall,
-                x[p.particle].x,
-                x[p.particle].y,
-                nitsche_gaps[points
-                    .iter()
-                    .position(|o| std::ptr::eq(o, p))
-                    .expect("listed")]
-                    / gamma
-            );
+            if reported {
+                println!(
+                    "N-3 diagnostic, cell {h} m, wall {} corner at ({:.3}, {:.3}) m: returned {returned:.4e} Pa, exact {truth:.4e} Pa, end gap over gamma {:.4e} Pa",
+                    p.wall,
+                    x[p.particle].x,
+                    x[p.particle].y,
+                    nitsche_gaps[points
+                        .iter()
+                        .position(|o| std::ptr::eq(o, p))
+                        .expect("listed")]
+                        / gamma
+                );
+            }
         } else {
             *d = d.max((returned - truth).abs() / scale);
         }
+    }
+    if !reported {
+        let (columns, c_inverse) = nitsche_terms(&points, &active, (gamma, theta));
+        let rows: Vec<&[f64]> = columns.iter().map(|c| c.as_slice()).collect();
+        let z: Vec<Vec<f64>> = rows.iter().map(|u| a.solve(u)).collect();
+        let q = products(&rows, &z);
+        let c = inverse(&c_inverse);
+        let k = q.len();
+        let cq: Vec<Vec<f64>> = (0..k)
+            .map(|i| {
+                (0..k)
+                    .map(|j| (0..k).map(|l| c[i][l] * q[l][j]).sum())
+                    .collect()
+            })
+            .collect();
+        let mut v = vec![1.0; k];
+        let mut lambda = 0.0;
+        for _ in 0..500 {
+            let w: Vec<f64> = cq
+                .iter()
+                .map(|row| row.iter().zip(&v).map(|(x, y)| x * y).sum())
+                .collect();
+            let norm = w.iter().map(|x| x * x).sum::<f64>().sqrt();
+            lambda = w.iter().zip(&v).map(|(x, y)| x * y).sum::<f64>()
+                / v.iter().map(|x| x * x).sum::<f64>();
+            v = w.iter().map(|x| x / norm).collect();
+        }
+        println!(
+            "N-5 water tank, theta {theta}, penalty {penalty} x K-6's minimum, cell {h} m: largest |end gap| {:.4e} m; pressure error floor {:.4e} (without corners {:.4e}), left wall {:.4e}, right wall {:.4e}; stiffness 1 + lambda_max {:.4e}; {} of {} active after {passes} passes",
+            nitsche_gaps.iter().fold(0.0f64, |m, g| m.max(g.abs())),
+            pressure_error[0],
+            diagnostic[0],
+            pressure_error[1],
+            pressure_error[2],
+            1.0 + lambda,
+            active.iter().filter(|&&a| a).count(),
+            points.len()
+        );
+        return;
     }
     for (name, d) in ["floor", "left wall", "right wall"].iter().zip(diagnostic) {
         println!("N-3 diagnostic, cell {h} m, {name}: largest error without the corners {d:.4e}");
@@ -442,6 +494,19 @@ fn nitsche_walls_counts() {
         }
     }
     for h in [0.04, 0.02, 0.01] {
-        tank_step(h, dt);
+        tank_step(h, dt, (1.0, 1.0));
+    }
+}
+
+#[test]
+#[ignore = "a measurement (FAST_MODE_PLAN.md sec. 36.18b, N-5): run with --ignored --nocapture"]
+fn nitsche_penalty_and_theta_characterization() {
+    let dt = 1.0 / 120.0;
+    for (theta, factors) in [(1.0, vec![1.0, 10.0, 100.0]), (-1.0, vec![1.0, 10.0])] {
+        for factor in factors {
+            for h in [0.04, 0.02, 0.01] {
+                tank_step(h, dt, (theta, factor));
+            }
+        }
     }
 }
