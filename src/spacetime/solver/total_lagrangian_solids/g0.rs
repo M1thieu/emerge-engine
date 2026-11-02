@@ -53,8 +53,13 @@ fn split(state: &TotalLagrangianState) -> (f64, f64, f64) {
     (law, dev, vol)
 }
 
+/// FAST_MODE_PLAN.md sec. 45.4: the impact path, printed per kept step.
+#[path = "impact_path_probes.rs"]
+mod impact_path;
+
 /// After each kept step: the frame's running largest volumetric share.
 pub(super) fn after_step(state: &TotalLagrangianState, dt: f64) {
+    impact_path::after_step(state, dt);
     if !on() {
         return;
     }
