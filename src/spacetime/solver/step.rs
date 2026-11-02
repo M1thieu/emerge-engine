@@ -1395,7 +1395,10 @@ impl Simulation {
             field.apply(
                 &self.particles,
                 sub_dt,
-                self.config.dx_meters,
+                crate::thermodynamics::GridScale {
+                    dx_meters: self.config.dx_meters,
+                    mass_unit_kg_per_m: self.config.grid_mass_unit_kg_per_m(),
+                },
                 macro_spin_from_velocity_gradient,
                 &mut self.cosserat_omega[..self.active_count],
                 &mut self.cosserat_curvature[..self.active_count],
@@ -1544,3 +1547,70 @@ fn macro_spin_from_velocity_gradient(p: &crate::particle::Particle) -> f32 {
 
 // apply_boundary_conditions_to_grid, project_particle_state_to_admissible: projection.rs
 // choose_substep_dt, cfl_bound, affine_cfl_speed_contribution: cfl.rs
+
+#[cfg(test)]
+mod cosserat_call_site_tests {
+    use super::*;
+    use crate::prelude::*;
+    use crate::thermodynamics::{CosseratConfig, CosseratField};
+
+    /// Through the real call path (`Simulation::step` -> `do_substep` -> the
+    /// Cosserat pass): the whole body spins rigidly at `SPIN` rad/s, grid
+    /// units in, SI config. One substep of the exact oscillator gives
+    /// `omega_c = spin * (1 - cos(Omega * dt))`, with `Omega` computed from the
+    /// SI density. The same physical scene at two cell sizes must agree.
+    #[test]
+    fn step_applies_the_si_oscillator_to_grid_unit_particles() {
+        const SPIN: f32 = 3.0;
+        for cell_m in [0.01f32, 0.04] {
+            let cfg = CosseratConfig {
+                coupling_modulus_pa: 2.0e6,
+                grain_diameter_m: 0.01,
+                micro_inertia_coefficient: 0.1,
+                rotational_damping_rate_per_s: 0.0,
+            };
+            // The spawn gives each particle its own density; one uniform SI
+            // density keeps the expected frequency well defined.
+            const RHO_SI: f32 = 1000.0;
+            let probe_config = SimConfig::earth(32, cell_m, 1.0e-3);
+            let rho_si = RHO_SI;
+            // One substep with Omega * dt = 0.5 rad.
+            let dt = 0.5 / cfg.coupling_frequency(rho_si);
+            let config = SimConfig {
+                dt,
+                min_dt: dt,
+                adaptive_timestep: false,
+                gravity: Vec2::ZERO,
+                ..probe_config
+            };
+            let mut solver = Simulation::new(config, SpawnRegion::for_sim(&config))
+                .with_cosserat_field(CosseratField::new(cfg, 32));
+            let n = solver.particles().len();
+            let unit = config.grid_mass_unit_kg_per_m();
+            for i in 0..n {
+                let v = solver.particles().volume[i];
+                solver.particles_mut().mass[i] = RHO_SI * v * cell_m * cell_m / unit;
+            }
+            let centre = Vec2::splat(16.0);
+            for i in 0..n {
+                let r = solver.particles().x[i] - centre;
+                solver.particles_mut().v[i] = SPIN * Vec2::new(-r.y, r.x);
+            }
+            solver.step();
+            let mid = (0..n)
+                .min_by(|&a, &b| {
+                    let da = (solver.particles().x[a] - centre).length_squared();
+                    let db = (solver.particles().x[b] - centre).length_squared();
+                    da.total_cmp(&db)
+                })
+                .unwrap();
+            let spin = macro_spin_from_velocity_gradient(&solver.particles().get(mid));
+            let expected = spin * (1.0 - 0.5f32.cos());
+            let got = solver.cosserat_omega[mid];
+            assert!(
+                spin > 0.5 * SPIN && (got - expected).abs() < 0.05 * expected.abs(),
+                "cell={cell_m} spin={spin} omega_c={got} expected={expected}"
+            );
+        }
+    }
+}

@@ -6,20 +6,31 @@
 //!
 //! # What this solves
 //! The micropolar (Eringen) / Cosserat rotational balance, scalar in 2D, is
-//! second order in the micro-rotation angle. Neff et al. (2022) eq. (3.14) and
+//! second order in the micro-rotation angle. Neff et al. (2022) eq. (3.16) and
 //! (3.17), the Eringen form with micro-inertia coefficient `j`:
 //! ```text
 //! rho * j * d2(theta_c)/dt2 = div(m) + kappa * (curl u - 2 * theta_c)
 //! ```
 //! where `curl u = 2 * theta_m` is twice the macro rotation (the antisymmetric
-//! part of the displacement gradient) and `kappa` is the Cosserat coupling
-//! modulus in Pa (their eq. 4.3 calls it `mu_c`, with
-//! `sigma_antisym = 2 * mu_c * (theta_m - theta_c)`; de Borst et al. 2022 call
-//! the same quantity `alpha`). Written for the relative angle
+//! part of the displacement gradient) and `kappa` is Eringen's coupling
+//! modulus in Pa, so the torque is `2 * kappa * (theta_m - theta_c)`. The
+//! factor 2 is the relation between two moduli of the SAME paper: Neff et al.
+//! (read in full, `tmp/papers/review_cosserat/neff2022.txt`) write the
+//! coupling as Eringen's `kappa` in eqs. (3.16)-(3.17) and as the Cosserat
+//! couple modulus `mu_c` in their eq. (5.8), `kappa = 2 * mu_c`. The modulus
+//! in this module is Eringen's `kappa`, the coefficient of
+//! `(curl u - 2 theta_c)`: `coupling_modulus_pa` (`alpha`) is that `kappa`, so
+//! pass `alpha = 2 * mu_c` if you hold Neff's couple modulus `mu_c`. (That the
+//! de Borst et al. `alpha` is the same quantity is taken from the pre-existing
+//! relation in `matter::materials::granular::cosserat` and was not re-read
+//! here.) Written for the relative angle
 //! `phi = theta_c - theta_m`, with `rho * j` the micro-inertia per unit volume:
 //! ```text
-//! rho * j * d2(phi)/dt2 = -2 * alpha * phi      (couple-stress divergence dropped)
+//! rho * j * d2(phi)/dt2 = -2 * alpha * phi - eta_r * d(phi)/dt
+//!                                  (couple-stress divergence dropped)
 //! ```
+//! The `eta_r` term is the damping seam, zero by default (see the declared
+//! gaps).
 //! Dimensions: `rho * j` is kg/m^3 * m^2 = kg/m (2D: per unit depth), `alpha`
 //! is Pa = kg/(m s^2), so `Omega^2 = 2 * alpha / (rho * j)` is 1/s^2. The
 //! coupling is therefore an elastic restoring torque on the ANGLE, a
@@ -35,12 +46,18 @@
 //! 2 * alpha / (rho * c * d^2)`. With the relative rate
 //! `w = omega_c - spin` and relative angle `phi`, `phi' = w`, `w' = -Omega^2 phi`
 //! has the exact solution used per substep (macro spin held constant over the
-//! substep):
+//! substep). With the damping rate `g = eta_r / (rho * j)` (1/s, zero by
+//! default), `a = g / 2` and `Omega_d^2 = Omega^2 - a^2` (the linear damped
+//! oscillator `phi'' + g phi' + Omega^2 phi = 0`):
 //! ```text
-//! phi(t) = phi0 * cos(Omega t) + w0 * sin(Omega t) / Omega
-//! w(t)   = w0 * cos(Omega t) - phi0 * Omega * sin(Omega t)
+//! phi(t) = e^(-a t) * (phi0 * cos(Omega_d t) + (w0 + a phi0) * sin(Omega_d t) / Omega_d)
+//! w(t)   = e^(-a t) * (w0 * cos(Omega_d t) - (Omega^2 phi0 + a w0) * sin(Omega_d t) / Omega_d)
 //! ```
-//! Exact for the local oscillator, so unconditionally stable;
+//! (cos and sin become cosh and sinh when `Omega_d^2 < 0`, the overdamped
+//! case; for `g = 0` it is the undamped solution
+//! `phi0 cos(Omega t) + w0 sin(Omega t)/Omega`.) Derived on the page by
+//! substituting `phi = e^(-a t) y`. Exact for the local oscillator, so
+//! unconditionally stable;
 //! [`CosseratConfig::stability_dt`] is the resolution bound.
 //!
 //! Grains are treated as rounded for the micro-inertia coefficient (`1/10`,
@@ -49,10 +66,22 @@
 //! angularity.
 //!
 //! # Declared gaps (open, with removal criterion)
-//! - No dissipation: the elastic Cosserat coupling alone conserves the
-//!   oscillation. Granular rolling dissipation (rolling resistance or a
-//!   rotational viscosity in Pa s) has no sourced value here; remove when one
-//!   is measured and added as a config field.
+//! - KNOWN-LIMIT, kind: missing sourced coefficient. No dissipation by
+//!   default: the elastic Cosserat coupling alone conserves the
+//!   oscillation, so `omega_c` rings about the macro spin at `Omega` and never
+//!   settles. When `Omega * dt` is not small (check
+//!   `CosseratConfig::coupling_frequency` against the substep) the
+//!   oscillation is aliased by the substep sampling and the micro-curvature
+//!   (gradient of `omega_c`) is noise rather than a smooth field. No sourced
+//!   damping coefficient was found (granular rolling dissipation or a
+//!   rotational viscosity `eta_r` in Pa s) in the papers read, so none is
+//!   invented. Why it is still open: the law is wired and exact
+//!   (`CosseratConfig::rotational_damping_rate_per_s`, the ONE seam, `0.0`
+//!   = off) but its value has no source. Replace when: a measured
+//!   rotational viscosity or rolling-resistance law for the grain material
+//!   is read and converted to `g = eta_r / (rho * j)` there, with its source
+//!   in the config doc. `CosseratConfig::coupling_phase_per_substep` reports
+//!   the aliasing `Omega * dt` so a scene can check it.
 //! - The couple-stress divergence `div(m)` is not in this solve (it was not
 //!   before): the field is a local oscillator per node.
 //! - The micro-curvature is the gradient of the gathered micro-rotation RATE
@@ -64,7 +93,7 @@
 //! # Citation
 //! Neff, P., Ghiba, I.-D., Madeo, A., Placidi, L., Rosi, G., "Cosserat
 //! micropolar elasticity: classical Eringen vs. dislocation form" (2022),
-//! arXiv:2206.02473, eqs. (3.14), (3.17), (4.3), (4.5). Constitutive relation
+//! arXiv:2206.02473, eqs. (3.16), (3.17), (5.8). Constitutive relation
 //! and `alpha`: de Borst, R., Sabet, S.A. and Hageman, T. (2022), "Non-associated
 //! Cosserat plasticity", Int. J. Mech. Sci. 230, 107535; see
 //! `matter::materials::granular::cosserat`.
@@ -89,9 +118,24 @@ pub struct CosseratConfig {
     /// sphere's mass-specific polar moment (`I = (2/5)*r^2 = (1/10)*d^2`), for
     /// rounded grains.
     pub micro_inertia_coefficient: f32,
+    /// Damping rate `g = eta_r / (rho * j)` \[1/s\] of the relative
+    /// micro-rotation (viscous torque `-eta_r * d(phi)/dt`). `0.0` means no
+    /// dissipation. The ONE seam of the missing dissipation law: no sourced
+    /// value exists yet (see the module's declared gaps), so every preset sets
+    /// `0.0`; replace it when a measured rotational viscosity is read.
+    pub rotational_damping_rate_per_s: f32,
 }
 
 impl CosseratConfig {
+    /// Phase `Omega * dt` \[rad\] the coupling oscillator advances per
+    /// substep at a bulk density \[kg/m^3\]. The oscillation is resolved
+    /// by the substep only when this is well below `pi`; above it the
+    /// sampled `omega_c` is aliased and its gradient (the micro-curvature)
+    /// is not a smooth field.
+    pub fn coupling_phase_per_substep(&self, density_kg_m3: f32, sub_dt: f32) -> f32 {
+        self.coupling_frequency(density_kg_m3) * sub_dt
+    }
+
     /// Micro-inertia of one particle \[kg m^2\]: `m * c * d^2`
     /// (`I = (2/5) r^2 m = d^2 m / 10` for a solid sphere, `d = 2r`).
     pub fn micro_inertia(&self, particle_mass: f32) -> f32 {
@@ -124,6 +168,52 @@ impl CosseratConfig {
             .coupling_frequency(density_kg_m3)
             .max(f32::MIN_POSITIVE)
     }
+}
+
+/// Exact solution after `t` of `phi'' + g phi' + omega2 phi = 0` from
+/// `(phi0, w0 = phi'(0))`, returning `(phi(t), phi'(t))`. With `a = g / 2` and
+/// `D = omega2 - a^2`: `phi = e^(-a t) (phi0 C + (w0 + a phi0) S)` and
+/// `phi' = e^(-a t) (w0 C - (omega2 phi0 + a w0) S)`, where for `D > 0`
+/// `C = cos(sqrt(D) t)`, `S = sin(sqrt(D) t) / sqrt(D)`, for `D < 0` the
+/// hyperbolic analogues, and for `D = 0` `C = 1`, `S = t`.
+fn damped_oscillator(phi0: f32, w0: f32, omega2: f32, g: f32, t: f32) -> (f32, f32) {
+    let a = 0.5 * g;
+    let d = omega2 - a * a;
+    let q = d * t * t; // signed (sqrt(|D|) t)^2
+    let (c, s) = if q.abs() < 1.0e-6 {
+        (1.0 - 0.5 * q, t * (1.0 - q / 6.0))
+    } else if q > 0.0 {
+        let r = d.sqrt();
+        ((r * t).cos(), (r * t).sin() / r)
+    } else {
+        let r = (-d).sqrt();
+        ((r * t).cosh(), (r * t).sinh() / r)
+    };
+    let decay = (-a * t).exp();
+    (
+        decay * (phi0 * c + (w0 + a * phi0) * s),
+        decay * (w0 * c - (omega2 * phi0 + a * w0) * s),
+    )
+}
+
+/// The grid's units against SI for one scene: the cell size
+/// (`SimConfig::dx_meters`) and the mass unit per metre of depth
+/// (`SimConfig::grid_mass_unit_kg_per_m()`). Engine particles are in these
+/// units; the config of this module is in SI.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GridScale {
+    /// A cell, m.
+    pub dx_meters: f32,
+    /// The mass unit per metre of depth, kg/m.
+    pub mass_unit_kg_per_m: f32,
+}
+
+impl GridScale {
+    /// Particles already in SI (1 m cell, 1 kg/m mass unit).
+    pub const SI: Self = Self {
+        dx_meters: 1.0,
+        mass_unit_kg_per_m: 1.0,
+    };
 }
 
 /// A persistent, grid-coupled Cosserat micro-rotation field.
@@ -172,11 +262,19 @@ impl CosseratField {
     /// this field has no access to that context, matching
     /// `GranularFluidityField::pressure_and_ratio`'s own caller-supplied
     /// convention).
+    ///
+    /// Units: the config is SI (Pa, m); engine particles are in grid units
+    /// (see `SimConfig`: length `dx_meters`, mass per metre of depth
+    /// `grid_mass_unit_kg_per_m`). The conversion happens here, as in
+    /// `GranularFluidityField::apply`, from `SimConfig::dx_meters` and
+    /// `SimConfig::grid_mass_unit_kg_per_m()`: SI mass = grid mass * unit,
+    /// SI area = grid volume * dx^2, so the density is `unit / dx^2` times the
+    /// grid density.
     pub fn apply(
         &mut self,
         particles: &crate::particle::Particles,
         sub_dt: f32,
-        dx_meters: f32,
+        scale: GridScale,
         macro_spin: fn(&crate::particle::Particle) -> f32,
         out_omega: &mut [f32],
         out_curvature: &mut [Vec2],
@@ -198,9 +296,11 @@ impl CosseratField {
         // --- P2G: scatter micro-inertia I, torque stiffness 2*alpha*V and the
         // I-weighted omega_c, macro spin and relative angle ---
         let stiff_per_volume = 2.0 * self.config.coupling_modulus_pa;
+        let dx_meters = scale.dx_meters;
+        let area_unit_m2 = dx_meters * dx_meters;
         for pi in 0..particles.len() {
             let p = particles.get(pi);
-            let i_micro = self.config.micro_inertia(p.mass);
+            let i_micro = self.config.micro_inertia(p.mass * scale.mass_unit_kg_per_m);
             let spin = macro_spin(&p);
             let w = quadratic_weights(p.x);
             // The field's own last-gathered values for this particle (last
@@ -220,7 +320,7 @@ impl CosseratField {
                     self.grid_mass[idx] += mw;
                     self.grid_spin[idx] += mw * spin;
                     self.grid_phi[idx] += mw * phi_particle;
-                    self.grid_stiff[idx] += weight * stiff_per_volume * p.volume;
+                    self.grid_stiff[idx] += weight * stiff_per_volume * p.volume * area_unit_m2;
                 }
             }
         }
@@ -236,17 +336,16 @@ impl CosseratField {
             let spin_avg = self.grid_spin[i] * inv_i;
             let w0 = self.grid_l[i] * inv_i - spin_avg;
             let phi0 = self.grid_phi[i] * inv_i;
-            let omega = (self.grid_stiff[i] * inv_i).max(0.0).sqrt();
-            let x = omega * sub_dt;
-            let (sin_x, cos_x) = x.sin_cos();
-            // sin(Omega t) / Omega, finite as Omega -> 0
-            let sin_over_omega = if x < 1.0e-4 {
-                sub_dt * (1.0 - x * x / 6.0)
-            } else {
-                sin_x / omega
-            };
-            self.grid_work[i] = spin_avg + w0 * cos_x - phi0 * omega * sin_x;
-            self.grid_phi_out[i] = phi0 * cos_x + w0 * sin_over_omega;
+            let omega2 = (self.grid_stiff[i] * inv_i).max(0.0);
+            let (phi_t, w_t) = damped_oscillator(
+                phi0,
+                w0,
+                omega2,
+                self.config.rotational_damping_rate_per_s.max(0.0),
+                sub_dt,
+            );
+            self.grid_work[i] = spin_avg + w_t;
+            self.grid_phi_out[i] = phi_t;
         }
         self.grid_omega.copy_from_slice(&self.grid_work);
 
@@ -298,6 +397,7 @@ mod tests {
             coupling_modulus_pa: 1.0e6,
             grain_diameter_m: 0.3e-3,
             micro_inertia_coefficient: 0.1,
+            rotational_damping_rate_per_s: 0.0,
         }
     }
 
@@ -331,6 +431,7 @@ mod tests {
             coupling_modulus_pa: 2.0e6,
             grain_diameter_m: 1.0e-2,
             micro_inertia_coefficient: 0.1,
+            rotational_damping_rate_per_s: 0.0,
         };
         let dt = cfg.stability_dt(1000.0);
         assert!((dt - 1.0e-4).abs() / 1.0e-4 < 1e-5, "dt={dt}");
@@ -340,6 +441,7 @@ mod tests {
             coupling_modulus_pa: 2.0e7,
             grain_diameter_m: 1.0,
             micro_inertia_coefficient: 0.1,
+            rotational_damping_rate_per_s: 0.0,
         };
         let dt_cgs = cgs.stability_dt(1.0);
         assert!((dt - dt_cgs).abs() / dt < 1e-5, "si={dt} cgs={dt_cgs}");
@@ -358,7 +460,7 @@ mod tests {
             field.apply(
                 &particles,
                 1.0e-6,
-                0.01,
+                GridScale::SI,
                 |_p| 0.0,
                 &mut out_omega,
                 &mut out_curvature,
@@ -378,7 +480,7 @@ mod tests {
             field.apply(
                 &particles,
                 2.0e-5,
-                0.01,
+                GridScale::SI,
                 |_p| SPIN,
                 &mut out_omega,
                 &mut out_curvature,
@@ -392,6 +494,7 @@ mod tests {
             coupling_modulus_pa: 2.0e6,
             grain_diameter_m: 1.0e-2,
             micro_inertia_coefficient: 0.1,
+            rotational_damping_rate_per_s: 0.0,
         }
     }
 
@@ -420,12 +523,85 @@ mod tests {
             coupling_modulus_pa: 2.0e7,
             grain_diameter_m: 1.0,
             micro_inertia_coefficient: 0.1,
+            rotational_damping_rate_per_s: 0.0,
         };
         let cgs = run_oscillator(cgs_cfg, 1.0, 1.0, steps);
         assert!(
             (si - cgs).abs() < 1.0e-4 * si.abs().max(1.0),
             "si={si} cgs={cgs}"
         );
+    }
+
+    #[test]
+    fn damping_seam_settles_omega_to_the_macro_spin() {
+        // phi'' + g phi' + Omega^2 phi = 0: with g > 0 the micro-rotation rate
+        // relaxes to the macro spin (SPIN) instead of ringing forever.
+        let mut cfg = si_config();
+        let omega = cfg.coupling_frequency(1000.0);
+        cfg.rotational_damping_rate_per_s = 0.5 * omega;
+        let undamped = run_oscillator(si_config(), 1000.0, 1.0, 4000);
+        let damped = run_oscillator(cfg, 1000.0, 1.0, 4000);
+        assert!((damped - 3.0).abs() < 1.0e-3, "damped omega_c={damped}");
+        assert!((undamped - 3.0).abs() > (damped - 3.0).abs());
+    }
+
+    #[test]
+    fn engine_particles_in_grid_units_give_the_same_frequency_as_si() {
+        // Through the real call path: particles spawned by the solver (mass
+        // and volume in grid units) with a SimConfig that has a cell size.
+        // The physical density is mass * unit / (volume * dx^2), so the field
+        // must oscillate at `coupling_frequency` of that density, whatever
+        // `dx_meters` is.
+        use crate::prelude::*;
+        for cell_m in [0.01f32, 0.04] {
+            let config = SimConfig::earth(32, cell_m, 0.01);
+            let mut solver = Simulation::new(config, SpawnRegion::for_sim(&config));
+            let cfg = CosseratConfig {
+                coupling_modulus_pa: 2.0e6,
+                grain_diameter_m: cell_m,
+                micro_inertia_coefficient: 0.1,
+                rotational_damping_rate_per_s: 0.0,
+            };
+            // The spawn gives each particle its own density; make it one
+            // uniform SI density so the expected frequency is that of RHO_SI.
+            const RHO_SI: f32 = 1000.0;
+            let unit = config.grid_mass_unit_kg_per_m();
+            let n_all = solver.particles().len();
+            for i in 0..n_all {
+                let v = solver.particles().volume[i];
+                solver.particles_mut().mass[i] =
+                    RHO_SI * v * config.dx_meters * config.dx_meters / unit;
+            }
+            let rho_si = RHO_SI;
+            let omega = cfg.coupling_frequency(rho_si);
+            let sub_dt = 0.5 / omega;
+            let steps = 40;
+            let particles = solver.particles();
+            let n = particles.len();
+            assert!(n > 0 && particles.get(0).volume > 0.0);
+            let mut field = CosseratField::new(cfg, 32);
+            let mut out_omega = vec![0.0; n];
+            let mut out_curvature = vec![Vec2::ZERO; n];
+            for _ in 0..steps {
+                field.apply(
+                    particles,
+                    sub_dt,
+                    GridScale {
+                        dx_meters: config.dx_meters,
+                        mass_unit_kg_per_m: config.grid_mass_unit_kg_per_m(),
+                    },
+                    |_p| 3.0,
+                    &mut out_omega,
+                    &mut out_curvature,
+                );
+            }
+            let expected = 3.0 * (1.0 - (0.5 * steps as f32).cos());
+            let mid = out_omega[n / 2];
+            assert!(
+                (mid - expected).abs() < 5.0e-3 * 3.0,
+                "cell={cell_m} omega_c={mid} expected={expected}"
+            );
+        }
     }
 
     #[test]
@@ -438,7 +614,7 @@ mod tests {
         field.apply(
             &particles,
             1.0e-6,
-            0.01,
+            GridScale::SI,
             |_p| 0.0,
             &mut out_omega,
             &mut out_curvature,

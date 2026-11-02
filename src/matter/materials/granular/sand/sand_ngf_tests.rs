@@ -317,6 +317,7 @@ mod ngf_verification_tests {
                     coupling_modulus_pa: cosserat_modulus_pa,
                     grain_diameter_m: CELL_M,
                     micro_inertia_coefficient: 0.1,
+                    rotational_damping_rate_per_s: 0.0,
                 },
                 GRID,
             );
@@ -378,6 +379,7 @@ mod ngf_verification_tests {
                 coupling_modulus_pa,
                 grain_diameter_m: GRAIN_DIAMETER_M,
                 micro_inertia_coefficient: 0.1,
+                rotational_damping_rate_per_s: 0.0,
             },
             GRID,
         );
@@ -587,6 +589,7 @@ mod ngf_verification_tests {
                 coupling_modulus_pa: cosserat_modulus_pa,
                 grain_diameter_m: CELL_M,
                 micro_inertia_coefficient: 0.1,
+                rotational_damping_rate_per_s: 0.0,
             },
             GRID,
         );
@@ -662,6 +665,7 @@ mod ngf_verification_tests {
                 coupling_modulus_pa: cosserat_modulus_pa,
                 grain_diameter_m: CELL_M,
                 micro_inertia_coefficient: 0.1,
+                rotational_damping_rate_per_s: 0.0,
             },
             GRID,
         );
