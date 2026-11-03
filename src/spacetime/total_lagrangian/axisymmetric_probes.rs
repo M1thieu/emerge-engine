@@ -697,7 +697,10 @@ fn ax5_ax6_self_weight() {
         } else {
             -rho * g * height * height / (2.0 * young)
         };
-        for refine in [1, 2] {
+        for (refine, layout) in [1, 2]
+            .into_iter()
+            .flat_map(|r| [Layout::Quarter, Layout::KnotGauss].map(|l| (r, l)))
+        {
             let (nr, nz) = (4 * refine, 40 * refine);
             let problem = Problem {
                 nr,
@@ -717,7 +720,7 @@ fn ax5_ax6_self_weight() {
                 },
                 weight: rho * g,
                 traction: 0.0,
-                layout: Layout::Quarter,
+                layout,
                 planar: false,
             };
             let loads: Vec<f64> = if held {
@@ -727,7 +730,8 @@ fn ax5_ax6_self_weight() {
             };
             let state = problem.solve(&loads).pop().expect("a state");
             println!(
-                "{case} cells {nr}x{nz}: E {young:.4e} Pa, top settlement on the axis {:.6e} m vs exact {exact:.6e} m ({:+.3e} relative), last Newton iterations {}",
+                "{case} cells {nr}x{nz}{}: E {young:.4e} Pa, top settlement on the axis {:.6e} m vs exact {exact:.6e} m ({:+.3e} relative), last Newton iterations {}",
+                layout.label(),
                 state.top_axis_uz,
                 state.top_axis_uz / exact - 1.0,
                 state.iterations
