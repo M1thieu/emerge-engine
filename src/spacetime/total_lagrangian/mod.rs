@@ -85,6 +85,9 @@ mod modes;
 mod multipliers;
 #[cfg(all(test, feature = "experimental"))]
 mod nitsche_probes;
+/// The onset cap (FAST_MODE_PLAN.md sec. 50.6).
+#[cfg(all(test, feature = "experimental"))]
+mod onset_cap;
 #[cfg(all(test, feature = "experimental"))]
 pub(crate) mod persistency;
 mod relaxation;

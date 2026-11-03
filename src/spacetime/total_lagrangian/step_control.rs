@@ -634,6 +634,10 @@ pub fn controlled_step(
         keys
     };
     let start_pushing = if events { pushing(&start) } else { Vec::new() };
+    // FAST_MODE_PLAN.md sec. 50.6: whether the start holds no contact, for
+    // the onset cap (`onset_cap`).
+    #[cfg(all(test, feature = "experimental"))]
+    let start_free = super::onset_cap::knob() && pushing(&start).is_empty();
     // The pair: the whole step against `pieces` pieces; the order-2
     // estimate's Richardson divisor `pieces^2 - 1` (3 for the halves).
     let (pieces, by_contacts) = floor_knobs();
@@ -1227,6 +1231,25 @@ pub fn controlled_step(
             keep_factors(&mut start, [&whole, &halves]);
             rejected += 1;
             *tau = next.min(dt).max(floor);
+            // FAST_MODE_PLAN.md sec. 50.7: Noels et al.'s impact rule.
+            #[cfg(all(test, feature = "experimental"))]
+            if super::onset_cap::noels_knob() {
+                *tau = (dt * super::onset_cap::noels_ratio(error / target)).max(floor);
+            }
+            // FAST_MODE_PLAN.md sec. 50.6: a refused try with the contact's
+            // onset inside it caps the next at the impact's duration.
+            #[cfg(all(test, feature = "experimental"))]
+            if start_free
+                && (!pushing(&halves).is_empty()
+                    || beyond(&halves.x)
+                        .iter()
+                        .zip(&start_beyond)
+                        .any(|(&e, &s)| e && !s))
+                && let Some(t1) =
+                    super::onset_cap::impact_time(&start.x, (mass, v0), solids, set.planes)
+            {
+                *tau = tau.min(t1).max(floor);
+            }
             continue;
         }
         // The pair at once unless in sequence. The third try is needed only
