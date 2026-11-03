@@ -43,11 +43,6 @@ use crate::matter::materials::solid::corotated::stress::{
 #[path = "branch_update_probes.rs"]
 mod branch_update;
 
-/// FAST_MODE_PLAN.md sec. 48: the branches by the theta rule.
-#[cfg(all(test, feature = "experimental"))]
-#[path = "theta_branch_probes.rs"]
-mod theta_branch;
-
 /// One branch on the step: its spring and dashpot, and its internal strain
 /// `E = Gamma - I`.
 #[derive(Clone, Copy, Debug, PartialEq)]

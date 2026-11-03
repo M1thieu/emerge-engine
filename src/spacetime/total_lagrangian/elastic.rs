@@ -673,56 +673,6 @@ impl Elastic {
         }
     }
 
-    /// Backward Euler's step stress (FAST_MODE_PLAN.md sec. 13): the law's
-    /// at the step's end, `S(C_{n+1})`, plus the dashpot's over the step
-    /// (`viscous_stress_over`). Measured on solids without a state only.
-    #[cfg(all(test, feature = "experimental"))]
-    pub(crate) fn end_stress(&self, c0: DMat2, c1: DMat2, dt: f64) -> DMat2 {
-        assert!(
-            !self.carries_state(),
-            "the backward Euler step is measured on solids without a state"
-        );
-        let s = self.second_pk(c1);
-        if self.is_viscous() {
-            s + self.viscous_stress_over(c0, c1, dt)
-        } else {
-            s
-        }
-    }
-
-    /// The derivative of `end_stress` in `C_{n+1}` along `dc`: the law's
-    /// derived tangent, or central differences of `second_pk` with
-    /// `step_stress_tangent_by_differences`'s step where there is none; the
-    /// dashpot's exactly.
-    #[cfg(all(test, feature = "experimental"))]
-    pub(crate) fn end_stress_tangent(&self, c1: DMat2, dt: f64, dc: DMat2) -> DMat2 {
-        let law = self.second_pk_tangent(c1, dc).unwrap_or_else(|| {
-            let size = |m: DMat2| {
-                m.x_axis
-                    .x
-                    .abs()
-                    .max(m.x_axis.y.abs())
-                    .max(m.y_axis.x.abs())
-                    .max(m.y_axis.y.abs())
-            };
-            let along = size(dc);
-            if along == 0.0 {
-                return DMat2::ZERO;
-            }
-            let h = 1e-6 * size(c1).max(1.0) / along;
-            (self.second_pk(c1 + dc * h) - self.second_pk(c1 - dc * h)) * (0.5 / h)
-        });
-        if self.is_viscous() {
-            law + newtonian_viscous_stress(
-                dc * (0.5 / dt),
-                self.shear_viscosity,
-                self.bulk_viscosity,
-            )
-        } else {
-            law
-        }
-    }
-
     /// `step_stress_tangent` by central differences of `step_stress` in
     /// `C_{n+1}`, step `h = 1e-6 max(1, |C_{n+1}|) / |dc|` (the order of the
     /// solve's own differences): the scaffold of the laws without a derived
@@ -768,15 +718,6 @@ impl Elastic {
             out.plastic = stepped.dissipated;
             out.iterations = stepped.iterations;
             out.outside = stepped.outside;
-        }
-        // FAST_MODE_PLAN.md sec. 48: the theta step's branches.
-        #[cfg(all(test, feature = "experimental"))]
-        if let (Some(theta), true) = (super::theta_step::theta(), self.is_relaxing()) {
-            let c_theta = super::theta_step::at(c0, c1, theta);
-            (out.solid.relaxation, out.relaxed) =
-                self.relaxation
-                    .theta_committed((c_theta, c1), dt, theta, self.lame());
-            return out;
         }
         if self.is_relaxing() {
             (out.solid.relaxation, out.relaxed) =

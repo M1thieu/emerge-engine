@@ -221,22 +221,8 @@ pub(crate) fn solve(
     hooks::begin_solve();
     let n = x.len();
     let eps = settings.epsilon;
-    // F4 (FAST_MODE_PLAN.md sec. 13), a measurement: the step by backward
-    // Euler, set by the contact phase's control.
-    // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the contact phase is integrated by a dissipative implicit step at <dt>, its dissipation booked as heat | source: REALTIME_LEVERS_STUDY.md sec. 4.4; STEP_SWEEP_RESULT.md | replace when: the conserving step fits the budget | state: researched | gap: none
-    #[cfg(all(test, feature = "experimental"))]
-    let backward = hooks::backward_euler();
-    #[cfg(not(all(test, feature = "experimental")))]
-    let backward = false;
-    // FAST_MODE_PLAN.md sec. 48: the theta step (`theta_step`), off unless set.
-    let theta = super::step_theta(backward);
-    // The midpoint's inertia, `2 M (u / dt - v_n) / dt`; backward Euler's
-    // `M (u / dt - v_n) / dt`; the theta step's `M (u / dt - v_n) / (theta dt)`.
-    let inertia = if backward {
-        1.0
-    } else {
-        theta.map_or(2.0, f64::recip)
-    };
+    // The midpoint's inertia, `2 M (u / dt - v_n) / dt`.
+    let inertia = 2.0;
     // The grid velocity: the consistent-mass projection (eq. 28).
     let factor = factors
         .mass
@@ -281,7 +267,7 @@ pub(crate) fn solve(
     let hoop = super::axisymmetric::hoop(grid, n);
     #[cfg(all(test, feature = "experimental"))]
     assert!(
-        hoop.is_none() || (lagrangian && !backward && theta.is_none()),
+        hoop.is_none() || lagrangian,
         "the axisymmetric path's first slice is the total Lagrangian midpoint only"
     );
     // The internal force (eq. 30a) with the algorithmic stress. On the
@@ -291,7 +277,7 @@ pub(crate) fn solve(
     let internal = |u: &[f64]| -> Vec<f64> {
         evaluations.set(evaluations.get() + 1);
         #[cfg(all(test, feature = "experimental"))]
-        if super::residual_split::on() && lagrangian && !backward && theta.is_none() {
+        if super::residual_split::on() && lagrangian {
             let at = super::residual_split::Sample {
                 grid,
                 f_now,
@@ -350,24 +336,9 @@ pub(crate) fn solve(
             let (c0, c1) = (f0.transpose() * f0, f1.transpose() * f1);
             // The law's step stress and the Kelvin-Voigt dashpot's in
             // parallel, on the same `F_n+1/2` (`Elastic::step_stress`).
-            #[cfg(all(test, feature = "experimental"))]
-            let s = match (backward, theta) {
-                (true, _) => solids[p].end_stress(c0, c1, dt),
-                (false, Some(th)) => {
-                    solids[p].theta_stress(super::theta_step::at(c0, c1, th), dt, th)
-                }
-                (false, None) => solids[p].step_stress(c0, c1, dt),
-            };
-            #[cfg(not(all(test, feature = "experimental")))]
             let s = solids[p].step_stress(c0, c1, dt);
-            // Backward Euler's stress acts through `F_{n+1}`, the theta
-            // step's through `F_theta`.
-            let carrier = if backward {
-                f1
-            } else {
-                let th = theta.unwrap_or(0.5);
-                f0 * (1.0 - th) + f1 * th
-            };
+            // The stress acts through `F_n+1/2`.
+            let carrier = f0 * 0.5 + f1 * 0.5;
             #[cfg(all(test, feature = "experimental"))]
             let s = match &pressures {
                 Some((cells, pressure)) => solids[p].mixed_stress(
@@ -985,23 +956,6 @@ pub(crate) fn solve(
                 }
                 let (f0, f1) = (f_now[p], deformation_at(u, p));
                 let (c0, c1) = (f0.transpose() * f0, f1.transpose() * f1);
-                #[cfg(all(test, feature = "experimental"))]
-                if backward {
-                    return Linearised {
-                        f1,
-                        s: solids[p].end_stress(c0, c1, dt),
-                        ds: unit.map(|e| solids[p].end_stress_tangent(c1, dt, e)),
-                    };
-                }
-                #[cfg(all(test, feature = "experimental"))]
-                if let Some(th) = theta {
-                    let c_theta = super::theta_step::at(c0, c1, th);
-                    return Linearised {
-                        f1,
-                        s: solids[p].theta_stress(c_theta, dt, th),
-                        ds: unit.map(|e| solids[p].theta_stress_tangent(c_theta, dt, th, e)),
-                    };
-                }
                 Linearised {
                     f1,
                     s: solids[p].step_stress(c0, c1, dt),
@@ -1027,17 +981,10 @@ pub(crate) fn solve(
             let grad = DMat2::from_cols(DVec2::new(gu.x, gv.x), DVec2::new(gu.y, gv.y));
             let f0 = f_now[p];
             let df = if lagrangian { grad } else { grad * f0 };
-            // The theta step's `dC_theta = theta dC_n+1` (`theta_step`).
-            let along = theta.unwrap_or(1.0);
-            let dc = (df.transpose() * t.f1 + t.f1.transpose() * df) * along;
+            let dc = df.transpose() * t.f1 + t.f1.transpose() * df;
             let ds = t.ds[0] * dc.x_axis.x + t.ds[1] * dc.y_axis.y + t.ds[2] * dc.y_axis.x;
-            // Backward Euler's `d(F_{n+1} S) = dF S + F_{n+1} dS`; the theta
-            // step's `theta dF S + F_theta dS`.
-            let first = match (backward, theta) {
-                (true, _) => df * t.s + t.f1 * ds,
-                (false, Some(th)) => th * df * t.s + (f0 * (1.0 - th) + t.f1 * th) * ds,
-                (false, None) => 0.5 * df * t.s + 0.5 * (f0 + t.f1) * ds,
-            };
+            // `d(F_n+1/2 S) = 1/2 dF S + F_n+1/2 dS`.
+            let first = 0.5 * df * t.s + 0.5 * (f0 + t.f1) * ds;
             let first = if lagrangian {
                 v0[p] * first
             } else {
@@ -1153,7 +1100,7 @@ pub(crate) fn solve(
                             m.max((e - (p - q) / (2.0 * h)).abs())
                         });
                     println!(
-                        "tangent check: backward Euler {backward}, product {size:.3e}, relative gap {:.3e}",
+                        "tangent check: product {size:.3e}, relative gap {:.3e}",
                         gap / size.max(f64::MIN_POSITIVE)
                     );
                 }

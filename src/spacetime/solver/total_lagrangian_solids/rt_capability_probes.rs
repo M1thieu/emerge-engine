@@ -52,9 +52,8 @@ fn rt_knobs(rule: bool) {
         fixed.as_deref() == Some("39.33") && n.is_none()
     };
     assert!(
-        step && std::env::var_os("EMERGE_PROBE_SINGLE_SOLVE").is_some()
-            && std::env::var_os("EMERGE_PROBE_BACKWARD_EULER").is_none(),
-        "rt needs EMERGE_PROBE_CONTACT_FIXED_STEP=39.33 (rt_rule: EMERGE_PROBE_CONTACT_STEP_RULE=18 or 40 instead) and EMERGE_PROBE_SINGLE_SOLVE, backward Euler unset"
+        step && std::env::var_os("EMERGE_PROBE_SINGLE_SOLVE").is_some(),
+        "rt needs EMERGE_PROBE_CONTACT_FIXED_STEP=39.33 (rt_rule: EMERGE_PROBE_CONTACT_STEP_RULE=18 or 40 instead) and EMERGE_PROBE_SINGLE_SOLVE"
     );
 }
 
