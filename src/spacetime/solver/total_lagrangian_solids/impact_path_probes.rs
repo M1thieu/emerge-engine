@@ -3,8 +3,8 @@
 //! frame's start plus the steps taken in it, so a flown part of the frame
 //! is not counted), its length, the contacts held at its end, the largest
 //! Green-Lagrange strain over the body (`|E|_F`, `E = (F^T F - I) / 2`)
-//! and its most compressive vertical component, and the body's
-//! mass-weighted mean velocity. Decides nothing.
+//! and its most compressive vertical component, the body's mass-weighted
+//! mean velocity, and its lowest contact point's height. Decides nothing.
 
 use std::cell::Cell;
 
@@ -49,8 +49,16 @@ pub(super) fn after_step(state: &TotalLagrangianState, dt: f64) {
         momentum += state.v[p] * state.mass[p];
     }
     let mean = momentum / mass.max(f64::MIN_POSITIVE);
+    // Sec. 47: the lowest contact point's height (absolute; the floor is the
+    // record header's), for the depth and the standoff.
+    let lowest = state
+        .outlines
+        .iter()
+        .flatten()
+        .map(|&o| state.x[o].y)
+        .fold(f64::INFINITY, f64::min);
     println!(
-        "IMPACT-PATH t {:.9} dt {dt:.4e} held {held} largest |E| {largest:.4e} most compressive E_yy {compressive:+.4e} mean v ({:+.6e}, {:+.6e}) m/s",
+        "IMPACT-PATH t {:.9} dt {dt:.4e} held {held} largest |E| {largest:.4e} most compressive E_yy {compressive:+.4e} mean v ({:+.6e}, {:+.6e}) m/s lowest contact point y {lowest:.6e} m",
         state.time + taken,
         mean.x,
         mean.y

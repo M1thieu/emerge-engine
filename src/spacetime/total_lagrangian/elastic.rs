@@ -769,6 +769,15 @@ impl Elastic {
             out.iterations = stepped.iterations;
             out.outside = stepped.outside;
         }
+        // FAST_MODE_PLAN.md sec. 48: the theta step's branches.
+        #[cfg(all(test, feature = "experimental"))]
+        if let (Some(theta), true) = (super::theta_step::theta(), self.is_relaxing()) {
+            let c_theta = super::theta_step::at(c0, c1, theta);
+            (out.solid.relaxation, out.relaxed) =
+                self.relaxation
+                    .theta_committed((c_theta, c1), dt, theta, self.lame());
+            return out;
+        }
         if self.is_relaxing() {
             (out.solid.relaxation, out.relaxed) =
                 self.relaxation.committed(c0, c1, dt, self.lame());

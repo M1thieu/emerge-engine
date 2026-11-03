@@ -44,12 +44,18 @@ fn block(
     let path = TotalLagrangianConfig::new(tolerance);
     // FAST_MODE_PLAN.md sec. 31 (C-2): the engine's modal rest asked for on
     // the rung (`EMERGE_RT_MODAL_REST`), nothing else changed.
-    let path = if std::env::var_os("EMERGE_RT_MODAL_REST").is_some() {
+    let mut path = if std::env::var_os("EMERGE_RT_MODAL_REST").is_some() {
         println!("knob active: modal rest");
         path.with_modal_rest()
     } else {
         path
     };
+    // FAST_MODE_PLAN.md sec. 47: Acary's forecast activation (RR-7151, eqs.
+    // 16e and 18, gamma 1) asked for (`EMERGE_RT_FORECAST`).
+    if std::env::var_os("EMERGE_RT_FORECAST").is_some() {
+        println!("knob active: forecast activation (gamma 1)");
+        path.settings.forecast_activation = true;
+    }
     config.total_lagrangian = Some(match rung {
         "A0" => path,
         "A1" => path.with_modal_flight(),

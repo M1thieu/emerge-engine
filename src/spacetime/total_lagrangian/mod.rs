@@ -90,6 +90,20 @@ mod step;
 mod step_control;
 #[cfg(all(test, feature = "experimental"))]
 mod tests;
+#[cfg(all(test, feature = "experimental"))]
+mod theta_step;
+
+/// FAST_MODE_PLAN.md sec. 48: the theta step's `theta` when its test-only
+/// knob is set and backward Euler is not; `None`, the midpoint, otherwise.
+#[cfg(all(test, feature = "experimental"))]
+fn step_theta(backward: bool) -> Option<f64> {
+    theta_step::theta().filter(|_| !backward)
+}
+
+#[cfg(not(all(test, feature = "experimental")))]
+const fn step_theta(_backward: bool) -> Option<f64> {
+    None
+}
 mod weighted_gap;
 
 pub(crate) use band::*;

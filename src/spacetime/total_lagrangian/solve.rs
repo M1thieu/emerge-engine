@@ -232,9 +232,15 @@ pub(crate) fn solve(
     let backward = hooks::backward_euler();
     #[cfg(not(all(test, feature = "experimental")))]
     let backward = false;
+    // FAST_MODE_PLAN.md sec. 48: the theta step (`theta_step`), off unless set.
+    let theta = super::step_theta(backward);
     // The midpoint's inertia, `2 M (u / dt - v_n) / dt`; backward Euler's
-    // `M (u / dt - v_n) / dt`.
-    let inertia = if backward { 1.0 } else { 2.0 };
+    // `M (u / dt - v_n) / dt`; the theta step's `M (u / dt - v_n) / (theta dt)`.
+    let inertia = if backward {
+        1.0
+    } else {
+        theta.map_or(2.0, f64::recip)
+    };
     // The grid velocity: the consistent-mass projection (eq. 28).
     let factor = factors
         .mass
@@ -312,15 +318,23 @@ pub(crate) fn solve(
             // The law's step stress and the Kelvin-Voigt dashpot's in
             // parallel, on the same `F_n+1/2` (`Elastic::step_stress`).
             #[cfg(all(test, feature = "experimental"))]
-            let s = if backward {
-                solids[p].end_stress(c0, c1, dt)
-            } else {
-                solids[p].step_stress(c0, c1, dt)
+            let s = match (backward, theta) {
+                (true, _) => solids[p].end_stress(c0, c1, dt),
+                (false, Some(th)) => {
+                    solids[p].theta_stress(super::theta_step::at(c0, c1, th), dt, th)
+                }
+                (false, None) => solids[p].step_stress(c0, c1, dt),
             };
             #[cfg(not(all(test, feature = "experimental")))]
             let s = solids[p].step_stress(c0, c1, dt);
-            // Backward Euler's stress acts through `F_{n+1}`.
-            let carrier = if backward { f1 } else { 0.5 * (f0 + f1) };
+            // Backward Euler's stress acts through `F_{n+1}`, the theta
+            // step's through `F_theta`.
+            let carrier = if backward {
+                f1
+            } else {
+                let th = theta.unwrap_or(0.5);
+                f0 * (1.0 - th) + f1 * th
+            };
             #[cfg(all(test, feature = "experimental"))]
             let s = match &pressures {
                 Some((cells, pressure)) => solids[p].mixed_stress(
@@ -941,6 +955,15 @@ pub(crate) fn solve(
                         ds: unit.map(|e| solids[p].end_stress_tangent(c1, dt, e)),
                     };
                 }
+                #[cfg(all(test, feature = "experimental"))]
+                if let Some(th) = theta {
+                    let c_theta = super::theta_step::at(c0, c1, th);
+                    return Linearised {
+                        f1,
+                        s: solids[p].theta_stress(c_theta, dt, th),
+                        ds: unit.map(|e| solids[p].theta_stress_tangent(c_theta, dt, th, e)),
+                    };
+                }
                 Linearised {
                     f1,
                     s: solids[p].step_stress(c0, c1, dt),
@@ -966,13 +989,16 @@ pub(crate) fn solve(
             let grad = DMat2::from_cols(DVec2::new(gu.x, gv.x), DVec2::new(gu.y, gv.y));
             let f0 = f_now[p];
             let df = if lagrangian { grad } else { grad * f0 };
-            let dc = df.transpose() * t.f1 + t.f1.transpose() * df;
+            // The theta step's `dC_theta = theta dC_n+1` (`theta_step`).
+            let along = theta.unwrap_or(1.0);
+            let dc = (df.transpose() * t.f1 + t.f1.transpose() * df) * along;
             let ds = t.ds[0] * dc.x_axis.x + t.ds[1] * dc.y_axis.y + t.ds[2] * dc.y_axis.x;
-            // Backward Euler's `d(F_{n+1} S) = dF S + F_{n+1} dS`.
-            let first = if backward {
-                df * t.s + t.f1 * ds
-            } else {
-                0.5 * df * t.s + 0.5 * (f0 + t.f1) * ds
+            // Backward Euler's `d(F_{n+1} S) = dF S + F_{n+1} dS`; the theta
+            // step's `theta dF S + F_theta dS`.
+            let first = match (backward, theta) {
+                (true, _) => df * t.s + t.f1 * ds,
+                (false, Some(th)) => th * df * t.s + (f0 * (1.0 - th) + t.f1 * th) * ds,
+                (false, None) => 0.5 * df * t.s + 0.5 * (f0 + t.f1) * ds,
             };
             let first = if lagrangian {
                 v0[p] * first

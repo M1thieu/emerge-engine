@@ -806,12 +806,17 @@ pub fn step_total_lagrangian_contact(
     let backward = hooks::backward_euler();
     #[cfg(not(all(test, feature = "experimental")))]
     let backward = false;
+    // FAST_MODE_PLAN.md sec. 48: the theta step's `(u / dt - (1 - theta)
+    // v_n) / theta`.
+    let theta = super::step_theta(backward);
     let mut end_velocity: Vec<f64> = (0..grid.len)
         .map(|k| {
             if !massive[k] {
                 0.0
             } else if backward {
                 u[k] / dt
+            } else if let Some(th) = theta {
+                (u[k] / dt - (1.0 - th) * v_n[k]) / th
             } else {
                 2.0 * u[k] / dt - v_n[k]
             }
@@ -1051,12 +1056,25 @@ pub fn step_total_lagrangian_contact(
             heat[p] += lost;
             scheme.push(lost);
         }
+        // Sec. 48: the theta step's energy residual (`theta_step`), the
+        // branches' own heat left to the kept step's commit.
+        #[cfg(all(test, feature = "experimental"))]
+        if let (Some(th), true) = (theta, mass[p] > 0.0) {
+            let lost = super::theta_step::residual(
+                &solids[p],
+                (f[p], g, dt, th),
+                (v0[p], mass[p], step_v.length_squared()),
+            ) - dissipated.get(p).copied().unwrap_or(0.0);
+            heat.resize(n, 0.0);
+            heat[p] += lost;
+            scheme.push(lost);
+        }
         x[p] += step_x;
         v[p] += step_v;
         f[p] += g;
     }
     #[cfg(all(test, feature = "experimental"))]
-    if backward {
+    if backward || theta.is_some() {
         hooks::book_scheme_heat(&scheme);
     }
     #[cfg(all(test, feature = "experimental"))]
