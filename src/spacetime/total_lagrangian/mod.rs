@@ -91,6 +91,9 @@ mod onset_cap;
 #[cfg(all(test, feature = "experimental"))]
 pub(crate) mod persistency;
 mod relaxation;
+/// The scaled reuse of a factor (FAST_MODE_PLAN.md sec. 56).
+#[cfg(all(test, feature = "experimental"))]
+mod scaled_reuse;
 mod solve;
 #[cfg(all(test, feature = "experimental"))]
 mod stabilized_probes;

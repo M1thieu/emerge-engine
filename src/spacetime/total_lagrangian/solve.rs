@@ -590,7 +590,25 @@ pub(crate) fn solve(
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(i, _)| i)
     };
-    match exact.or_else(near) {
+    // FAST_MODE_PLAN.md sec. 56: the scaled reuse of a factor across the
+    // inertia-dominated tries (`scaled_reuse`), test-only.
+    #[cfg(all(test, feature = "experimental"))]
+    let far = || {
+        super::scaled_reuse::far(
+            &factors.jacobian,
+            &springs,
+            coefficient,
+            (mass, v0, solids),
+            grid.cell,
+        )
+    };
+    #[cfg(not(all(test, feature = "experimental")))]
+    let far = || None;
+    let near_or_exact = exact.or_else(near);
+    let scaled = near_or_exact.is_none();
+    let chosen = near_or_exact.or_else(far);
+    let scaled = scaled && chosen.is_some();
+    match chosen {
         Some(0) => {}
         Some(found) => {
             let entry = factors.jacobian.remove(found);
@@ -626,6 +644,9 @@ pub(crate) fn solve(
     factors.clock += 1;
     factors.jacobian[0].3 = factors.clock;
     let band = &factors.jacobian[0].2;
+    // The scaled reuse's factor (sec. 56): the kept factor's coefficient
+    // over this system's, by which its output is scaled.
+    let band_scale = scaled.then(|| factors.jacobian[0].0 / coefficient);
     #[cfg(all(test, feature = "experimental"))]
     let exact_band = exact_candidate.filter(|_| factors.jacobian[0].0 != coefficient);
     let banded_at = clock.elapsed().as_secs_f64();
@@ -910,6 +931,8 @@ pub(crate) fn solve(
         for (value, &on) in z.iter_mut().zip(&grid.active) {
             if !on {
                 *value = 0.0;
+            } else if let Some(scale) = band_scale {
+                *value *= scale;
             }
         }
         timed(&precondition_clock, start);
