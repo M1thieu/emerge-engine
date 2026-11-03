@@ -34,7 +34,8 @@ use glam::{DMat2, DVec2};
 use super::basis::Grid;
 use super::elastic::{Elastic, ElasticLaw};
 use crate::matter::materials::solid::neo_hookean::{
-    neo_hookean_energy_axisymmetric, neo_hookean_second_pk_axisymmetric,
+    neo_hookean_energy_axisymmetric, neo_hookean_energy_increment_axisymmetric,
+    neo_hookean_second_pk_axisymmetric,
 };
 
 thread_local! {
@@ -97,8 +98,7 @@ impl Elastic {
             ElasticLaw::NeoHookean => (
                 neo_hookean_second_pk_axisymmetric(c0, a0, lambda, mu),
                 neo_hookean_second_pk_axisymmetric(c1, a1, lambda, mu),
-                neo_hookean_energy_axisymmetric(c1, a1, lambda, mu)
-                    - neo_hookean_energy_axisymmetric(c0, a0, lambda, mu),
+                neo_hookean_energy_increment_axisymmetric((c0, a0), (c1, a1), lambda, mu),
             ),
             ElasticLaw::HenckyJ2(law, state) => {
                 let stepped = law.step_with_stretch((c0, a0), (c1, a1), state, dt);
@@ -279,7 +279,10 @@ mod tests {
     /// stiffness missing from the preconditioner and the derivative taken by
     /// differences), while stretches of 1.01 and 1.1 pass at 0.2 and 1.3
     /// passes at 0.05. The gate runs at 0.05; the failure at 0.2 is recorded
-    /// (FAST_MODE_PLAN.md sec. 51.5).
+    /// (FAST_MODE_PLAN.md sec. 51.5). Traced there: the homotopy reaches an
+    /// admissible solution, while Newton stalls 7.4 (of 27) away from it with
+    /// step lengths of 1e-3; neither the hoop's stiffness in the
+    /// preconditioner nor the energy's increment form moves the stall.
     #[test]
     fn a_released_neo_hookean_cylinder_keeps_its_energy() {
         let axis = 4usize;

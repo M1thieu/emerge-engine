@@ -130,6 +130,35 @@ pub(crate) fn neo_hookean_energy_axisymmetric(c: DMat2, c33: f64, lambda: f64, m
     0.5 * mu * (c.x_axis.x + c.y_axis.y + c33 - 3.0) - mu * l + 0.5 * lambda * l * l
 }
 
+/// `W(C_1, C33_1) - W(C_0, C33_0)` with the hoop entry, from the increment
+/// itself (the plane `neo_hookean_energy_increment`'s form, so its round-off
+/// is relative to the change the discrete gradient divides by `|dC|^2`):
+/// `mu/2 (tr dC_2 + dC_33) - mu dl + lambda/2 dl (l_0 + l_1)`, with `dl =
+/// 1/2 ln1p(d det / det_0)` and `det = det C_2 C_33`. The determinant's
+/// increment is `d det = det(C_2,0) dC_33 + d det_2 C33_1`, with the plane
+/// block's exact `d det_2 = tr(adj(C_0) dC) + det dC`. Derived on the page.
+/// Test-only until the axisymmetric path exists.
+#[cfg(all(test, feature = "experimental"))]
+pub(crate) fn neo_hookean_energy_increment_axisymmetric(
+    (c0, a0): (DMat2, f64),
+    (c1, a1): (DMat2, f64),
+    lambda: f64,
+    mu: f64,
+) -> f64 {
+    let dc = c1 - c0;
+    let det2 = c0.determinant();
+    let adjugate_dot =
+        c0.y_axis.y * dc.x_axis.x - c0.y_axis.x * dc.x_axis.y - c0.x_axis.y * dc.y_axis.x
+            + c0.x_axis.x * dc.y_axis.y;
+    let d_det2 = adjugate_dot + dc.determinant();
+    let det0 = det2 * a0;
+    let d_det = det2 * (a1 - a0) + d_det2 * a1;
+    let dl = 0.5 * (d_det / det0).ln_1p();
+    let l0 = 0.5 * det0.ln();
+    0.5 * mu * (dc.x_axis.x + dc.y_axis.y + (a1 - a0)) - mu * dl
+        + 0.5 * lambda * dl * (2.0 * l0 + dl)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,6 +407,15 @@ mod tests {
         assert!(
             (numeric - s33).abs() <= 1e-8 * s33.abs().max(MU),
             "{numeric} vs {s33}"
+        );
+        // The increment form against the difference of the energies.
+        let c1 = c + DMat2::from_cols(DVec2::new(0.02, 0.01), DVec2::new(0.01, -0.03));
+        let increment = neo_hookean_energy_increment_axisymmetric((c, c33), (c1, 0.7), LAMBDA, MU);
+        let difference = neo_hookean_energy_axisymmetric(c1, 0.7, LAMBDA, MU)
+            - neo_hookean_energy_axisymmetric(c, c33, LAMBDA, MU);
+        assert!(
+            (increment - difference).abs() <= 1e-13,
+            "{increment} vs {difference}"
         );
     }
 }

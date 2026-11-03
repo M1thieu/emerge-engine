@@ -182,6 +182,17 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
         out.push(frame_json(&sim, frame_s * k as f64, allowed));
         let (line, fallbacks) = breakdown_json(&f);
         breakdown.push(line);
+        // FAST_MODE_PLAN.md sec. 50.4: the controller's tries by class and
+        // outcome, per frame (`EMERGE_PROBE_TRIES`).
+        if tries_knob() {
+            let t = crate::spacetime::total_lagrangian::hooks::take_tries();
+            if t.iter().any(|&c| c > 0) {
+                println!(
+                    "TRIES frame {k}: kept {}/{}, rejected on the error {}/{}, unconverged {}/{} (smooth/switching)",
+                    t[0], t[1], t[2], t[3], t[4], t[5]
+                );
+            }
+        }
         if fallbacks > 0 {
             println!("frame {k}: single-solve fallbacks {fallbacks}");
         }
@@ -250,6 +261,21 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
         sorted[sorted.len() / 2],
         sorted[sorted.len() - 1]
     );
+}
+
+/// Whether `EMERGE_PROBE_TRIES` asks for the tries' split; says so once.
+fn tries_knob() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("EMERGE_PROBE_TRIES").is_some();
+        if on {
+            crate::spacetime::total_lagrangian::hooks::take_tries();
+            println!(
+                "knob active: the controller's tries by class and outcome per frame (sec. 50.4)"
+            );
+        }
+        on
+    })
 }
 
 /// One frame's cost breakdown: the frame report's timing parts (s), its
