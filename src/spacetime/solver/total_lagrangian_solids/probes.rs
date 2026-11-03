@@ -589,7 +589,7 @@ fn probe_norton_block_flow_and_returns() {
             let clock = std::time::Instant::now();
             let mut sink = 0.0;
             for k in 0..calls {
-                sink += norton_return(3.4e5 * (1.0 + 1e-9 * k as f64), shear, &law, 5e-4).0;
+                sink += norton_return(3.4e5 * (1.0 + 1e-9 * k as f64), shear, (&law, 0.0), 5e-4).0;
             }
             let per_return = clock.elapsed().as_secs_f64() / calls as f64;
             let j2 = HenckyJ2 {

@@ -186,6 +186,7 @@ mod tests {
                 m: 0.266,
                 rate_0: 1.0,
                 valid_rates: (4e-4, 80.0),
+                hardening: None,
             }),
             ..j2
         };

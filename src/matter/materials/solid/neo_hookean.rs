@@ -94,6 +94,27 @@ pub(crate) fn neo_hookean_energy_increment(c0: DMat2, c1: DMat2, lambda: f64, mu
     0.5 * mu * (dc.x_axis.x + dc.y_axis.y) - mu * dl + 0.5 * lambda * dl * (2.0 * l0 + dl)
 }
 
+/// The second Piola-Kirchhoff stress with an out-of-plane stretch, the
+/// axisymmetric hoop entry `C_33` (FAST_MODE_PLAN.md sec. 49d): the same
+/// `S = mu (I - C^-1) + lambda ln J C^-1` (Azevedo eq. B.2) on a
+/// block-diagonal `C`, the in-plane block and `C_33`, with `ln J = 1/2
+/// ln(det C_2 C_33)`. Returns the in-plane block and `S_33`; `C_33 = 1` is
+/// [`neo_hookean_second_pk`]. Test-only until the axisymmetric path exists.
+#[cfg(all(test, feature = "experimental"))]
+pub(crate) fn neo_hookean_second_pk_axisymmetric(
+    c: DMat2,
+    c33: f64,
+    lambda: f64,
+    mu: f64,
+) -> (DMat2, f64) {
+    let inverse = c.inverse();
+    let l = 0.5 * (c.determinant() * c33).ln();
+    (
+        (DMat2::IDENTITY - inverse) * mu + inverse * (lambda * l),
+        mu * (1.0 - 1.0 / c33) + lambda * l / c33,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,6 +333,36 @@ mod tests {
             "  rms error {:.4} MPa over {} points",
             (rms / data.len() as f64).sqrt(),
             data.len()
+        );
+    }
+
+    /// The hoop entry: `C_33 = 1` is the plane-strain stress, and `S_33 = 2
+    /// dW/dC_33` of the three-dimensional energy `mu/2 (tr C_2 + C_33 - 3) -
+    /// mu ln J + lambda/2 (ln J)^2` by central differences, to 1e-8 relative.
+    #[cfg(feature = "experimental")]
+    #[test]
+    fn axisymmetric_stress_reduces_to_plane_strain_and_derives_from_the_energy() {
+        let c = strained();
+        let (plane, s33) = neo_hookean_second_pk_axisymmetric(c, 1.0, LAMBDA, MU);
+        let reference = neo_hookean_second_pk(c, LAMBDA, MU);
+        assert!(
+            (plane - reference)
+                .abs()
+                .to_cols_array()
+                .iter()
+                .all(|e| *e < 1e-14)
+        );
+        assert!((s33 - LAMBDA * ln_j(c)).abs() < 1e-14);
+        let energy = |c33: f64| {
+            let l = 0.5 * (c.determinant() * c33).ln();
+            0.5 * MU * (c.x_axis.x + c.y_axis.y + c33 - 3.0) - MU * l + 0.5 * LAMBDA * l * l
+        };
+        let (c33, h) = (0.64, 1e-5);
+        let numeric = (energy(c33 + h) - energy(c33 - h)) / h;
+        let (_, s33) = neo_hookean_second_pk_axisymmetric(c, c33, LAMBDA, MU);
+        assert!(
+            (numeric - s33).abs() <= 1e-8 * s33.abs().max(MU),
+            "{numeric} vs {s33}"
         );
     }
 }

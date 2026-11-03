@@ -73,6 +73,32 @@ pub struct Norton {
     pub m: f64,
     pub rate_0: f64,
     pub valid_rates: (f64, f64),
+    /// A power-law strain hardening of `K`; `None`: `K` constant.
+    pub hardening: Option<StrainHardening>,
+}
+
+/// `K` hardening with the accumulated equivalent plastic strain `alpha`,
+/// `K(alpha) = k (eps_0 + alpha)^exponent`: the flow law `sigma_e = k eps^m
+/// epsdot^n` with `eps = eps_0 + eps_pl` (Hernandez, Buchely, Casas-
+/// Rodriguez and Maranon 2023, J. Def. Model. Simul. 20(3) 371-381, eqs. 9
+/// and 10, read in full), with Norton's `m` its `n`, `rate_0` 1/s and
+/// `exponent` its `m`. Adaptations, declared: the equivalent plastic rate
+/// stands for eq. 9's total rate (they coincide on the curve's plastic
+/// line); `eps_0` is a constant, the elastic and plastic lines' meeting
+/// strain at the reference rate; all plastic work is dissipated (no stored
+/// hardening energy, an open gap for clay).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StrainHardening {
+    pub eps_0: f64,
+    pub exponent: f64,
+}
+
+impl Norton {
+    /// `K` at the accumulated equivalent plastic strain `alpha`.
+    fn k_at(&self, alpha: f64) -> f64 {
+        self.hardening
+            .map_or(self.k, |h| self.k * (h.eps_0 + alpha).powf(h.exponent))
+    }
 }
 
 /// The probes' record of Norton's returns (`watch_returns`): per iteration
@@ -110,10 +136,16 @@ pub(crate) fn take_returns() -> Returns {
     RETURNS.lock().expect("returns lock").take()
 }
 
-/// Norton's return (`norton_root`), recorded for the probes when they
-/// watch (`watch_returns`).
-pub(crate) fn norton_return(sigma_tr: f64, shear: f64, law: &Norton, dt: f64) -> (f64, u32) {
-    let (d, iterations) = norton_root(sigma_tr, shear, law, dt);
+/// Norton's return (`norton_root`) from the accumulated equivalent plastic
+/// strain `alpha`, recorded for the probes when they watch
+/// (`watch_returns`).
+pub(crate) fn norton_return(
+    sigma_tr: f64,
+    shear: f64,
+    (law, alpha): (&Norton, f64),
+    dt: f64,
+) -> (f64, u32) {
+    let (d, iterations) = norton_root(sigma_tr, shear, (law, alpha), dt);
     #[cfg(all(test, feature = "experimental"))]
     if let Some((counts, slowest)) = RETURNS.lock().expect("returns lock").as_mut() {
         counts[(iterations as usize).min(201)] += 1;
@@ -125,7 +157,12 @@ pub(crate) fn norton_return(sigma_tr: f64, shear: f64, law: &Norton, dt: f64) ->
 }
 
 /// The root of Norton's return, `r(d) = sigma_tr - 3G d - K (d / (rate_0
-/// dt))^m = 0`, and the iterations it took.
+/// dt))^m = 0`, and the iterations it took. With a strain hardening, `K =
+/// K(alpha_n + d)` grows with `d`; the bracket below still holds with `K`
+/// taken at `alpha_n` for `high` and at `alpha_n + high` for `low` (derived
+/// on the page: `r(d_slow) <= -3G d_slow` and `r(low) >= 3G (high - low)`),
+/// but `r` need not be convex, so the bisection fallback is what keeps the
+/// method bracketed.
 ///
 /// Derived on the page. `r` is strictly decreasing, and convex for `m < 1`
 /// (`r'' = -K m (m - 1) (d / s)^(m - 2) / s^2 > 0`, `s = rate_0 dt`). Its
@@ -143,13 +180,24 @@ pub(crate) fn norton_return(sigma_tr: f64, shear: f64, law: &Norton, dt: f64) ->
 /// method. It stops when the bracket is within `4 eps` of its top. In slow
 /// flow (`3G d << sigma_tr`, a body at round-off stress included) the
 /// bracket is already that narrow, and the return takes no iteration.
-fn norton_root(sigma_tr: f64, shear: f64, law: &Norton, dt: f64) -> (f64, u32) {
+fn norton_root(sigma_tr: f64, shear: f64, (law, alpha): (&Norton, f64), dt: f64) -> (f64, u32) {
     let scale = law.rate_0 * dt;
-    let r = |d: f64| sigma_tr - 3.0 * shear * d - law.k * (d / scale).powf(law.m);
-    let slope = |d: f64| -3.0 * shear - law.k * law.m * (d / scale).powf(law.m - 1.0) / scale;
-    let slow = scale * (sigma_tr / law.k).powf(1.0 / law.m);
+    let r = |d: f64| sigma_tr - 3.0 * shear * d - law.k_at(alpha + d) * (d / scale).powf(law.m);
+    let slope = |d: f64| {
+        let hardening = law.hardening.map_or(0.0, |h| {
+            law.k
+                * h.exponent
+                * (h.eps_0 + alpha + d).powf(h.exponent - 1.0)
+                * (d / scale).powf(law.m)
+        });
+        -3.0 * shear
+            - law.k_at(alpha + d) * law.m * (d / scale).powf(law.m - 1.0) / scale
+            - hardening
+    };
+    let slow = scale * (sigma_tr / law.k_at(alpha)).powf(1.0 / law.m);
     let mut high = (sigma_tr / (3.0 * shear)).min(slow);
-    let mut low = scale * ((sigma_tr - 3.0 * shear * high).max(0.0) / law.k).powf(1.0 / law.m);
+    let mut low = scale
+        * ((sigma_tr - 3.0 * shear * high).max(0.0) / law.k_at(alpha + high)).powf(1.0 / law.m);
     let mut d = low;
     let mut iterations = 0u32;
     while high - low > 4.0 * f64::EPSILON * high && iterations < 200 {
@@ -223,10 +271,17 @@ fn interpolate(m: DMat2, (l1, g1): (f64, f64), slope: f64) -> DMat2 {
 impl HenckyJ2 {
     /// The principal elastic log strains `(e1, e2, e3)` of the state at `C`.
     fn logs(&self, c: DMat2, state: &PlasticMetric) -> ([f64; 3], f64, f64) {
+        self.logs_with_stretch(c, 1.0, state)
+    }
+
+    /// The same with an out-of-plane `C_33` (an axisymmetric hoop entry,
+    /// FAST_MODE_PLAN.md sec. 49e; plane strain is `C_33 = 1`): `e3 = 1/2
+    /// ln(C_33 Gp_33)`, the third eigenvalue of the block-diagonal `C Gp`.
+    fn logs_with_stretch(&self, c: DMat2, c33: f64, state: &PlasticMetric) -> ([f64; 3], f64, f64) {
         let (half, r) = mean_and_radius(c * state.gp);
         let (l1, l2) = (half + r, half - r);
         (
-            [0.5 * l1.ln(), 0.5 * l2.ln(), 0.5 * state.gp33.ln()],
+            [0.5 * l1.ln(), 0.5 * l2.ln(), 0.5 * (c33 * state.gp33).ln()],
             l1,
             l2,
         )
@@ -243,8 +298,20 @@ impl HenckyJ2 {
     /// The second Piola-Kirchhoff stress `S = F^-1 tau F^-T` at `C` in the
     /// state, and `tau_33`: `S = Gp g(C Gp)`, `g(l_A) = tau_A / l_A`.
     pub(crate) fn second_pk_at(&self, c: DMat2, state: &PlasticMetric) -> (DMat2, f64) {
+        self.second_pk_with_stretch(c, 1.0, state)
+    }
+
+    /// The same with an out-of-plane `C_33` (`logs_with_stretch`): the
+    /// in-plane `S` and `S_33 = tau_33 / C_33` (`S = F^-1 tau F^-T` on the
+    /// block-diagonal `F`), which is `tau_33` in plane strain.
+    pub(crate) fn second_pk_with_stretch(
+        &self,
+        c: DMat2,
+        c33: f64,
+        state: &PlasticMetric,
+    ) -> (DMat2, f64) {
         let m = c * state.gp;
-        let (e, l1, l2) = self.logs(c, state);
+        let (e, l1, l2) = self.logs_with_stretch(c, c33, state);
         let tr = e[0] + e[1] + e[2];
         let tau = |a: usize| 2.0 * self.shear * (e[a] - tr / 3.0) + self.bulk * tr;
         let t1 = tau(0);
@@ -255,7 +322,7 @@ impl HenckyJ2 {
         let log_ratio = if d == 0.0 { 1.0 } else { d.ln_1p() / d };
         let slope = (-t1 + l1 * self.shear * log_ratio / l2) / (l1 * l2);
         let g = interpolate(m, (l1, t1 / l1), slope);
-        (state.gp * g, tau(2))
+        (state.gp * g, tau(2) / c33)
     }
 }
 
@@ -295,6 +362,19 @@ impl HenckyJ2 {
     /// exactly: the trial's from the increments of `C Gp`'s trace and
     /// determinant, the return's in principal logs.
     pub(crate) fn step(&self, c0: DMat2, c1: DMat2, state: &PlasticMetric, dt: f64) -> Stepped {
+        self.step_with_stretch((c0, 1.0), (c1, 1.0), state, dt)
+    }
+
+    /// The same with out-of-plane entries `C_33` at both ends
+    /// (`logs_with_stretch`): the trial's third log moves by `1/2 ln(C1_33
+    /// / C0_33)`, exactly zero in plane strain.
+    pub(crate) fn step_with_stretch(
+        &self,
+        (c0, c33_0): (DMat2, f64),
+        (c1, c33_1): (DMat2, f64),
+        state: &PlasticMetric,
+        dt: f64,
+    ) -> Stepped {
         let gp = state.gp;
         let dc = c1 - c0;
         // Trial invariants of M = C Gp and their increments, from the
@@ -319,13 +399,19 @@ impl HenckyJ2 {
         // Log differences, ln(l1 / l0) = ln1p(dl / l0), per branch.
         let dln = [(dl1 / l0).ln_1p(), (dl2 / k0).ln_1p()];
         let ln0 = [l0.ln(), k0.ln()];
-        let e0 = [0.5 * ln0[0], 0.5 * ln0[1], 0.5 * state.gp33.ln()];
-        let de = [0.5 * dln[0], 0.5 * dln[1], 0.0];
-        let e_tr = [e0[0] + de[0], e0[1] + de[1], e0[2]];
+        let e0 = [0.5 * ln0[0], 0.5 * ln0[1], 0.5 * (c33_0 * state.gp33).ln()];
+        let de = [
+            0.5 * dln[0],
+            0.5 * dln[1],
+            0.5 * ((c33_1 - c33_0) / c33_0).ln_1p(),
+        ];
+        let e_tr = [e0[0] + de[0], e0[1] + de[1], e0[2] + de[2]];
         // The trial's energy change, from the increments: |dev e|^2 =
-        // q + e3^2 - (tr e)^2 / 3 with q = e1^2 + e2^2.
-        let d_q = de[0] * (2.0 * e0[0] + de[0]) + de[1] * (2.0 * e0[1] + de[1]);
-        let (tr0, d_tr) = (e0[0] + e0[1] + e0[2], de[0] + de[1]);
+        // q - (tr e)^2 / 3 with q = e1^2 + e2^2 + e3^2.
+        let d_q = de[0] * (2.0 * e0[0] + de[0])
+            + de[1] * (2.0 * e0[1] + de[1])
+            + de[2] * (2.0 * e0[2] + de[2]);
+        let (tr0, d_tr) = (e0[0] + e0[1] + e0[2], de[0] + de[1] + de[2]);
         let d_tr2 = d_tr * (2.0 * tr0 + d_tr);
         let mut energy_change = self.shear * (d_q - d_tr2 / 3.0) + 0.5 * self.bulk * d_tr2;
         // The return (eq. 71-74), on the trial's principal logs.
@@ -353,7 +439,7 @@ impl HenckyJ2 {
                     // `sigma_eq,tr = sqrt(3/2) |dev tau_tr|`, `dgamma =
                     // sqrt(3/2) d`.
                     let sigma_tr = (1.5f64).sqrt() * phi;
-                    let (d, count) = norton_return(sigma_tr, self.shear, law, dt);
+                    let (d, count) = norton_return(sigma_tr, self.shear, (law, state.alpha), dt);
                     iterations = count;
                     let rate = d / dt;
                     // The mean stress `K tr e` is tensile when `tr e > 0`

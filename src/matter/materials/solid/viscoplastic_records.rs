@@ -52,6 +52,7 @@ impl ViscoplasticRecord {
                 m: 0.266,
                 rate_0: 1.0,
                 valid_rates: (4.0e-4, 80.0),
+                hardening: None,
             },
             e_pa: 30.0e6,
             e_uncertainty_pa: 5.0e6,

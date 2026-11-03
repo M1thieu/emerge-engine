@@ -358,6 +358,7 @@ fn norton(m: f64) -> HenckyJ2 {
             m,
             rate_0: 1.0,
             valid_rates: (4e-4, 80.0),
+            hardening: None,
         }),
     }
 }
@@ -518,4 +519,187 @@ fn norton_tends_to_rate_independent_j2() {
     }
     let shrink = gaps[0] / gaps[1];
     assert!((1e2..=1e4).contains(&shrink), "shrink {shrink}");
+}
+
+/// The stored energy with an out-of-plane `C_33` (`logs_with_stretch`).
+fn energy_with_stretch(law: &HenckyJ2, c: DMat2, c33: f64, state: &PlasticMetric) -> f64 {
+    let (e, _, _) = law.logs_with_stretch(c, c33, state);
+    let tr = e[0] + e[1] + e[2];
+    let dev2 = e.iter().map(|x| (x - tr / 3.0).powi(2)).sum::<f64>();
+    law.shear * dev2 + 0.5 * law.bulk * tr * tr + 0.5 * law.hardening * state.alpha.powi(2)
+}
+
+/// The out-of-plane stretch (FAST_MODE_PLAN.md sec. 49e): the step's energy
+/// change is the energy difference with `C_33` moving, and `S_33 = 2
+/// dW/dC_33` (central differences) in a plastically deformed state.
+#[test]
+fn out_of_plane_stretch_keeps_the_energy_and_its_gradient() {
+    let law = clay_like();
+    let start = PlasticMetric::unstrained();
+    let (c0, c1) = (some_c(0.0, 0.0, 0.0), some_c(4e-2, -3e-2, 1e-2));
+    let (c33_0, c33_1) = (1.0, 1.05);
+    let stepped = law.step_with_stretch((c0, c33_0), (c1, c33_1), &start, 1e-3);
+    let after = energy_with_stretch(&law, c1, c33_1, &stepped.state);
+    let before = energy_with_stretch(&law, c0, c33_0, &start);
+    assert!(
+        (stepped.energy_change - (after - before)).abs() <= 1e-12 * after.abs().max(before.abs()),
+        "{} against {}",
+        stepped.energy_change,
+        after - before
+    );
+    let (c, c33, h) = (some_c(3e-2, -1e-2, 5e-3), 1.02, 1e-7);
+    let (s, s33) = law.second_pk_with_stretch(c, c33, &stepped.state);
+    let numeric = (energy_with_stretch(&law, c, c33 + h, &stepped.state)
+        - energy_with_stretch(&law, c, c33 - h, &stepped.state))
+        / h;
+    let size = s.x_axis.abs().max_element().max(s33.abs());
+    assert!((numeric - s33).abs() <= 1e-6 * size, "{numeric} vs {s33}");
+}
+
+/// FAST_MODE_PLAN.md sec. 49e.1, F-1: RP-1 in homogeneous uniaxial
+/// compression (`sigma_rr = sigma_thetatheta = 0`, the out-of-plane entry
+/// the hoop) at constant true strain rate, against its measured law
+/// `sigma = k eps^m epsdot^n` (Hernandez et al. 2023, Table 3: E 1.70 MPa,
+/// k 0.173 MPa, m 0.119, n 0.037; QS rates 6.56e-4 to 3.28e-1 /s). Poisson's
+/// ratio is not given by the source (an open gap: Crandall, Kurzweil and
+/// Nigam, Exp. Mech. 11 (1971) 402-413, not held); the run takes Crandall's
+/// 1970 Plasticine value 0.434 and 0.49 to show the uniaxial curve does not
+/// depend on it. Criteria written before the run: on the plastic branch
+/// (true strain 0.15 to 0.40) within the `k` uncertainty (6.4 %) of the
+/// law; the elastic slope within 1 % of E.
+#[test]
+fn f1_rp1_uniaxial_compression_follows_its_measured_power_law() {
+    let (young, k, m, n): (f64, f64, f64, f64) = (1.70e6, 0.173e6, 0.119, 0.037);
+    let eps_0 = (k / young).powf(1.0 / (1.0 - m));
+    let steps = 4000;
+    let strain_end = 0.4;
+    for nu in [0.434, 0.49] {
+        let law = HenckyJ2 {
+            shear: young / (2.0 * (1.0 + nu)),
+            bulk: young / (3.0 * (1.0 - 2.0 * nu)),
+            yield_stress: 0.0,
+            hardening: 0.0,
+            viscosity: 0.0,
+            norton: Some(Norton {
+                k,
+                m: n,
+                rate_0: 1.0,
+                valid_rates: (6.56e-4, 3.28e-1),
+                hardening: Some(StrainHardening { eps_0, exponent: m }),
+            }),
+        };
+        for rate in [6.56e-4, 6.56e-3, 6.56e-2, 3.28e-1] {
+            let dt = strain_end / rate / f64::from(steps);
+            let c_of =
+                |lr: f64, lz: f64| (DMat2::from_diagonal(DVec2::new(lr * lr, lz * lz)), lr * lr);
+            let mut state = PlasticMetric::unstrained();
+            let mut lateral = 1.0;
+            let (mut slope, mut worst) = (0.0, 0.0f64);
+            let mut samples = Vec::new();
+            for step in 1..=steps {
+                let strain = strain_end * f64::from(step) / f64::from(steps);
+                let lz0 = (-strain_end * f64::from(step - 1) / f64::from(steps)).exp();
+                let lz1 = (-strain).exp();
+                let start = c_of(lateral, lz0);
+                let advance = |l: f64| {
+                    let end = c_of(l, lz1);
+                    let next = law.step_with_stretch(start, end, &state, dt).state;
+                    (law.second_pk_with_stretch(end.0, end.1, &next), next)
+                };
+                let (mut low, mut high) = (lateral, lateral * 1.01);
+                assert!(advance(low).0.0.x_axis.x < 0.0 && advance(high).0.0.x_axis.x > 0.0);
+                for _ in 0..80 {
+                    let mid = 0.5 * (low + high);
+                    if advance(mid).0.0.x_axis.x < 0.0 {
+                        low = mid;
+                    } else {
+                        high = mid;
+                    }
+                }
+                lateral = 0.5 * (low + high);
+                let ((s, _), next) = advance(lateral);
+                state = next;
+                let sigma = -lz1 * lz1 * s.y_axis.y / (lateral * lateral * lz1);
+                if step == 1 {
+                    slope = sigma / strain / young;
+                }
+                let law_stress = k * strain.powf(m) * rate.powf(n);
+                if strain >= 0.15 - 1e-12 {
+                    worst = worst.max((sigma / law_stress - 1.0).abs());
+                }
+                if [0.15, 0.25, 0.40].iter().any(|t| (strain - t).abs() < 1e-9) {
+                    samples.push(format!("{strain:.2}: {:.4}", sigma / law_stress));
+                }
+            }
+            println!(
+                "F-1 nu {nu} rate {rate:e}/s: elastic slope / E {slope:.6}; sigma / law at {}; worst on 0.15-0.40 {worst:.4}; alpha {:.4}",
+                samples.join(", "),
+                state.alpha
+            );
+            assert!((slope - 1.0).abs() <= 0.01, "slope {slope}");
+            assert!(worst <= 0.064, "nu {nu} rate {rate}: {worst}");
+        }
+    }
+}
+
+/// FAST_MODE_PLAN.md sec. 49e.2, F-2 (a count, no pass or fail): the same
+/// RP-1 law in oscillatory simple shear at NIST's LAOS point (Tao et al.
+/// 2019, sec. 3.3: 0.25 Hz, strain amplitude 4400 %, `sigma_max` 48.4 kPa
+/// in shear at 25 C), three cycles; the largest Cauchy shear stress per
+/// cycle and its ratio to 48.4 kPa. The pre-registered prediction was a
+/// ratio within a factor 2; the estimate on the page gave about 3.5.
+#[test]
+fn f2_rp1_oscillatory_shear_against_the_nist_dynamic_yield() {
+    let (young, k, m, n): (f64, f64, f64, f64) = (1.70e6, 0.173e6, 0.119, 0.037);
+    let eps_0 = (k / young).powf(1.0 / (1.0 - m));
+    let (frequency, amplitude, nist) = (0.25, 44.0, 48.4e3);
+    let per_cycle = 4000;
+    let dt = 1.0 / frequency / f64::from(per_cycle);
+    for nu in [0.434, 0.49] {
+        let law = HenckyJ2 {
+            shear: young / (2.0 * (1.0 + nu)),
+            bulk: young / (3.0 * (1.0 - 2.0 * nu)),
+            yield_stress: 0.0,
+            hardening: 0.0,
+            viscosity: 0.0,
+            norton: Some(Norton {
+                k,
+                m: n,
+                rate_0: 1.0,
+                valid_rates: (6.56e-4, 3.28e-1),
+                hardening: Some(StrainHardening { eps_0, exponent: m }),
+            }),
+        };
+        let c_at = |t: f64| {
+            let gamma = amplitude * (std::f64::consts::TAU * frequency * t).sin();
+            let f = DMat2::from_cols(DVec2::X, DVec2::new(gamma, 1.0));
+            (f, f.transpose() * f)
+        };
+        let mut state = PlasticMetric::unstrained();
+        let mut peaks = Vec::new();
+        for cycle in 0..3 {
+            let mut peak = 0.0f64;
+            for step in 1..=per_cycle {
+                let t1 = f64::from(cycle * per_cycle + step) * dt;
+                let (_, c0) = c_at(t1 - dt);
+                let (f1, c1) = c_at(t1);
+                state = law.step(c0, c1, &state, dt).state;
+                let (s, _) = law.second_pk_at(c1, &state);
+                let sigma = f1 * s * f1.transpose() * (1.0 / f1.determinant());
+                peak = peak.max(sigma.y_axis.x.abs());
+            }
+            peaks.push(peak);
+        }
+        println!(
+            "F-2 nu {nu}: largest |sigma_xy| per cycle {:.4e} {:.4e} {:.4e} Pa; ratio to NIST 48.4 kPa {:.3} {:.3} {:.3}; alpha {:.2}",
+            peaks[0],
+            peaks[1],
+            peaks[2],
+            peaks[0] / nist,
+            peaks[1] / nist,
+            peaks[2] / nist,
+            state.alpha
+        );
+        assert!(peaks.iter().all(|p| p.is_finite() && *p > 0.0));
+    }
 }

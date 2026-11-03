@@ -48,7 +48,7 @@ pub use registry::{MAX_MATERIAL_SLOTS, MaterialRegistry};
 pub use rod_material::RodMaterial;
 pub use solid::corotated::CorotatedMaterial;
 pub use solid::elastic::NeoHookeanMaterial;
-pub use solid::j2_hencky::Norton;
+pub use solid::j2_hencky::{Norton, StrainHardening};
 pub use solid::nacc::{NaccMaterial, NaccMaterialParams};
 pub use solid::no_compression::NoCompressionMaterial;
 pub use solid::rankine::RankineMaterial;

@@ -55,6 +55,8 @@ use crate::matter::materials::viscous_stress::{newtonian_dissipation, newtonian_
 use glam::{DMat2, DVec2};
 use rayon::prelude::*;
 
+#[cfg(all(test, feature = "experimental"))]
+mod axisymmetric_probes;
 mod band;
 mod basis;
 mod contact;
