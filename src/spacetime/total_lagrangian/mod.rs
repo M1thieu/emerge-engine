@@ -55,6 +55,9 @@ use crate::matter::materials::viscous_stress::{newtonian_dissipation, newtonian_
 use glam::{DMat2, DVec2};
 use rayon::prelude::*;
 
+/// The axisymmetric path's axis on the grid (FAST_MODE_PLAN.md sec. 51.4).
+#[cfg(all(test, feature = "experimental"))]
+pub(crate) mod axisymmetric;
 #[cfg(all(test, feature = "experimental"))]
 mod axisymmetric_probes;
 mod band;

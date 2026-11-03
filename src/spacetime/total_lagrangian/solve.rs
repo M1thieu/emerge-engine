@@ -280,6 +280,14 @@ pub(crate) fn solve(
             (DMat2::IDENTITY + grad) * f_now[p]
         }
     };
+    // FAST_MODE_PLAN.md sec. 51.4: the axisymmetric path's hoop, when set.
+    #[cfg(all(test, feature = "experimental"))]
+    let hoop = super::axisymmetric::hoop(grid, n);
+    #[cfg(all(test, feature = "experimental"))]
+    assert!(
+        hoop.is_none() || (lagrangian && !backward && theta.is_none()),
+        "the axisymmetric path's first slice is the total Lagrangian midpoint only"
+    );
     // The internal force (eq. 30a) with the algorithmic stress. On the
     // reference basis `F_n^T grad_n N` is `grad_X N` itself.
     // The internal force's evaluations (`Timing::internal_evaluations`).
@@ -314,6 +322,18 @@ pub(crate) fn solve(
         parallel_scatter(grid.len, n, |p, acc| {
             let f1 = deformation_at(u, p);
             let f0 = f_now[p];
+            #[cfg(all(test, feature = "experimental"))]
+            if let Some(hoop) = &hoop {
+                super::axisymmetric::hoop_force(
+                    grid,
+                    hoop,
+                    (p, u, x[p]),
+                    (v0[p], &solids[p]),
+                    (f0, f1, dt),
+                    acc,
+                );
+                return;
+            }
             let (c0, c1) = (f0.transpose() * f0, f1.transpose() * f1);
             // The law's step stress and the Kelvin-Voigt dashpot's in
             // parallel, on the same `F_n+1/2` (`Elastic::step_stress`).
@@ -921,7 +941,8 @@ pub(crate) fn solve(
         && (hooks::cells().is_some()
             || hooks::viscosity() > 0.0
             || hooks::trapezoid_p()
-            || hooks::cofactor()));
+            || hooks::cofactor()
+            || hoop.is_some()));
     #[cfg(not(all(test, feature = "experimental")))]
     let exact = true;
     let (linearise_clock, push_clock) = (Cell::new(0.0), Cell::new(0.0));

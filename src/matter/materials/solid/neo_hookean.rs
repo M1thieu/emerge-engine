@@ -115,6 +115,21 @@ pub(crate) fn neo_hookean_second_pk_axisymmetric(
     )
 }
 
+/// The stored energy with the out-of-plane `C_33` (the axisymmetric hoop
+/// entry): `mu/2 (tr C_2 + C_33 - 3) - mu ln J + lambda/2 (ln J)^2`, `ln J =
+/// 1/2 ln(det C_2 C_33)`, the three-dimensional Simo-Pister energy on a
+/// block-diagonal `C`; infinite where `det C_2 C_33 <= 0`. Test-only until
+/// the axisymmetric path exists.
+#[cfg(all(test, feature = "experimental"))]
+pub(crate) fn neo_hookean_energy_axisymmetric(c: DMat2, c33: f64, lambda: f64, mu: f64) -> f64 {
+    let det = c.determinant() * c33;
+    if det <= 0.0 {
+        return f64::INFINITY;
+    }
+    let l = 0.5 * det.ln();
+    0.5 * mu * (c.x_axis.x + c.y_axis.y + c33 - 3.0) - mu * l + 0.5 * lambda * l * l
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

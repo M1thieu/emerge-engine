@@ -276,6 +276,13 @@ impl Grid {
                             })
                         }),
                     };
+                    // FAST_MODE_PLAN.md sec. 51.4: the axisymmetric
+                    // path's mirrored columns are no unknowns of their own.
+                    #[cfg(all(test, feature = "experimental"))]
+                    if super::axisymmetric::excluded(a, i) {
+                        stable[k] = false;
+                        continue;
+                    }
                     let wall = held(a, i, j);
                     if stable[k] || (wall.is_some() && reached[k] > 0.0) {
                         grid.slot[k] = grid.len;
@@ -363,6 +370,8 @@ impl Grid {
                 }
             }
         }
+        #[cfg(all(test, feature = "experimental"))]
+        super::axisymmetric::mirror(&mut grid);
         grid.active = grid.wall.iter().map(|w| w.is_none()).collect();
         grid.relump(mass);
         #[cfg(all(test, feature = "experimental"))]
