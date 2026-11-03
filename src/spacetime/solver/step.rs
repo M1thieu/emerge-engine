@@ -1554,63 +1554,91 @@ mod cosserat_call_site_tests {
     use crate::prelude::*;
     use crate::thermodynamics::{CosseratConfig, CosseratField};
 
+    const SPIN: f32 = 3.0;
+
     /// Through the real call path (`Simulation::step` -> `do_substep` -> the
     /// Cosserat pass): the whole body spins rigidly at `SPIN` rad/s, grid
-    /// units in, SI config. One substep of the exact oscillator gives
-    /// `omega_c = spin * (1 - cos(Omega * dt))`, with `Omega` computed from the
-    /// SI density. The same physical scene at two cell sizes must agree.
+    /// units in, SI config. One substep with `Omega * dt = 0.5` of the exact
+    /// damped oscillator (`phi'' + g phi' + Omega^2 phi = 0` from `phi = 0`,
+    /// `w = -spin`) gives `omega_c = spin + w(dt)`, with `Omega` computed from
+    /// the SI density and `g = damping_ratio * Omega`. Returns the measured
+    /// `(omega_c, macro spin, Omega * dt)` at the body's centre.
+    fn one_substep(cell_m: f32, damping_ratio: f32) -> (f32, f32, f32) {
+        let mut cfg = CosseratConfig {
+            coupling_modulus_pa: 2.0e6,
+            grain_diameter_m: 0.01,
+            micro_inertia_coefficient: 0.1,
+            rotational_damping_rate_per_s: 0.0,
+        };
+        // The spawn gives each particle its own density; one uniform SI
+        // density keeps the expected frequency well defined.
+        const RHO_SI: f32 = 1000.0;
+        let omega = cfg.coupling_frequency(RHO_SI);
+        cfg.rotational_damping_rate_per_s = damping_ratio * omega;
+        let dt = 0.5 / omega;
+        let config = SimConfig {
+            dt,
+            min_dt: dt,
+            adaptive_timestep: false,
+            gravity: Vec2::ZERO,
+            ..SimConfig::earth(32, cell_m, 1.0e-3)
+        };
+        let mut solver = Simulation::new(config, SpawnRegion::for_sim(&config))
+            .with_cosserat_field(CosseratField::new(cfg, 32));
+        let n = solver.particles().len();
+        let unit = config.grid_mass_unit_kg_per_m();
+        for i in 0..n {
+            let v = solver.particles().volume[i];
+            solver.particles_mut().mass[i] = RHO_SI * v * cell_m * cell_m / unit;
+        }
+        let centre = Vec2::splat(16.0);
+        for i in 0..n {
+            let r = solver.particles().x[i] - centre;
+            solver.particles_mut().v[i] = SPIN * Vec2::new(-r.y, r.x);
+        }
+        solver.step();
+        let mid = (0..n)
+            .min_by(|&a, &b| {
+                let da = (solver.particles().x[a] - centre).length_squared();
+                let db = (solver.particles().x[b] - centre).length_squared();
+                da.total_cmp(&db)
+            })
+            .unwrap();
+        let spin = macro_spin_from_velocity_gradient(&solver.particles().get(mid));
+        (solver.cosserat_omega[mid], spin, omega * dt)
+    }
+
     #[test]
     fn step_applies_the_si_oscillator_to_grid_unit_particles() {
-        const SPIN: f32 = 3.0;
         for cell_m in [0.01f32, 0.04] {
-            let cfg = CosseratConfig {
-                coupling_modulus_pa: 2.0e6,
-                grain_diameter_m: 0.01,
-                micro_inertia_coefficient: 0.1,
-                rotational_damping_rate_per_s: 0.0,
-            };
-            // The spawn gives each particle its own density; one uniform SI
-            // density keeps the expected frequency well defined.
-            const RHO_SI: f32 = 1000.0;
-            let probe_config = SimConfig::earth(32, cell_m, 1.0e-3);
-            let rho_si = RHO_SI;
-            // One substep with Omega * dt = 0.5 rad.
-            let dt = 0.5 / cfg.coupling_frequency(rho_si);
-            let config = SimConfig {
-                dt,
-                min_dt: dt,
-                adaptive_timestep: false,
-                gravity: Vec2::ZERO,
-                ..probe_config
-            };
-            let mut solver = Simulation::new(config, SpawnRegion::for_sim(&config))
-                .with_cosserat_field(CosseratField::new(cfg, 32));
-            let n = solver.particles().len();
-            let unit = config.grid_mass_unit_kg_per_m();
-            for i in 0..n {
-                let v = solver.particles().volume[i];
-                solver.particles_mut().mass[i] = RHO_SI * v * cell_m * cell_m / unit;
-            }
-            let centre = Vec2::splat(16.0);
-            for i in 0..n {
-                let r = solver.particles().x[i] - centre;
-                solver.particles_mut().v[i] = SPIN * Vec2::new(-r.y, r.x);
-            }
-            solver.step();
-            let mid = (0..n)
-                .min_by(|&a, &b| {
-                    let da = (solver.particles().x[a] - centre).length_squared();
-                    let db = (solver.particles().x[b] - centre).length_squared();
-                    da.total_cmp(&db)
-                })
-                .unwrap();
-            let spin = macro_spin_from_velocity_gradient(&solver.particles().get(mid));
+            let (got, spin, _) = one_substep(cell_m, 0.0);
             let expected = spin * (1.0 - 0.5f32.cos());
-            let got = solver.cosserat_omega[mid];
             assert!(
                 spin > 0.5 * SPIN && (got - expected).abs() < 0.05 * expected.abs(),
                 "cell={cell_m} spin={spin} omega_c={got} expected={expected}"
             );
         }
+    }
+
+    /// The damping seam through the same call path: with `g = Omega` (so
+    /// `a = Omega / 2`, `Omega_d = Omega sqrt(3) / 2`) one substep gives
+    /// `w = e^(-a t) (w0 cos(Omega_d t) - a w0 sin(Omega_d t) / Omega_d)` for
+    /// `phi0 = 0`, and `omega_c = spin + w`; it must differ from the undamped
+    /// value and match this closed form.
+    #[test]
+    fn step_applies_the_damping_seam_to_the_micro_rotation() {
+        let (undamped, spin, x) = one_substep(0.01, 0.0);
+        let (got, spin_d, _) = one_substep(0.01, 1.0);
+        assert!((spin - spin_d).abs() < 1.0e-3 * spin.abs());
+        // Dimensionless: a * dt = x / 2 and Omega_d * dt = x * sqrt(3) / 2.
+        let a_t = 0.5 * x;
+        let od_t = x * 0.75f32.sqrt();
+        let w = (-a_t).exp() * (-spin) * (od_t.cos() - a_t * od_t.sin() / od_t);
+        let expected = spin + w;
+        assert!(
+            (got - undamped).abs() > 0.05 * undamped.abs()
+                && (got - expected).abs() < 0.05 * expected.abs(),
+            "omega_c={got} undamped={undamped} expected={expected}"
+        );
     }
 }
