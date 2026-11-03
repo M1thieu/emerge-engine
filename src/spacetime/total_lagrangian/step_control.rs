@@ -683,8 +683,18 @@ pub fn controlled_step(
             "reach cut: the critical step of {length:.3e} s did not converge; stepped as today"
         );
     }
+    // FAST_MODE_PLAN.md sec. 61: from a start holding no contact, the
+    // declared policy's predicted time to contact (`onset_cap`), test-only.
+    #[cfg(all(test, feature = "experimental"))]
+    let landing = (super::onset_cap::land_knob() && pushing(&start).is_empty())
+        .then(|| super::onset_cap::time_to_contact(&start.x, &start.v, set.planes, gravity))
+        .flatten()
+        .filter(|&t| t > floor);
     loop {
         let dt = *tau;
+        // The declared policy: a free try lands on the predicted touch.
+        #[cfg(all(test, feature = "experimental"))]
+        let dt = landing.map_or(dt, |t| dt.min(t));
         // The try pair's wall time, for the trace below.
         #[cfg(all(test, feature = "experimental"))]
         let pair_clock = std::time::Instant::now();

@@ -94,3 +94,92 @@ pub(super) fn soderlind_ratio(relative: f64, order: f64) -> Option<f64> {
         1.0 + (rho - 1.0).atan()
     })
 }
+
+/// Whether `EMERGE_PROBE_LAND_ON_CONTACT` asks for the step that lands on the
+/// predicted time to contact (FAST_MODE_PLAN.md sec. 61); says so once.
+pub(super) fn land_knob() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("EMERGE_PROBE_LAND_ON_CONTACT").is_some();
+        if on {
+            println!("knob active: a free step lands on the predicted time to contact (declared policy, sec. 61)");
+        }
+        on
+    })
+}
+
+/// The smallest positive time at which a point reaches a wall in free
+/// motion: the root of `g + v_n t + a_n t^2 / 2 = 0` over the points and
+/// planes, `g` the gap along the plane's inward normal, `v_n` the normal
+/// velocity, `a_n` gravity's normal part (FAST_MODE_PLAN.md sec. 61, a
+/// declared step-control policy: it chooses one step's length, it does not
+/// subdivide a step). `None` when no point approaches a wall.
+pub(super) fn time_to_contact(
+    x: &[DVec2],
+    v: &[DVec2],
+    planes: &[Plane],
+    gravity: DVec2,
+) -> Option<f64> {
+    let mut best: Option<f64> = None;
+    for plane in planes {
+        let a = plane.inward * gravity[plane.axis];
+        for (q, w) in x.iter().zip(v) {
+            let g = plane.inward * (q[plane.axis] - plane.at);
+            if g <= 0.0 {
+                continue;
+            }
+            let u = plane.inward * w[plane.axis];
+            let root = if a == 0.0 {
+                (u < 0.0).then(|| -g / u)
+            } else {
+                let disc = u * u - 2.0 * a * g;
+                (disc >= 0.0)
+                    .then(|| {
+                        let s = disc.sqrt();
+                        [(-u - s) / a, (-u + s) / a]
+                            .into_iter()
+                            .filter(|t| *t > 0.0)
+                            .fold(f64::INFINITY, f64::min)
+                    })
+                    .filter(|t| t.is_finite())
+            };
+            if let Some(t) = root {
+                best = Some(best.map_or(t, |b| b.min(t)));
+            }
+        }
+    }
+    best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A point 0.1 m above a floor falling at 1 m/s under 9.81 m/s^2 reaches
+    /// it at the free motion's root; a point rising away does not count.
+    #[test]
+    fn the_time_to_contact_is_the_free_motion_root() {
+        let floor = Plane {
+            axis: 1,
+            at: 0.0,
+            inward: 1.0,
+        };
+        let g = DVec2::new(0.0, -9.81);
+        let t = time_to_contact(
+            &[DVec2::new(0.0, 0.1)],
+            &[DVec2::new(0.0, -1.0)],
+            &[floor],
+            g,
+        )
+        .expect("a root");
+        let exact = (-1.0 + (1.0f64 + 2.0 * 9.81 * 0.1).sqrt()) / 9.81;
+        assert!((t - exact).abs() < 1e-15, "{t} vs {exact}");
+        let up = time_to_contact(
+            &[DVec2::new(0.0, 0.1)],
+            &[DVec2::new(0.0, 5.0)],
+            &[floor],
+            DVec2::ZERO,
+        );
+        assert!(up.is_none());
+    }
+}
