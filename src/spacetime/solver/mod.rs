@@ -286,6 +286,7 @@ pub(crate) fn initialize_particles(
     // dropped flat on the total Lagrangian path then took the floor's
     // impulse a quarter cell off its centre of mass and left the bounce
     // turning (measured: 1.2e-4 then 1.8e-2 kg m^2/s per m).
+    let mut points = Vec::new();
     let mut i = min.x + 0.5 * spawn.spacing;
     while i < max.x {
         let mut j = min.y + 0.5 * spawn.spacing;
@@ -299,45 +300,141 @@ pub(crate) fn initialize_particles(
             };
 
             if inside {
-                let jitter_mag = spawn.position_jitter * spawn.spacing;
-                let jx = (rng.next_f32() - 0.5) * 2.0 * jitter_mag;
-                let jy = (rng.next_f32() - 0.5) * 2.0 * jitter_mag;
-                let jittered_pos = pos + Vec2::new(jx, jy);
-                let random = Vec2::new(rng.next_f32(), rng.next_f32());
-                let velocity = (random - Vec2::splat(0.5)) * spawn.initial_velocity_scale;
-                particles.push(Particle {
-                    x: jittered_pos,
-                    v: velocity,
-                    velocity_gradient: Mat2::ZERO,
-                    deformation_gradient: spawn.initial_deformation_gradient,
-                    mass,
-                    initial_volume: config.default_initial_volume,
-                    volume: config.default_initial_volume,
-                    density: mass / config.default_initial_volume,
-                    material_id: spawn.material_id,
-                    plastic_volume_ratio: 1.0,
-                    hardening_scale: 1.0,
-                    friction_hardening: 0.0,
-                    log_volume_strain: 0.0,
-                    temperature: 0.0,
-                    user_tag: 0,
-                    activation: 0.0,
-                    activation_dir: Vec2::ZERO,
-                    muscle_group_id: 0,
-                    contact_group: 0,
-                    sleeping: 0,
-                    pinned: 0,
-                    scalar_field: 0.0,
-                    internal_pressure: 0.0,
-                });
+                points.push((pos, mass));
             }
 
             j += spawn.spacing;
         }
         i += spawn.spacing;
     }
+    #[cfg(all(test, feature = "experimental"))]
+    let points = knot_gauss_points(&spawn, (min, max), mass / (spawn.spacing * spawn.spacing))
+        .unwrap_or(points);
+
+    for (pos, mass) in points {
+        let jitter_mag = spawn.position_jitter * spawn.spacing;
+        let jx = (rng.next_f32() - 0.5) * 2.0 * jitter_mag;
+        let jy = (rng.next_f32() - 0.5) * 2.0 * jitter_mag;
+        let jittered_pos = pos + Vec2::new(jx, jy);
+        let random = Vec2::new(rng.next_f32(), rng.next_f32());
+        let velocity = (random - Vec2::splat(0.5)) * spawn.initial_velocity_scale;
+        particles.push(Particle {
+            x: jittered_pos,
+            v: velocity,
+            velocity_gradient: Mat2::ZERO,
+            deformation_gradient: spawn.initial_deformation_gradient,
+            mass,
+            initial_volume: config.default_initial_volume,
+            volume: config.default_initial_volume,
+            density: mass / config.default_initial_volume,
+            material_id: spawn.material_id,
+            plastic_volume_ratio: 1.0,
+            hardening_scale: 1.0,
+            friction_hardening: 0.0,
+            log_volume_strain: 0.0,
+            temperature: 0.0,
+            user_tag: 0,
+            activation: 0.0,
+            activation_dir: Vec2::ZERO,
+            muscle_group_id: 0,
+            contact_group: 0,
+            sleeping: 0,
+            pinned: 0,
+            scalar_field: 0.0,
+            internal_pressure: 0.0,
+        });
+    }
 
     particles
+}
+
+/// FAST_MODE_PLAN.md sec. 51.1, a test-only knob (`EMERGE_PROBE_KNOT_GAUSS`):
+/// a box body's particles at two Gauss points per piece of its interval cut
+/// at the quadratic B-splines' knots (`k + 1/2` in grid units, the total
+/// Lagrangian basis having its nodes at the integers), each carrying the
+/// region's mass per cell area times its weight area. The weak form is then
+/// integrated exactly where the body cuts the basis (sec. 49g: the lattice's
+/// quarter points leave a first-cell error at free surfaces and on an axis
+/// that does not shrink with the cell). `None`: the lattice.
+#[cfg(all(test, feature = "experimental"))]
+fn knot_gauss_points(
+    spawn: &SpawnRegion,
+    (min, max): (Vec2, Vec2),
+    mass_per_area: f32,
+) -> Option<Vec<(Vec2, f32)>> {
+    use crate::solver::config::SpawnShape;
+    if std::env::var_os("EMERGE_PROBE_KNOT_GAUSS").is_none()
+        || !matches!(spawn.shape, SpawnShape::Box)
+    {
+        return None;
+    }
+    static SAID: std::sync::Once = std::sync::Once::new();
+    SAID.call_once(|| println!("knob active: knot-span Gauss points at spawn (sec. 51.1)"));
+    Some(knot_gauss_layout((min, max), mass_per_area))
+}
+
+/// The points and masses of `knot_gauss_points` for the box `[min, max]`.
+#[cfg(all(test, feature = "experimental"))]
+fn knot_gauss_layout((min, max): (Vec2, Vec2), mass_per_area: f32) -> Vec<(Vec2, f32)> {
+    let along = |a: f32, b: f32| -> Vec<(f64, f64)> {
+        let (a, b) = (f64::from(a), f64::from(b));
+        let mut cuts = vec![a];
+        let mut k = (a - 0.5).floor() + 1.0;
+        while k + 0.5 < b {
+            if k + 0.5 > a {
+                cuts.push(k + 0.5);
+            }
+            k += 1.0;
+        }
+        cuts.push(b);
+        cuts.windows(2)
+            .flat_map(|w| {
+                let (mid, half) = (0.5 * (w[0] + w[1]), 0.5 * (w[1] - w[0]));
+                [-1.0, 1.0].map(|s| (mid + s * half / 3f64.sqrt(), half))
+            })
+            .collect()
+    };
+    let (xs, ys) = (along(min.x, max.x), along(min.y, max.y));
+    xs.iter()
+        .flat_map(|&(x, wx)| {
+            ys.iter().map(move |&(y, wy)| {
+                (
+                    Vec2::new(x as f32, y as f32),
+                    mass_per_area * (wx * wy) as f32,
+                )
+            })
+        })
+        .collect()
+}
+
+#[cfg(all(test, feature = "experimental"))]
+mod knot_gauss_tests {
+    use super::*;
+
+    /// K-1 (FAST_MODE_PLAN.md sec. 51.1): the layout's mass and area are the
+    /// box's, for a box cut by the knots and one starting on a knot; every
+    /// point lies inside it.
+    #[test]
+    fn the_knot_gauss_layout_carries_the_box_exactly() {
+        for (min, max) in [
+            (Vec2::new(10.0, 3.0), Vec2::new(18.0, 7.0)),
+            (Vec2::new(10.5, 3.25), Vec2::new(14.5, 5.75)),
+        ] {
+            let points = knot_gauss_layout((min, max), 2.0);
+            let area = (max - min).x * (max - min).y;
+            let mass: f32 = points.iter().map(|p| p.1).sum();
+            assert!(
+                (mass / (2.0 * area) - 1.0).abs() < 1e-6,
+                "{mass} vs {}",
+                2.0 * area
+            );
+            assert!(
+                points
+                    .iter()
+                    .all(|(x, _)| x.cmpgt(min).all() && x.cmplt(max).all())
+            );
+        }
+    }
 }
 
 #[derive(Debug)]
