@@ -294,6 +294,17 @@ pub(crate) fn solve(
     let evaluations = Cell::new(0u64);
     let internal = |u: &[f64]| -> Vec<f64> {
         evaluations.set(evaluations.get() + 1);
+        #[cfg(all(test, feature = "experimental"))]
+        if super::residual_split::on() && lagrangian && !backward && theta.is_none() {
+            let at = super::residual_split::Sample {
+                grid,
+                f_now,
+                v0,
+                solids,
+                dt,
+            };
+            super::residual_split::sample(evaluations.get(), &at, |p| deformation_at(u, p));
+        }
         // With a `Theta` constant per cell: each cell's pressure, the secant
         // of `U` between its mean `J` at the step's ends.
         #[cfg(all(test, feature = "experimental"))]
@@ -319,21 +330,27 @@ pub(crate) fn solve(
                 .collect();
             (cells, pressure)
         });
-        parallel_scatter(grid.len, n, |p, acc| {
-            let f1 = deformation_at(u, p);
-            let f0 = f_now[p];
-            #[cfg(all(test, feature = "experimental"))]
-            if let Some(hoop) = &hoop {
+        #[cfg(all(test, feature = "experimental"))]
+        if let Some(hoop) = &hoop {
+            return parallel_scatter(grid.len, n, |p, acc| {
                 super::axisymmetric::hoop_force(
                     grid,
                     hoop,
                     (p, u, x[p]),
                     (v0[p], &solids[p]),
-                    (f0, f1, dt),
+                    (f_now[p], deformation_at(u, p), dt),
                     acc,
                 );
-                return;
-            }
+            });
+        }
+        // Each point's first Piola stress in a parallel map, its order kept,
+        // then scattered in the same chunks and order as before: the same
+        // expressions on the same inputs, the same sums, so the force is
+        // bitwise the serial one (FAST_MODE_PLAN.md sec. 63.8; one chunk
+        // holds 64 points, so a small body's law ran on one thread).
+        let first_at = |p: usize| -> DMat2 {
+            let f1 = deformation_at(u, p);
+            let f0 = f_now[p];
             let (c0, c1) = (f0.transpose() * f0, f1.transpose() * f1);
             // The law's step stress and the Kelvin-Voigt dashpot's in
             // parallel, on the same `F_n+1/2` (`Elastic::step_stress`).
@@ -399,8 +416,12 @@ pub(crate) fn solve(
             } else {
                 first
             };
+            first
+        };
+        let firsts: Vec<DMat2> = (0..n).into_par_iter().map(first_at).collect();
+        parallel_scatter(grid.len, n, |p, acc| {
             for a in 0..2 {
-                let row = first.row(a);
+                let row = firsts[p].row(a);
                 grid.visit(p, a, |k, _, g| acc[k] += row.dot(g));
             }
         })

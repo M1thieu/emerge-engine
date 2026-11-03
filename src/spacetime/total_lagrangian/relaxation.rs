@@ -255,25 +255,45 @@ impl Relaxation {
         let z = dc * 0.5;
         let norm2 = colon(z, z);
         let mid = 0.5 * (c0 + c1);
-        self.each(moduli)
-            .map(|(b, (l, m))| {
-                let (mu_b, s0, s1) = (
-                    b.branch.modulus,
-                    corotated_second_pk(c0, l, m),
-                    corotated_second_pk(c1, l, m),
-                );
+        // A part's stresses at both ends and at the midpoint, and its
+        // increment, are the same for every branch on that part: formed once
+        // per part, the same expressions on the same inputs, so the sum is
+        // bitwise the per-branch one (FAST_MODE_PLAN.md sec. 63.7).
+        let (lambda, mu) = moduli;
+        let on = |part: usize| {
+            self.branches[..self.count]
+                .iter()
+                .any(|b| b[part].is_some())
+        };
+        let part = |(l, m): (f64, f64)| {
+            (
+                corotated_second_pk(c0, l, m),
+                corotated_second_pk(c1, l, m),
+                corotated_second_pk(mid, l, m),
+                corotated_second_pk_increment(c0, c1, l, m),
+            )
+        };
+        let parts = [(0.0, mu), (lambda, 0.0)];
+        let formed = [on(0).then(|| part(parts[0])), on(1).then(|| part(parts[1]))];
+        // `each`'s order: per mechanism, its shear branch then its volume one.
+        self.branches[..self.count]
+            .iter()
+            .flat_map(|pair| (0..2).filter_map(move |k| pair[k].as_ref().map(|b| (b, k))))
+            .map(|(b, k)| {
+                let (l, m) = parts[k];
+                let mu_b = b.branch.modulus;
+                let (s0, s1, s_mid, ds) = formed[k].expect("formed for each part a branch is on");
                 #[cfg(all(test, feature = "experimental"))]
                 if let Some(update) = branch_update::active() {
                     return branch_update::stress(b, (s0, s1), (c0, c1, dt), (l, m), update);
                 }
                 let half = b.strain + 0.5 * strain_change(b, s0, s1, dt);
-                let q_mid = corotated_second_pk(mid, l, m) - half * mu_b;
+                let q_mid = s_mid - half * mu_b;
                 let s_neq = corotated_second_pk_tangent(mid, q_mid, l, m) * mu_b.recip();
                 if 4.0 * norm2 <= 1e-28 {
                     return s_neq;
                 }
                 // Ups(C_n+1, E_half) - Ups(C_n, E_half) from the increment.
-                let ds = corotated_second_pk_increment(c0, c1, l, m);
                 let change = colon(ds, s0 + s1 - half * (2.0 * mu_b)) / (4.0 * mu_b);
                 s_neq + z * ((change - colon(s_neq, z)) / norm2)
             })
@@ -501,5 +521,102 @@ mod tests {
             );
             assert!(relaxed.heat >= 0.0);
         }
+    }
+
+    /// The step stress as each branch formed its part's stresses itself (the
+    /// form before FAST_MODE_PLAN.md sec. 63.7): the oracle the shared form
+    /// must match bit for bit.
+    fn step_stress_per_branch(
+        r: &Relaxation,
+        c0: DMat2,
+        c1: DMat2,
+        dt: f64,
+        moduli: (f64, f64),
+    ) -> DMat2 {
+        let z = (c1 - c0) * 0.5;
+        let norm2 = colon(z, z);
+        let mid = 0.5 * (c0 + c1);
+        r.each(moduli)
+            .map(|(b, (l, m))| {
+                let (mu_b, s0, s1) = (
+                    b.branch.modulus,
+                    corotated_second_pk(c0, l, m),
+                    corotated_second_pk(c1, l, m),
+                );
+                let half = b.strain + 0.5 * strain_change(b, s0, s1, dt);
+                let q_mid = corotated_second_pk(mid, l, m) - half * mu_b;
+                let s_neq = corotated_second_pk_tangent(mid, q_mid, l, m) * mu_b.recip();
+                if 4.0 * norm2 <= 1e-28 {
+                    return s_neq;
+                }
+                let ds = corotated_second_pk_increment(c0, c1, l, m);
+                let change = colon(ds, s0 + s1 - half * (2.0 * mu_b)) / (4.0 * mu_b);
+                s_neq + z * ((change - colon(s_neq, z)) / norm2)
+            })
+            .fold(DMat2::ZERO, |sum, s| sum + s)
+    }
+
+    /// FAST_MODE_PLAN.md sec. 63.7, E-1: the part-shared step stress is bit
+    /// for bit the per-branch one, over strained branches (both parts, the
+    /// shear part alone, a proportional record, Crandall's), random `C_n`, `C_n+1`
+    /// (steps from 1e-12 to 1e-1, the quotient's cut at 0 included) and step
+    /// lengths from 1e-7 to 1e-2 s.
+    #[test]
+    fn the_part_shared_step_stress_is_bitwise_the_per_branch_one() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut uniform = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+        };
+        let mut checked = 0;
+        let crandall = RelaxationSpectrum::plasticine_crandall_1970();
+        let records = [
+            (branches(0.5), (2.0e6, 1.3e6)),
+            (proportional(), (2.0e6, 1.3e6)),
+            (
+                Relaxation::corotated(&crandall, 2.0e6, 1.3e6).expect("positive part weights"),
+                (2.0e6, 1.3e6),
+            ),
+            // No volume part (`lambda = 0`): the shear branches alone.
+            (
+                Relaxation::corotated(&crandall, 0.0, 1.3e6).expect("positive part weights"),
+                (0.0, 1.3e6),
+            ),
+        ];
+        for (record, moduli) in records {
+            for _ in 0..400 {
+                let gradient = |u: &mut dyn FnMut() -> f64, size: f64| {
+                    DMat2::IDENTITY
+                        + DMat2::from_cols(DVec2::new(u(), u()), DVec2::new(u(), u())) * size
+                };
+                let f0 = gradient(&mut uniform, 0.2);
+                let c0 = f0.transpose() * f0;
+                let step = 10f64.powf(-12.0 + 11.0 * (0.5 + 0.5 * uniform()));
+                let f1 = f0
+                    + DMat2::from_cols(
+                        DVec2::new(uniform(), uniform()),
+                        DVec2::new(uniform(), uniform()),
+                    ) * step;
+                let c1 = if uniform() > 0.9 {
+                    c0
+                } else {
+                    f1.transpose() * f1
+                };
+                let dt = 10f64.powf(-7.0 + 5.0 * (0.5 + 0.5 * uniform()));
+                let strained = record.committed(DMat2::IDENTITY, c0, 1e-3, moduli).0;
+                let shared = strained.step_stress(c0, c1, dt, moduli);
+                let oracle = step_stress_per_branch(&strained, c0, c1, dt, moduli);
+                let bits = |m: DMat2| m.to_cols_array().map(f64::to_bits);
+                assert_eq!(
+                    bits(shared),
+                    bits(oracle),
+                    "C_n {c0:?}, C_n+1 {c1:?}, dt {dt:e}"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 1600);
     }
 }

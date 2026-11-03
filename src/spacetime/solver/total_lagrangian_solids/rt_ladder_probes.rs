@@ -201,6 +201,21 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
                     r[2] as f64 / r[0] as f64
                 );
             }
+            let s = crate::spacetime::total_lagrangian::residual_split::take();
+            if s[0] > 0.0 {
+                let us = |t: f64| 1e6 * t / s[0];
+                println!(
+                    "RESIDUAL frame {k}: {} samples, {:.0} points; per serial evaluation {:.1} us reads, {:.1} us base law, {:.1} us branches, {:.1} us step stress, {:.1} us scatter, {:.1} us whole",
+                    s[0],
+                    s[1] / s[0],
+                    us(s[2]),
+                    us(s[3]),
+                    us(s[4]),
+                    us(s[5]),
+                    us(s[6]),
+                    us(s[7])
+                );
+            }
             let b = crate::spacetime::total_lagrangian::hooks::take_band_builds();
             if b[0] > 0.0 {
                 println!(
