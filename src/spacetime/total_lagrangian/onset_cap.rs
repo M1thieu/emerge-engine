@@ -73,3 +73,24 @@ pub(super) fn noels_knob() -> bool {
 pub(super) fn noels_ratio(relative: f64) -> f64 {
     (0.5 / relative).powf(2.0 / 3.0)
 }
+
+/// Soderlind and Wang 2006 (J. Comput. Appl. Math. 185, eq. 10, kappa = 1):
+/// the smooth limiter `1 + kappa arctan((rho - 1) / kappa)` on the step
+/// ratio `rho = (1 / relative)^(1 / (order + 1))` (eqs. 64 and 66), in place
+/// of the clamp to [0.5, 5], when `EMERGE_PROBE_SODERLIND_LIMIT` is set
+/// (FAST_MODE_PLAN.md sec. 59.2); `None` otherwise. With kappa = 1 the
+/// increase is at most `1 + pi / 2` and the reduction at least `1 - pi / 4`.
+pub(super) fn soderlind_ratio(relative: f64, order: f64) -> Option<f64> {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let on = *ON.get_or_init(|| {
+        let on = std::env::var_os("EMERGE_PROBE_SODERLIND_LIMIT").is_some();
+        if on {
+            println!("knob active: Soderlind and Wang's arctan limiter on the step ratio, kappa 1 (sec. 59.2)");
+        }
+        on
+    });
+    on.then(|| {
+        let rho = (1.0 / relative.max(f64::MIN_POSITIVE)).powf(1.0 / (order + 1.0));
+        1.0 + (rho - 1.0).atan()
+    })
+}

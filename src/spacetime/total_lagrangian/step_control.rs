@@ -1026,6 +1026,10 @@ pub fn controlled_step(
             let ratio = (1.0 / relative.max(f64::MIN_POSITIVE))
                 .powf(1.0 / (order + 1.0))
                 .clamp(0.5, 5.0);
+            // FAST_MODE_PLAN.md sec. 59.2: Soderlind and Wang's limiter on the
+            // unclamped ratio in place of the clamp, test-only.
+            #[cfg(all(test, feature = "experimental"))]
+            let ratio = super::onset_cap::soderlind_ratio(relative, order).unwrap_or(ratio);
             let next = (ratio * dt).clamp(floor, control.largest);
             let at_floor = error > target && dt <= floor;
             #[cfg(all(test, feature = "experimental"))]
