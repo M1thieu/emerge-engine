@@ -206,20 +206,6 @@ pub(super) fn before_step(state: &TotalLagrangianState, planes: &[Plane]) {
         }
         *last.borrow_mut() = Some((all.clone(), held, state.step_length));
     });
-    // K-5: with T6 on, the energy its persistency update stored and
-    // returned since the step's accounts were last taken (read from a copy,
-    // so this print resets nothing), and what it holds now.
-    if let Some(cache) = state.cache.as_ref() {
-        let (accounts, held) = cache.factors.persistency.clone().take_accounts();
-        if accounts[0] != 0.0 || accounts[1] != 0.0 || held != 0.0 {
-            trace(|| {
-                format!(
-                    "K-5 T6 since its accounts were last taken: stored {:.6e}, returned {:.6e}, dropped {:.6e} J/m; held now {held:.6e} J/m",
-                    accounts[0], accounts[1], accounts[2]
-                )
-            });
-        }
-    }
     let [relative, round_off, resolution, largest] =
         crate::spacetime::total_lagrangian::hooks::take_allowance_terms();
     if relative + round_off + resolution > 0.0 {

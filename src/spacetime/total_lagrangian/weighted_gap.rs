@@ -169,21 +169,19 @@ fn outward(x: &[DVec2], outline: &[usize], r: usize) -> (DVec2, (usize, usize)) 
 pub(crate) type Reaches<'a> = &'a dyn Fn(f64, f64) -> bool;
 
 /// The weighted-gap conditions that reach their obstacle within the step
-/// (`reaches` on the weighted start gap and its rate, `reaches_wall` for a
-/// wall), for the velocity form of the step: each point against a plane gets
+/// (`reaches` on the weighted start gap and its rate), for the velocity
+/// form of the step: each point against a plane gets
 /// one of its own at its start position (pushed onto `own`), each against a
 /// segment the relative normal displacement along its nodal normal, so every
 /// condition is the weighted normal displacement over the step (Laursen and
-/// Chawla's velocity condition on the weighted gap). With `at_wall` the
-/// plane pushed is the wall itself, so a wall condition holds the gap at the
-/// step's end (`hooks::end_gap_on`).
+/// Chawla's velocity condition on the weighted gap).
 pub(crate) fn reaching_conditions(
     traces: &[OutlineTrace],
     outlines: &[Vec<usize>],
     (x, v): (&[DVec2], &[DVec2]),
-    (planes, at_wall): (&[Plane], bool),
+    planes: &[Plane],
     own: &mut Vec<Plane>,
-    (reaches_wall, reaches): (Reaches<'_>, Reaches<'_>),
+    reaches: Reaches<'_>,
 ) -> Vec<Contact> {
     let mut found = Vec::new();
     let mut function = 0usize;
@@ -206,20 +204,16 @@ pub(crate) fn reaching_conditions(
                         d + w / total * plane.inward * v[q][plane.axis],
                     )
                 });
-                if !reaches_wall(gap, rate) {
+                if !reaches(gap, rate) {
                     continue;
                 }
                 let points = facing
                     .iter()
                     .map(|&(r, w)| {
                         let q = outline[r];
-                        own.push(if at_wall {
-                            *plane
-                        } else {
-                            Plane {
-                                at: x[q][plane.axis],
-                                ..*plane
-                            }
+                        own.push(Plane {
+                            at: x[q][plane.axis],
+                            ..*plane
                         });
                         (
                             ContactPoint {

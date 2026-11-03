@@ -52,28 +52,6 @@ pub(super) fn no_resolution_floor() -> bool {
             .get_or_init(|| std::env::var_os("EMERGE_PROBE_NO_RESOLUTION_FLOOR").is_some())
 }
 
-/// FAST_MODE_PLAN.md sec. 36.3 (Part I): the walls held at the step's end.
-/// With `EMERGE_PROBE_CONTACT_END_GAP` set, every wall condition (an
-/// outline's weighted gap, a contact point) is held against the wall itself
-/// instead of a plane at its points' start positions, so the held quantity
-/// is the gap at the step's end (Signorini there, Puso, Porter and Slavik
-/// eq. 16; against a flat rigid wall their `g^_n` is the gap, eq. 22, so
-/// their case (23)1 holds at every activation); every wall condition is a
-/// candidate, joining in the passes when its end gap is beyond its
-/// tolerance; and the tolerance is the resolution alone (`contact_allowance`
-/// without its relative term). Contacts between bodies stay route C's.
-/// Announced once.
-pub(crate) fn end_gap_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| {
-        let on = std::env::var_os("EMERGE_PROBE_CONTACT_END_GAP").is_some();
-        if on {
-            println!("knob active: walls held at the step's end (Part I)");
-        }
-        on
-    })
-}
-
 /// The MAC grid's staggered lattices instead of the collocated ones
 /// (`lattices`), to compare: on when the environment variable
 /// `EMERGE_PROBE_STAGGERED` is set.
@@ -814,59 +792,6 @@ pub(crate) fn set_body_scales(scales: Option<(Vec<usize>, Vec<f64>)>) {
 
 pub(crate) fn body_scales() -> Option<BodyScales> {
     BODY_SCALES.with(|b| b.borrow().clone())
-}
-
-/// ROW15_REACH_CUT_PLAN.md: the points the controller watches at its first
-/// pair (per state point, whether it belongs to a body free at the step's
-/// start), and what it records when one of them reaches a plane there: the
-/// pair's length, the estimator's floor and the points reached. The step
-/// is then handed back untaken (`controlled_step`).
-pub(crate) struct ReachAbort {
-    pub(crate) dt: f64,
-    pub(crate) floor: f64,
-    pub(crate) reached: Vec<usize>,
-}
-
-thread_local! {
-    static REACH_WATCH: RefCell<Option<std::rc::Rc<Vec<bool>>>> = const { RefCell::new(None) };
-    static REACH_ABORT: RefCell<Option<ReachAbort>> = const { RefCell::new(None) };
-    static REACH_CRITICAL: Cell<Option<f64>> = const { Cell::new(None) };
-    static REACH_LATE: Cell<u32> = const { Cell::new(0) };
-}
-
-pub(crate) fn set_reach_watch(watch: Option<Vec<bool>>) {
-    REACH_WATCH.with(|w| *w.borrow_mut() = watch.map(std::rc::Rc::new));
-}
-
-pub(crate) fn reach_watch() -> Option<std::rc::Rc<Vec<bool>>> {
-    REACH_WATCH.with(|w| w.borrow().clone())
-}
-
-pub(crate) fn set_reach_abort(abort: ReachAbort) {
-    REACH_ABORT.with(|a| *a.borrow_mut() = Some(abort));
-}
-
-pub(crate) fn take_reach_abort() -> Option<ReachAbort> {
-    REACH_ABORT.with(|a| a.borrow_mut().take())
-}
-
-/// The critical step's length for the next `controlled_step` call: one
-/// unestimated try of that length.
-pub(crate) fn set_reach_critical(length: Option<f64>) {
-    REACH_CRITICAL.with(|c| c.set(length));
-}
-
-pub(crate) fn take_reach_critical() -> Option<f64> {
-    REACH_CRITICAL.with(|c| c.take())
-}
-
-/// A watched point reaching a plane after a rejected pair (left as today).
-pub(crate) fn add_reach_late() {
-    REACH_LATE.with(|c| c.set(c.get() + 1));
-}
-
-pub(crate) fn take_reach_late() -> u32 {
-    REACH_LATE.with(|c| c.replace(0))
 }
 
 /// MIXED_FORMULATION_PLAN.md criterion 6': a grid axis whose every face the

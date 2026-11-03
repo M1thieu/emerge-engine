@@ -137,6 +137,26 @@ pub(super) fn forget_contact_time() {
     CONTACT_TIME.set(None);
 }
 
+/// The frame's reports, printed when their knobs are on: the Theta cells'
+/// (`theta_cells`), and with `EMERGE_PROBE_STATE_DIGEST` the state's sums at
+/// full precision (`impact_local`'s form with the deformation's added), so an
+/// identity is judged below the printed digits.
+#[cfg(all(test, feature = "experimental"))]
+pub(super) fn frame_report(state: &TotalLagrangianState, frame: u64) {
+    theta_cells::report(state, frame);
+    theta_cells::report_displacement(state, frame);
+    if std::env::var_os("EMERGE_PROBE_STATE_DIGEST").is_some() {
+        let (mut sx, mut sv, mut sf) = (0.0, 0.0, 0.0);
+        for p in 0..state.x.len() {
+            sx += state.x[p].x + state.x[p].y;
+            sv += state.v[p].x + state.v[p].y;
+            let f = state.f[p];
+            sf += f.x_axis.x + f.x_axis.y + f.y_axis.x + f.y_axis.y;
+        }
+        println!("frame digest {frame}: sum x {sx:.17e} m, sum v {sv:.17e} m/s, sum F {sf:.17e}");
+    }
+}
+
 /// The last hand-back attempt refused by the angular-momentum check.
 #[cfg(all(test, feature = "experimental"))]
 pub(super) fn mark_angular_refusal() {
@@ -227,10 +247,6 @@ fn probes_control(
     }
     // MIXED_FORMULATION_PLAN.md: the Theta cells, once, at the first step.
     theta_cells::ensure(state);
-    // S1PP_STEPPED_PLAN.md: the stepped path's own contact phase first.
-    if let Some(fixed) = super::reach_cut::stepped_phase::control(control, state, remaining) {
-        return fixed;
-    }
     // FAST_MODE_PLAN.md sec. 13 (F4): with `EMERGE_PROBE_BACKWARD_EULER=dt`
     // (seconds), inside a contact phase, each controlled step is `2 dt` by
     // backward Euler at an infinite tolerance, its two pieces of `dt` kept

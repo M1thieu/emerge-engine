@@ -85,18 +85,10 @@ mod modes;
 mod multipliers;
 #[cfg(all(test, feature = "experimental"))]
 mod nitsche_probes;
-/// The onset cap (FAST_MODE_PLAN.md sec. 50.6).
-#[cfg(all(test, feature = "experimental"))]
-mod onset_cap;
-#[cfg(all(test, feature = "experimental"))]
-pub(crate) mod persistency;
 mod relaxation;
 /// The internal force's micro-count (FAST_MODE_PLAN.md sec. 63.6).
 #[cfg(all(test, feature = "experimental"))]
 pub(crate) mod residual_split;
-/// The scaled reuse of a factor (FAST_MODE_PLAN.md sec. 56).
-#[cfg(all(test, feature = "experimental"))]
-mod scaled_reuse;
 mod solve;
 #[cfg(all(test, feature = "experimental"))]
 mod stabilized_probes;

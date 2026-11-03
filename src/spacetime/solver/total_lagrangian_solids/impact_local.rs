@@ -296,22 +296,14 @@ fn run(mut sim: Simulation, per: usize) -> (Vec<Sample>, f64) {
                 * (f.parts.iter().map(|e| e.abs()).sum::<f64>()
                     + f.heat.abs()
                     + f.start_energy.abs());
-            // With T6 on, the booked balance adds the energy T6 holds at
-            // the frame's end (PUSO_CANDIDATE_PLAN.md sec. 14): zero otherwise.
-            let held = sim
-                .total_lagrangian
-                .as_ref()
-                .and_then(|s| s.cache.as_ref())
-                .map_or(0.0, |c| c.factors.persistency.held());
-            let booked = f.balance + held;
-            worst = worst.max(booked.abs() / (allowed + round_off));
+            worst = worst.max(f.balance.abs() / (allowed + round_off));
             // `EMERGE_PROBE_LEDGER_FRAMES` (PUSO_CANDIDATE_PLAN.md sec. 13).
             if std::env::var_os("EMERGE_PROBE_LEDGER_FRAMES").is_some() {
                 println!(
-                    "ledger frame: balance {:+.6e}, T6 held {held:.6e}, booked {booked:+.6e}, bound so far {:.6e}, ratio {:.4}",
+                    "ledger frame: balance {:+.6e}, bound so far {:.6e}, ratio {:.4}",
                     f.balance,
                     allowed + round_off,
-                    booked.abs() / (allowed + round_off)
+                    f.balance.abs() / (allowed + round_off)
                 );
             }
             s.contact |= f.contacts > 0;
@@ -325,16 +317,6 @@ fn run(mut sim: Simulation, per: usize) -> (Vec<Sample>, f64) {
         // `EMERGE_PROBE_STATE_DIGEST` (ROW16 sec. 10): the f64 state's sums at
         // full precision, so a perturbation's reach shows below the printed
         // observables' digits.
-        // T6's accounts per frame (PUSO_CANDIDATE_PLAN.md sec. 11), when on.
-        if let Some(c) = sim.total_lagrangian.as_mut().and_then(|s| s.cache.as_mut()) {
-            let (a, held) = c.factors.persistency.take_accounts();
-            if a[4] > 0.0 {
-                println!(
-                    "T6 frame {frame}: stored {:.6e}, returned {:.6e}, dropped {:.6e}, still stored {held:.6e}, release excess {:.3e}, dependent rows {}, steps {}, worst M^-1 residual {:.3e}, net kinetic change {:+.3e}",
-                    a[0], a[1], a[2], a[5], a[3], a[4], a[6], a[7]
-                );
-            }
-        }
         if digest {
             let state = sim.total_lagrangian.as_ref().expect("on");
             let (sx, sv) = (0..state.x.len()).fold((0.0, 0.0), |(a, b), p| {

@@ -366,19 +366,7 @@ pub fn step_total_lagrangian_contact(
     // start gap instead of crossing by `v dt`.
     let reaches =
         |gap: f64, rate: f64| gap < 0.0 || (settings.forecast_activation && gap + dt * rate <= 0.0);
-    // FAST_MODE_PLAN.md sec. 36.3 (Part I, a test-only knob): the walls held
-    // at the step's end (`hooks::end_gap_on`).
-    #[cfg(all(test, feature = "experimental"))]
-    let at_wall = hooks::end_gap_on();
-    #[cfg(not(all(test, feature = "experimental")))]
-    let at_wall = false;
-    let reaches_wall = |gap: f64, rate: f64| at_wall || reaches(gap, rate);
-    // Without the relative term at the end gap: the resolution alone.
-    let contact_tolerance = if at_wall {
-        0.0
-    } else {
-        settings.contact_tolerance
-    };
+    let contact_tolerance = settings.contact_tolerance;
     let mut own: Vec<Plane> = Vec::new();
     // The conditions that may join the set in velocity, each holding its
     // points' normal displacement over the step.
@@ -403,14 +391,7 @@ pub fn step_total_lagrangian_contact(
                 })
                 .collect();
         }
-        candidates = reaching_conditions(
-            traces,
-            outlines,
-            (x, v),
-            (planes, at_wall),
-            &mut own,
-            (&reaches_wall, &reaches),
-        );
+        candidates = reaching_conditions(traces, outlines, (x, v), planes, &mut own, &reaches);
         let mut on_outline = vec![false; n];
         for &q in outlines.iter().flatten() {
             on_outline[q] = true;
@@ -425,14 +406,10 @@ pub fn step_total_lagrangian_contact(
                     continue;
                 }
                 let gap = plane.inward * (q[plane.axis] - plane.at);
-                if reaches_wall(gap, plane.inward * v[p][plane.axis]) {
-                    own.push(if at_wall {
-                        *plane
-                    } else {
-                        Plane {
-                            at: q[plane.axis],
-                            ..*plane
-                        }
+                if reaches(gap, plane.inward * v[p][plane.axis]) {
+                    own.push(Plane {
+                        at: q[plane.axis],
+                        ..*plane
                     });
                     candidates.push(Contact::at(
                         ContactPoint {
@@ -920,14 +897,6 @@ pub fn step_total_lagrangian_contact(
         }
         updates = kinetic(&end_velocity) - before;
     }
-    #[cfg(all(test, feature = "experimental"))]
-    persistency::hook(
-        mode,
-        grid,
-        (x, used, &u, contacts),
-        (factors, mass, settings),
-        (&mut end_velocity, &mut updates),
-    );
     report.work = (
         contacts
             .iter()

@@ -404,18 +404,6 @@ fn probe_t1_massless() {
                 chatter_trace_probes::report_m1(&format!("T1 {run}"), &traced);
             }
             let (height, vy, vibration, energy) = sample(&sim, &basis);
-            // T6's accounts (PUSO_CANDIDATE_PLAN.md sec. 9.5), when on.
-            let (accounts, held) = sim
-                .total_lagrangian
-                .as_mut()
-                .and_then(|s| s.cache.as_mut())
-                .map_or(([0.0; 8], 0.0), |c| c.factors.persistency.take_accounts());
-            if accounts[4] > 0.0 {
-                println!(
-                    "T1 {run} frame {frame} T6: stored {:.6e}, returned {:.6e}, dropped by the guard {:.6e}, still stored {held:.6e} (per unit density); dependent rows skipped {}, steps acted on {}, release excess {:.3e}",
-                    accounts[0], accounts[1], accounts[2], accounts[3], accounts[4], accounts[5]
-                );
-            }
             println!(
                 "T1 {run} frame {frame}: steps {steps} rejected {rejected} contact {contact} wall {:.3} s; height {height:.6e} m, vy {vy:+.7e} m/s, vibration {vibration:.5e} J/m, energy {energy:+.6e} J/m; ledger worst so far {worst:.3} of its bound",
                 clock.elapsed().as_secs_f64()

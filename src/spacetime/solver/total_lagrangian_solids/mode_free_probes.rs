@@ -374,41 +374,6 @@ pub(crate) fn lower_gaps(
         .collect()
 }
 
-/// ROW15_REACH_CUT_PLAN.md sec. 7: per contact point, the UPPER bound on
-/// its least gap to the walls at the instant `t`: `lower_gaps`' terms with
-/// the bound's sign reversed, the rigid fit's gap at `t` (the arm turned at
-/// `t0`'s angle) plus the vibration bound and the turning term over
-/// `[t0, t]`. The least over the planes of a point's upper bounds bounds its
-/// least gap from above.
-pub(crate) fn upper_gaps_at(
-    state: &TotalLagrangianState,
-    free: &Free,
-    planes: &[Plane],
-    gravity: DVec2,
-    (t0, t): (f64, f64),
-) -> Vec<f64> {
-    let tau = t - state.time;
-    let at = free.centre + free.velocity * tau + 0.5 * gravity * tau * tau;
-    let turn = DMat2::from_angle(free.angle + free.spin * (t0 - state.time));
-    free.points
-        .iter()
-        .zip(free.bounds())
-        .map(|(&o, bound)| {
-            let reference = state.reference[o] - free.origin;
-            let turning = free.spin.abs() * reference.length() * (t - t0);
-            planes
-                .iter()
-                .map(|plane| {
-                    plane.inward * at[plane.axis] + plane.inward * (turn * reference)[plane.axis]
-                        - plane.inward * plane.at
-                        + bound
-                        + turning
-                })
-                .fold(f64::INFINITY, f64::min)
-        })
-        .collect()
-}
-
 /// The last time in `[t0, t1]` up to which every contact point's mode-free
 /// lower gap bound stays positive, bisected (the bound is a minimum over the
 /// interval, so monotone in its end).

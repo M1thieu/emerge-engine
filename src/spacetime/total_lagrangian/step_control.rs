@@ -244,17 +244,6 @@ fn velocity_norm_knob() -> bool {
     false
 }
 
-/// Whether a switching pair takes its switch in a critical step at the
-/// floor (`EMERGE_PROBE_EVENTS`, EVENT_LOCALIZATION_PLAN.md, candidate E);
-/// test builds only.
-fn events_knob() -> bool {
-    #[cfg(all(test, feature = "experimental"))]
-    if std::env::var_os("EMERGE_PROBE_EVENTS").is_some() {
-        return true;
-    }
-    false
-}
-
 /// The estimator a path uses, or in test builds the one
 /// `EMERGE_PROBE_ESTIMATOR` names (`klapproth`, `acary`): a measurement's
 /// knob (`SWITCH_ESTIMATE_SOURCES.md`, candidate D).
@@ -612,89 +601,12 @@ pub fn controlled_step(
             .collect()
     };
     let start_beyond = beyond(&start.x);
-    // Candidate E (EVENT_LOCALIZATION_PLAN.md): the contacts pushing at a
-    // state's end (their keys, a positive multiplier), the start's being
-    // the last step's; and the step length to resume after a critical step
-    // (the one this step was proposed with).
-    let events = events_knob();
-    let resume = *tau;
-    let pushing = |s: &State| -> Vec<ContactKey> {
-        let mut keys: Vec<ContactKey> = s
-            .cache
-            .as_ref()
-            .map(|c| {
-                c.contacts
-                    .iter()
-                    .filter(|c| c.multiplier > 0.0)
-                    .map(|c| c.key)
-                    .collect()
-            })
-            .unwrap_or_default();
-        keys.sort_unstable();
-        keys
-    };
-    let start_pushing = if events { pushing(&start) } else { Vec::new() };
-    // FAST_MODE_PLAN.md sec. 50.6: whether the start holds no contact, for
-    // the onset cap (`onset_cap`).
-    #[cfg(all(test, feature = "experimental"))]
-    let start_free = super::onset_cap::knob() && pushing(&start).is_empty();
     // The pair: the whole step against `pieces` pieces; the order-2
     // estimate's Richardson divisor `pieces^2 - 1` (3 for the halves).
     let (pieces, by_contacts) = floor_knobs();
     let divisor = (pieces * pieces - 1) as f64;
-    // ROW15_REACH_CUT_PLAN.md: the critical step after a reach cut, one
-    // unestimated try of the length asked (`hooks::set_reach_critical`),
-    // its contacts forecast by the settings the caller passed; the next
-    // step resumes at the proposal this call came with. Unconverged, the
-    // controller takes the step as today.
-    #[cfg(all(test, feature = "experimental"))]
-    if let Some(length) = hooks::take_reach_critical() {
-        let length = length.max(floor);
-        let (critical, reports, contact) = timed(&start, 1, length);
-        solves += 1;
-        account(&reports, &mut timing);
-        if reports.iter().all(|r| r.converged || r.stagnated) {
-            x.copy_from_slice(&critical.x);
-            solids.copy_from_slice(&critical.solids);
-            v.copy_from_slice(&critical.v);
-            f.copy_from_slice(&critical.f);
-            *cache = critical.cache;
-            *tau = resume;
-            let stalled = reports.iter().filter(|r| r.stagnated).count() as u32;
-            timing.controller = controlling.elapsed().as_secs_f64() - trying.get();
-            hooks::keep_contact_rows(&reports);
-            return ControlledStep {
-                timing,
-                dt: length,
-                kept: reports,
-                rejected,
-                solves,
-                error: 0.0,
-                contact,
-                next: resume,
-                at_floor: false,
-                error_parts: (0.0, 0.0),
-                unconverged,
-                stagnated: stalled,
-                reaching: true,
-            };
-        }
-        println!(
-            "reach cut: the critical step of {length:.3e} s did not converge; stepped as today"
-        );
-    }
-    // FAST_MODE_PLAN.md sec. 61: from a start holding no contact, the
-    // declared policy's predicted time to contact (`onset_cap`), test-only.
-    #[cfg(all(test, feature = "experimental"))]
-    let landing = (super::onset_cap::land_knob() && pushing(&start).is_empty())
-        .then(|| super::onset_cap::time_to_contact(&start.x, &start.v, set.planes, gravity))
-        .flatten()
-        .filter(|&t| t > floor);
     loop {
         let dt = *tau;
-        // The declared policy: a free try lands on the predicted touch.
-        #[cfg(all(test, feature = "experimental"))]
-        let dt = landing.map_or(dt, |t| dt.min(t));
         // The try pair's wall time, for the trace below.
         #[cfg(all(test, feature = "experimental"))]
         let pair_clock = std::time::Instant::now();
@@ -840,48 +752,6 @@ pub fn controlled_step(
                     && halves_reports
                         .iter()
                         .any(|r| r.contacts != whole_reports[0].contacts));
-            // ROW15_REACH_CUT_PLAN.md: a watched point (a body free at the
-            // step's start) reaching a plane at the FIRST pair hands the
-            // step back untaken, its start pristine (no try kept, no factor
-            // absorbed: `keep_factors` runs only on a rejection), for the
-            // caller to cut it; after a rejection it is only counted.
-            #[cfg(all(test, feature = "experimental"))]
-            if reaching && let Some(watch) = hooks::reach_watch() {
-                let mut reached: Vec<usize> = Vec::new();
-                for end in [beyond(&whole.x), beyond(&halves.x)] {
-                    for (p, (&e, &s)) in end.iter().zip(&start_beyond).enumerate() {
-                        if e && !s
-                            && watch.get(p).copied().unwrap_or(false)
-                            && !reached.contains(&p)
-                        {
-                            reached.push(p);
-                        }
-                    }
-                }
-                if !reached.is_empty() {
-                    if rejected == 0 {
-                        hooks::set_reach_abort(hooks::ReachAbort { dt, floor, reached });
-                        *cache = start.cache;
-                        timing.controller = controlling.elapsed().as_secs_f64() - trying.get();
-                        return ControlledStep {
-                            timing,
-                            dt: 0.0,
-                            kept: Vec::new(),
-                            rejected: 0,
-                            solves: 0,
-                            error: 0.0,
-                            contact: false,
-                            next: dt,
-                            at_floor: false,
-                            error_parts: (0.0, 0.0),
-                            unconverged: 0,
-                            stagnated: 0,
-                            reaching: true,
-                        };
-                    }
-                    hooks::add_reach_late();
-                }
-            }
             // The measurement (`hooks::EffectivityRow`), from the same start
             // and discarded: it decides nothing. Its solves are not counted
             // in the step's (`timed`).
@@ -944,87 +814,6 @@ pub fn controlled_step(
                 println!("  effectivity: {row:?}");
                 hooks::record_effectivity(row);
             }
-            // Candidate E: a pair whose contact set changes (a point
-            // reaching a plane, or the pushing contacts at either try's end
-            // not the start's) and whose estimate would reject it: if one
-            // step at the floor already takes the switch, the switch is at
-            // the step's start, and that step is taken as the critical step
-            // (Acary RR-7151 Algorithm 1, its length the time's resolution;
-            // its position error bounded by Lemma 1, `C(theta) h |dv|`; not
-            // estimated), the next step resuming at the length this one was
-            // proposed with. Otherwise the controller goes on as before.
-            let switching = || {
-                reaching || pushing(&whole) != start_pushing || pushing(&halves) != start_pushing
-            };
-            let would_reject = || {
-                if reaching {
-                    parts.1 > target
-                } else {
-                    norm(&difference, dt) / divisor > target
-                }
-            };
-            if events && dt > floor && would_reject() && switching() {
-                // The critical step's length: the floor, or in test builds a
-                // forced one (`EMERGE_PROBE_CRITICAL_LENGTH`, s; criterion 6).
-                #[cfg(all(test, feature = "experimental"))]
-                let floor = std::env::var("EMERGE_PROBE_CRITICAL_LENGTH")
-                    .ok()
-                    .and_then(|v| v.parse::<f64>().ok())
-                    .map_or(floor, |h| h.max(floor).min(dt));
-                let (critical, critical_reports, critical_contact) = timed(&start, 1, floor);
-                solves += 1;
-                account(&critical_reports, &mut timing);
-                let switched = beyond(&critical.x)
-                    .iter()
-                    .zip(&start_beyond)
-                    .any(|(&e, &s)| e && !s)
-                    || pushing(&critical) != start_pushing;
-                let converged = critical_reports.iter().all(|r| r.converged || r.stagnated);
-                if switched && converged {
-                    #[cfg(all(test, feature = "experimental"))]
-                    {
-                        // Its true error against a 64-piece reference of the
-                        // same step, in the controller's norm (criterion 6).
-                        let truth = if std::env::var_os("EMERGE_PROBE_EFFECTIVITY").is_some() {
-                            // Counted in the step's solves, as before the
-                            // tries ran concurrently.
-                            let (reference, _, _) = timed(&start, 64, floor);
-                            solves += 64;
-                            norm(&combine(1.0, &critical, -1.0, &reference), floor) / target
-                        } else {
-                            f64::NAN
-                        };
-                        println!(
-                            "  critical step: {floor:.3e} s, the pair at {dt:.3e} s rejected before it {rejected} times; resuming at {resume:.3e} s; true error {truth:.3e} of the target"
-                        );
-                    }
-                    x.copy_from_slice(&critical.x);
-                    solids.copy_from_slice(&critical.solids);
-                    v.copy_from_slice(&critical.v);
-                    f.copy_from_slice(&critical.f);
-                    *cache = critical.cache;
-                    *tau = resume;
-                    let stalled = critical_reports.iter().filter(|r| r.stagnated).count() as u32;
-                    timing.controller = controlling.elapsed().as_secs_f64() - trying.get();
-                    #[cfg(all(test, feature = "experimental"))]
-                    hooks::keep_contact_rows(&critical_reports);
-                    return ControlledStep {
-                        timing,
-                        dt: floor,
-                        kept: critical_reports,
-                        rejected,
-                        solves,
-                        error: 0.0,
-                        contact: critical_contact,
-                        next: resume,
-                        at_floor: false,
-                        error_parts: (0.0, 0.0),
-                        unconverged,
-                        stagnated: stalled,
-                        reaching: true,
-                    };
-                }
-            }
             // Eq. 67 at order 0 (positions only), else eq. 63 at order 2.
             let (error, order) = if reaching {
                 (parts.1, 0.0)
@@ -1036,10 +825,6 @@ pub fn controlled_step(
             let ratio = (1.0 / relative.max(f64::MIN_POSITIVE))
                 .powf(1.0 / (order + 1.0))
                 .clamp(0.5, 5.0);
-            // FAST_MODE_PLAN.md sec. 59.2: Soderlind and Wang's limiter on the
-            // unclamped ratio in place of the clamp, test-only.
-            #[cfg(all(test, feature = "experimental"))]
-            let ratio = super::onset_cap::soderlind_ratio(relative, order).unwrap_or(ratio);
             let next = (ratio * dt).clamp(floor, control.largest);
             let at_floor = error > target && dt <= floor;
             #[cfg(all(test, feature = "experimental"))]
@@ -1245,25 +1030,6 @@ pub fn controlled_step(
             keep_factors(&mut start, [&whole, &halves]);
             rejected += 1;
             *tau = next.min(dt).max(floor);
-            // FAST_MODE_PLAN.md sec. 50.7: Noels et al.'s impact rule.
-            #[cfg(all(test, feature = "experimental"))]
-            if super::onset_cap::noels_knob() {
-                *tau = (dt * super::onset_cap::noels_ratio(error / target)).max(floor);
-            }
-            // FAST_MODE_PLAN.md sec. 50.6: a refused try with the contact's
-            // onset inside it caps the next at the impact's duration.
-            #[cfg(all(test, feature = "experimental"))]
-            if start_free
-                && (!pushing(&halves).is_empty()
-                    || beyond(&halves.x)
-                        .iter()
-                        .zip(&start_beyond)
-                        .any(|(&e, &s)| e && !s))
-                && let Some(t1) =
-                    super::onset_cap::impact_time(&start.x, (mass, v0), solids, set.planes)
-            {
-                *tau = tau.min(t1).max(floor);
-            }
             continue;
         }
         // The pair at once unless in sequence. The third try is needed only

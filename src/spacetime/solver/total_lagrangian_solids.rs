@@ -643,20 +643,6 @@ impl Simulation {
                     (&control, scale),
                 )
             };
-            // ROW15_REACH_CUT_PLAN.md, test builds only.
-            #[cfg(all(test, feature = "experimental"))]
-            let step = if reach_cut::on() {
-                reach_cut::step(
-                    self,
-                    &mut state,
-                    (&planes, gravity),
-                    &config.settings,
-                    &take,
-                )
-            } else {
-                take(&mut state, &config.settings)
-            };
-            #[cfg(not(all(test, feature = "experimental")))]
             let step = take(&mut state, &config.settings);
             remaining -= step.dt;
             #[cfg(all(test, feature = "experimental"))]
@@ -799,7 +785,7 @@ impl Simulation {
             }
         }
         #[cfg(all(test, feature = "experimental"))]
-        reach_cut::report(&state, self.frame_index);
+        handoff::frame_report(&state, self.frame_index);
         #[cfg(all(test, feature = "experimental"))]
         g0::frame_end(&state, self.frame_index);
         self.total_lagrangian = Some(state);
@@ -992,8 +978,6 @@ mod g0;
 mod impact_local;
 #[cfg(all(test, feature = "experimental"))]
 mod multi_body_probes;
-#[cfg(all(test, feature = "experimental"))]
-mod reach_cut;
 #[cfg(all(test, feature = "experimental"))]
 mod rt_ladder_probes;
 #[cfg(all(test, feature = "experimental"))]
