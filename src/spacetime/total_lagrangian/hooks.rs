@@ -954,3 +954,40 @@ pub(super) fn tangent_check() -> bool {
     static SET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *SET.get_or_init(|| std::env::var_os("EMERGE_PROBE_TANGENT_CHECK").is_some())
 }
+
+/// FAST_MODE_PLAN.md sec. 63.3: the preconditioner builds' micro-count, summed
+/// since the last `take_band_builds`: builds, `n`, `width`, and seconds in the
+/// ordering, the assembly and the factorization.
+static BAND_BUILDS: std::sync::Mutex<[f64; 6]> = std::sync::Mutex::new([0.0; 6]);
+
+pub(crate) fn add_band_build(
+    (n, width): (usize, usize),
+    (ordering, assembly, factor): (f64, f64, f64),
+) {
+    let mut b = BAND_BUILDS.lock().expect("band builds lock");
+    b[0] += 1.0;
+    b[1] += n as f64;
+    b[2] += width as f64;
+    b[3] += ordering;
+    b[4] += assembly;
+    b[5] += factor;
+}
+
+pub(crate) fn take_band_builds() -> [f64; 6] {
+    std::mem::take(&mut *BAND_BUILDS.lock().expect("band builds lock"))
+}
+
+/// FAST_MODE_PLAN.md sec. 63.4: the points' reach lists, expanded (one entry
+/// per face folded in) and merged by unknown: count, expanded sum, merged sum.
+static REACH_LENGTHS: std::sync::Mutex<[u64; 3]> = std::sync::Mutex::new([0; 3]);
+
+pub(crate) fn add_reach_lengths(expanded: usize, merged: usize) {
+    let mut r = REACH_LENGTHS.lock().expect("reach lengths lock");
+    r[0] += 1;
+    r[1] += expanded as u64;
+    r[2] += merged as u64;
+}
+
+pub(crate) fn take_reach_lengths() -> [u64; 3] {
+    std::mem::take(&mut *REACH_LENGTHS.lock().expect("reach lengths lock"))
+}

@@ -192,6 +192,27 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
                     t[0], t[1], t[2], t[3], t[4], t[5]
                 );
             }
+            let r = crate::spacetime::total_lagrangian::hooks::take_reach_lengths();
+            if r[0] > 0 {
+                println!(
+                    "REACH frame {k}: {} lists, mean expanded {:.1}, mean merged {:.1}",
+                    r[0],
+                    r[1] as f64 / r[0] as f64,
+                    r[2] as f64 / r[0] as f64
+                );
+            }
+            let b = crate::spacetime::total_lagrangian::hooks::take_band_builds();
+            if b[0] > 0.0 {
+                println!(
+                    "BANDS frame {k}: {} builds, mean n {:.0}, mean width {:.0}; per build {:.3} ms ordering, {:.3} ms assembly, {:.3} ms factor",
+                    b[0],
+                    b[1] / b[0],
+                    b[2] / b[0],
+                    1e3 * b[3] / b[0],
+                    1e3 * b[4] / b[0],
+                    1e3 * b[5] / b[0]
+                );
+            }
         }
         if fallbacks > 0 {
             println!("frame {k}: single-solve fallbacks {fallbacks}");

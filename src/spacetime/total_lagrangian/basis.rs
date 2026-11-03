@@ -131,6 +131,14 @@ pub(crate) struct Grid {
     /// not change while the masses do not. Shared by the grid's clones (the
     /// controller's tries), which are the same grid.
     pub(crate) mass_matrix: std::sync::Arc<std::sync::Mutex<Option<MassMatrix>>>,
+    /// The band's empty form and the point count it was built for
+    /// (`Grid::empty_band`), shared by the grid's clones.
+    pub(crate) band_template: std::sync::Arc<std::sync::Mutex<Option<(usize, Band)>>>,
+    /// Each point's reach per component, merged by unknown (`Grid::relump`
+    /// builds it; `visit` reads it): the expanded reach repeats an unknown
+    /// once per degenerate face folded into it (62.6 entries against 21.4
+    /// distinct at a block's first touch, FAST_MODE_PLAN.md sec. 63.4).
+    pub(crate) reach: Option<std::sync::Arc<Vec<[Reach; 2]>>>,
     /// Per particle, per lattice, the weight function of the web-splines
     /// and its gradient at the particle's reference position, when the
     /// basis is weighted (`LagrangianCache::weighted`).
@@ -144,6 +152,10 @@ pub(crate) struct Grid {
 /// The unknowns a degenerate face's coefficient is extrapolated from, with
 /// their weights.
 pub(crate) type Extension = Box<[(usize, f64)]>;
+
+/// One point's reach on one lattice, merged by unknown: each unknown once,
+/// with its weight and weight gradient (`Grid::reach`).
+pub(crate) type Reach = Box<[(usize, f64, DVec2)]>;
 
 /// The consistent mass in compressed rows, `M_c[k][m] = sum_p m_p N_k(X_p)
 /// N_m(X_p)` over each lattice (the two components do not couple), and the
@@ -221,6 +233,8 @@ impl Grid {
             extension: vec![None; len],
             lumped: Vec::new(),
             mass_matrix: Default::default(),
+            band_template: Default::default(),
+            reach: None,
             #[cfg(all(test, feature = "experimental"))]
             weights: None,
             #[cfg(all(test, feature = "experimental"))]
@@ -447,6 +461,29 @@ impl Grid {
 
     /// Each unknown's lumped mass, through the current basis.
     pub(crate) fn relump(&mut self, mass: &[f64]) {
+        // The merged reach, from the expanded one (the basis as it now is).
+        self.reach = None;
+        let reach: Vec<[Reach; 2]> = (0..self.stencils.len())
+            .map(|p| {
+                [0, 1].map(|a| {
+                    let mut list: Vec<(usize, f64, DVec2)> = Vec::with_capacity(32);
+                    self.visit(p, a, |k, w, g| list.push((k, w, g)));
+                    list.sort_by_key(|e| e.0);
+                    let mut merged: Vec<(usize, f64, DVec2)> = Vec::with_capacity(list.len());
+                    for (k, w, g) in list {
+                        match merged.last_mut() {
+                            Some(last) if last.0 == k => {
+                                last.1 += w;
+                                last.2 += g;
+                            }
+                            _ => merged.push((k, w, g)),
+                        }
+                    }
+                    merged.into_boxed_slice()
+                })
+            })
+            .collect();
+        self.reach = Some(std::sync::Arc::new(reach));
         let mut lumped = vec![0.0; self.len];
         for (p, &m) in mass.iter().enumerate() {
             for a in 0..2 {
@@ -459,6 +496,12 @@ impl Grid {
     /// Calls `f(unknown, weight, weight gradient)` for every unknown of
     /// lattice `a` particle `p` reaches.
     pub(crate) fn visit(&self, p: usize, a: usize, mut f: impl FnMut(usize, f64, DVec2)) {
+        if let Some(reach) = &self.reach {
+            for &(k, w, g) in reach[p][a].iter() {
+                f(k, w, g);
+            }
+            return;
+        }
         self.visit_stacked(p, a, |k, w, g| {
             let unknown = self.slot[k];
             if unknown != usize::MAX {
@@ -572,16 +615,14 @@ impl Grid {
         inertia: f64,
         springs: &[Spring],
     ) -> Band {
+        #[cfg(all(test, feature = "experimental"))]
+        let clock = std::time::Instant::now();
         let mut band = self.empty_band(mass.len());
+        #[cfg(all(test, feature = "experimental"))]
+        let ordered = clock.elapsed().as_secs_f64();
         let inert = |k: usize| self.massless().is_some_and(|none| none[k]);
         // Each particle's unknowns with their weights and gradients.
-        let reach = |p: usize| -> Vec<(usize, usize, f64, DVec2)> {
-            let mut list = Vec::with_capacity(18);
-            for a in 0..2 {
-                self.visit(p, a, |k, w, g| list.push((k, a, w, g)));
-            }
-            list
-        };
+        let reach = |p: usize| self.merged_reach(p);
         for (p, (&mp, &vol)) in mass.iter().zip(v0).enumerate() {
             let list = reach(p);
             for &(k, a, wk, gk) in &list {
@@ -612,7 +653,19 @@ impl Grid {
                 }
             }
         }
+        #[cfg(all(test, feature = "experimental"))]
+        let assembled = clock.elapsed().as_secs_f64();
         band.factor();
+        // FAST_MODE_PLAN.md sec. 63.3: the build's micro-count.
+        #[cfg(all(test, feature = "experimental"))]
+        hooks::add_band_build(
+            (band.n, band.width),
+            (
+                ordered,
+                assembled - ordered,
+                clock.elapsed().as_secs_f64() - assembled,
+            ),
+        );
         band
     }
 
@@ -673,7 +726,54 @@ impl Grid {
     /// An empty band over the unknowns, renumbered body by body and within
     /// each row by row of the face positions, as wide as the particles'
     /// reach (`approximate_jacobian`).
+    /// Each unknown point `p`'s supports reach, once, with its weight and
+    /// gradient summed over the faces that fold into it (`visit` expands a
+    /// degenerate face of the extended B-splines into its extrapolation's
+    /// unknowns, so the same unknown comes back once per face folded into
+    /// it): sorted by unknown. The band's entries are bilinear in `(w, g)`,
+    /// so a pairwise loop over this list gives the same matrix as over the
+    /// expanded one, in a list of distinct unknowns (FAST_MODE_PLAN.md sec.
+    /// 63.4: the expanded list made the assembly quadratic in its length,
+    /// 83 % of a build, measured).
+    fn merged_reach(&self, p: usize) -> Vec<(usize, usize, f64, DVec2)> {
+        let mut list: Vec<(usize, usize, f64, DVec2)> = Vec::with_capacity(18);
+        for a in 0..2 {
+            self.visit(p, a, |k, w, g| list.push((k, a, w, g)));
+        }
+        #[cfg(all(test, feature = "experimental"))]
+        let expanded = list.len();
+        list.sort_by_key(|e| e.0);
+        let mut merged: Vec<(usize, usize, f64, DVec2)> = Vec::with_capacity(list.len());
+        for (k, a, w, g) in list {
+            match merged.last_mut() {
+                Some(last) if last.0 == k => {
+                    last.2 += w;
+                    last.3 += g;
+                }
+                _ => merged.push((k, a, w, g)),
+            }
+        }
+        #[cfg(all(test, feature = "experimental"))]
+        hooks::add_reach_lengths(expanded, merged.len());
+        merged
+    }
+
+    /// The band's empty form for `particles` points: its ordering depends on
+    /// the grid alone, so it is built once and kept with the grid, shared by
+    /// its clones (`band_template`), and each build starts from a copy.
     pub(crate) fn empty_band(&self, particles: usize) -> Band {
+        let mut kept = self.band_template.lock().expect("band template lock");
+        if let Some((count, band)) = kept.as_ref()
+            && *count == particles
+        {
+            return band.clone();
+        }
+        let band = self.build_empty_band(particles);
+        *kept = Some((particles, band.clone()));
+        band
+    }
+
+    fn build_empty_band(&self, particles: usize) -> Band {
         let n = self.len;
         // Position of each unknown, in half cells, for the ordering.
         let mut key = vec![(0i64, 0i64); n];
@@ -689,13 +789,7 @@ impl Grid {
             }
         }
         // Each particle's unknowns with their weights and gradients.
-        let reach = |p: usize| -> Vec<(usize, usize, f64, DVec2)> {
-            let mut list = Vec::with_capacity(18);
-            for a in 0..2 {
-                self.visit(p, a, |k, w, g| list.push((k, a, w, g)));
-            }
-            list
-        };
+        let reach = |p: usize| self.merged_reach(p);
         // Bodies that share no unknown share no entry of the system: each
         // is numbered as a block of its own, so the band spans one body's
         // rows, not every body's on the same rows. A body here is the
