@@ -78,6 +78,10 @@ struct Problem {
     traction: f64,
     /// Where the quadrature points sit (`Layout`).
     layout: Layout,
+    /// Plane strain instead (no weight `R`, no hoop term, `F_33 = 1`), the
+    /// axis then a symmetry plane: the same quadrature question asked of
+    /// the engine's plane-strain path.
+    planar: bool,
 }
 
 /// The quadrature: the engine's quarter points (the counts of sec. 49d),
@@ -258,7 +262,7 @@ impl Problem {
             for &(z, wz) in &along_z {
                 {
                     let x = DVec2::new(r, z);
-                    let weight = wr * wz * r;
+                    let weight = if self.planar { wr * wz } else { wr * wz * r };
                     let (bi, wx, dx) = axis(x.x, 0.0, h);
                     let (bj, wy, dy) = axis(x.y, 0.0, h);
                     let mut nodes = [(0, 0.0, DVec2::ZERO); 9];
@@ -286,7 +290,7 @@ impl Problem {
                     for (p, wp) in (0i64..).zip(wx) {
                         for (q, wq) in (0i64..).zip(wy) {
                             external[self.node(bi + p, bj + q)][1] +=
-                                wr * r * self.traction * wp * wq;
+                                wr * if self.planar { 1.0 } else { r } * self.traction * wp * wq;
                         }
                     }
                 }
@@ -313,8 +317,13 @@ impl Problem {
             .collect()
     }
 
-    /// `F_2` and `F_33` at a point.
-    fn kinematics(point: &Point, u: &[DVec2]) -> (DMat2, f64) {
+    /// `F_2` and `F_33` at a point (`F_33 = 1` in plane strain).
+    fn kinematics(&self, point: &Point, u: &[DVec2]) -> (DMat2, f64) {
+        let (f2, f33) = Self::axisymmetric_kinematics(point, u);
+        (f2, if self.planar { 1.0 } else { f33 })
+    }
+
+    fn axisymmetric_kinematics(point: &Point, u: &[DVec2]) -> (DMat2, f64) {
         let mut grad = DMat2::ZERO;
         let mut ur = 0.0;
         for &(n, w, g) in &point.nodes {
@@ -335,7 +344,7 @@ impl Problem {
             .collect();
         let mut scale: f64 = d.external.iter().map(|e| e[1].abs()).sum::<f64>() * load;
         for point in &d.points {
-            let (f2, f33) = Self::kinematics(point, &u);
+            let (f2, f33) = self.kinematics(point, &u);
             if f2.determinant() <= 0.0 || f33 <= 0.0 {
                 return None;
             }
@@ -348,7 +357,11 @@ impl Problem {
             let (p2, p33) = (f2 * s2, f33 * s33);
             for &(n, w, g) in &point.nodes {
                 let planar = p2 * g * point.weight;
-                let hoop = p33 * w / point.x.x * point.weight;
+                let hoop = if self.planar {
+                    0.0
+                } else {
+                    p33 * w / point.x.x * point.weight
+                };
                 force[n][0] += planar.x + hoop;
                 force[n][1] += planar.y;
                 scale += planar.abs().element_sum() + hoop.abs();
@@ -426,7 +439,7 @@ impl Problem {
             .points
             .iter()
             .map(|point| {
-                let (f2, f33) = Self::kinematics(point, &u);
+                let (f2, f33) = self.kinematics(point, &u);
                 let (s2, s33) = neo_hookean_second_pk_axisymmetric(
                     f2.transpose() * f2,
                     f33 * f33,
@@ -520,6 +533,7 @@ fn ax1_uniform_radial_compression() {
             weight: 0.0,
             traction: 0.0,
             layout,
+            planar: false,
         };
         let checkpoints: Vec<f64> = targets
             .iter()
@@ -604,6 +618,7 @@ fn ax2_end_loaded_cylinder() {
             weight: 0.0,
             traction: t0,
             layout,
+            planar: false,
         };
         let loads: Vec<f64> = (1..=20).map(|k| f64::from(k) / 20.0).collect();
         let state = problem.solve(&loads).pop().expect("a state");
@@ -703,6 +718,7 @@ fn ax5_ax6_self_weight() {
                 weight: rho * g,
                 traction: 0.0,
                 layout: Layout::Quarter,
+                planar: false,
             };
             let loads: Vec<f64> = if held {
                 (1..=4).map(|k| f64::from(k) / 4.0).collect()
@@ -717,5 +733,74 @@ fn ax5_ax6_self_weight() {
                 state.iterations
             );
         }
+    }
+}
+
+/// The AX-2 question in plane strain (sec. 49g.2, measured after the
+/// counts): a half block 10 x 40 mm against a symmetry plane, a slip base,
+/// the top under a dead nominal traction, the side free. Exact: homogeneous
+/// plane-strain uniaxial stress, `F = diag(a, b)`, `P_xx = 0`, `P_yy =
+/// T_0`, from this law (`mu (a^2 - 1) + lambda ln(a b) = 0`, `mu (b^2 -
+/// a^2) / b = T_0`). The engine's plane-strain path uses the quarter
+/// points.
+#[test]
+fn ax2_plane_strain_end_loaded_block() {
+    if !knob() {
+        return;
+    }
+    let (lambda, mu) = lame(2300e6, 0.33);
+    let t0 = 600e6;
+    let a2 = |b: f64| b * b - t0 * b / mu;
+    let b = bisect(1.0, 3.0, |b| {
+        lambda * (a2(b).sqrt() * b).ln() + mu * (a2(b) - 1.0)
+    });
+    let length = 0.04;
+    for (refine, layout) in [1, 2]
+        .into_iter()
+        .flat_map(|r| [Layout::Quarter, Layout::KnotGauss].map(|l| (r, l)))
+    {
+        let (nr, nz) = (5 * refine, 20 * refine);
+        let h = 0.01 / nr as f64;
+        let problem = Problem {
+            nr,
+            nz,
+            h,
+            lambda,
+            mu,
+            sides: Sides {
+                axis: AXIS,
+                rim: FREE,
+                base: SLIP_BASE,
+                top: FREE,
+            },
+            weight: 0.0,
+            traction: t0,
+            layout,
+            planar: true,
+        };
+        let loads: Vec<f64> = (1..=20).map(|k| f64::from(k) / 20.0).collect();
+        let state = problem.solve(&loads).pop().expect("a state");
+        let error = |p: &PointState| (p.p_zz / t0 - 1.0).abs();
+        let worst = state.points.iter().fold(0.0f64, |m, p| m.max(error(p)));
+        let at = state
+            .points
+            .iter()
+            .max_by(|p, q| error(p).total_cmp(&error(q)))
+            .expect("points");
+        let inner = |p: &&PointState| p.x.x < (nr - 1) as f64 * h && p.x.y < (nz - 1) as f64 * h;
+        let worst_inner = state
+            .points
+            .iter()
+            .filter(inner)
+            .fold(0.0f64, |m, p| m.max(error(p)));
+        let top_exact = (b - 1.0) * length;
+        println!(
+            "AX-2 plane strain cells {nr}x{nz}{}: worst |P_yy/T_0 - 1| {worst:.3e} at (x/h, y/h) ({:.2}, {:.2}), away from the free surfaces' outermost cells {worst_inner:.3e}; top at the symmetry plane {:.6e} m vs exact {top_exact:.6e} m ({:+.3e})",
+            layout.label(),
+            at.x.x / h,
+            at.x.y / h,
+            state.top_axis_uz,
+            state.top_axis_uz / top_exact - 1.0
+        );
     }
 }
