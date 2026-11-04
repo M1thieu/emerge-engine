@@ -930,55 +930,76 @@ mod rest;
 use rest::Rest;
 
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/cap.rs"]
 mod cap;
 
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/vibration.rs"]
 mod vibration;
 
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/modal_flight.rs"]
 mod modal_flight;
 
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/impact.rs"]
 mod impact;
 
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/hard_frame.rs"]
 mod hard_frame;
 
 #[cfg(test)]
+#[path = "total_lagrangian_solids/probes/outline_velocity_tests.rs"]
 mod outline_velocity_tests;
 
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/at_rest_tests.rs"]
 mod at_rest_tests;
 
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/damped_rest_tests.rs"]
 mod damped_rest_tests;
 
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/probes.rs"]
 mod probes;
 
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/effectivity.rs"]
 mod effectivity;
 
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/water.rs"]
 mod water;
 
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/cost_profile.rs"]
 mod cost_profile;
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/explicit_baseline.rs"]
 mod explicit_baseline;
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/exponential_flight.rs"]
 mod exponential_flight;
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/exponential_flight_probes.rs"]
 mod exponential_flight_probes;
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/factor_count_probes.rs"]
 mod factor_count_probes;
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/g0.rs"]
 mod g0;
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/impact_local.rs"]
 mod impact_local;
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/multi_body_probes.rs"]
 mod multi_body_probes;
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/rt_ladder_probes.rs"]
 mod rt_ladder_probes;
 #[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/step_sweep.rs"]
 mod step_sweep;

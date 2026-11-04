@@ -21,17 +21,17 @@ use super::flight::Flight;
 use super::*;
 
 #[cfg(all(test, feature = "experimental"))]
-#[path = "mode_free_probes.rs"]
+#[path = "probes/mode_free_probes.rs"]
 pub(super) mod mode_free_probes;
 
 /// FAST_MODE_PLAN.md sec. 36.2 (K-1, K-2): the walls' gaps before each step.
 #[cfg(all(test, feature = "experimental"))]
-#[path = "wall_gap_probes.rs"]
+#[path = "probes/wall_gap_probes.rs"]
 mod wall_gap_probes;
 
 /// MIXED_FORMULATION_PLAN.md: the mean-dilatation cells on this path.
 #[cfg(all(test, feature = "experimental"))]
-#[path = "theta_cells.rs"]
+#[path = "probes/theta_cells.rs"]
 pub(super) mod theta_cells;
 
 /// MODE_FREE_HANDOFF_PLAN.md M0 at a flight start (the frame's and the
