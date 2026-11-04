@@ -98,12 +98,11 @@ fn probe_factor_builds_counted() {
     });
 }
 
-/// S1' on the Norton block (`tmp/papers/dl_realtime/S1_FIXED_CONTACT_STEP_PLAN.md`
+/// The Norton block (`tmp/papers/dl_realtime/S1_FIXED_CONTACT_STEP_PLAN.md`
 /// sec. 10), information: the reference N_A (fixed steps of at most `h /
-/// (4 c)`, `c` the record's P wave, infinite tolerance, no handoff), the
-/// baseline N_B (handoff, tol 1e-2) and the candidate N_S (N_B with
-/// `EMERGE_PROBE_CONTACT_FIXED_STEP`, read by the path), selected by
-/// `EMERGE_PROBE_NORTON_RUN` = `A`, `B` or `S`; per 1/60 s frame the
+/// (4 c)`, `c` the record's P wave, infinite tolerance, no handoff) and the
+/// baseline N_B (handoff, tol 1e-2), selected by
+/// `EMERGE_PROBE_NORTON_RUN` = `A` or `B`; per 1/60 s frame the
 /// centre's height and vertical velocity, the cumulative plastic work and
 /// the energy. A probe: measurement, nothing held.
 #[test]

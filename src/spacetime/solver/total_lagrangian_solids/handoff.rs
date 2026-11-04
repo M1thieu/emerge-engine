@@ -110,33 +110,6 @@ pub(super) fn trace_angular(
     });
 }
 
-#[cfg(all(test, feature = "experimental"))]
-thread_local! {
-    /// S1 (`tmp/papers/dl_realtime/S1_FIXED_CONTACT_STEP_PLAN.md`): whether
-    /// the frame loop is inside a contact phase, the last flight attempt
-    /// having stopped at the clearance bound or on a held contact, not on a
-    /// refusal.
-    static CONTACT_PHASE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// FAST_MODE_PLAN.md sec. 21: the last held contact's contact time,
-    /// kept through the phase's free runs between pushes (no contact held
-    /// there), forgotten once a flight is kept to a frame's end.
-    static CONTACT_TIME: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
-    /// FAST_MODE_PLAN.md sec. 24 (C2'): whether the last hand-back attempt
-    /// was refused by the angular-momentum check.
-    static ANGULAR_REFUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(all(test, feature = "experimental"))]
-pub(super) fn contact_phase(on: bool) {
-    CONTACT_PHASE.set(on);
-}
-
-/// A flight kept to its frame's end: the contact time forgotten.
-#[cfg(all(test, feature = "experimental"))]
-pub(super) fn forget_contact_time() {
-    CONTACT_TIME.set(None);
-}
-
 /// The frame's reports, printed when their knobs are on: the Theta cells'
 /// (`theta_cells`), and with `EMERGE_PROBE_STATE_DIGEST` the state's sums at
 /// full precision (`impact_local`'s form with the deformation's added), so an
@@ -157,69 +130,12 @@ pub(super) fn frame_report(state: &TotalLagrangianState, frame: u64) {
     }
 }
 
-/// The last hand-back attempt refused by the angular-momentum check.
+/// Before each controlled step: the Theta cells built once
+/// (MIXED_FORMULATION_PLAN.md), and with the trace on the held contacts'
+/// total normal multiplier and the least point gap to a wall (FAST_MODE_PLAN.md
+/// sec. 31, C-1) and the walls' gaps (sec. 36.2, K-1, K-2).
 #[cfg(all(test, feature = "experimental"))]
-pub(super) fn mark_angular_refusal() {
-    ANGULAR_REFUSED.set(true);
-}
-
-/// Whether a refusal after a held contact is a contact phase:
-/// `EMERGE_PROBE_REFUSAL_PHASE` set (FAST_MODE_PLAN.md sec. 23, C2), or
-/// `=angular` and the refusal the angular-momentum check's (sec. 24, C2');
-/// announced once.
-#[cfg(all(test, feature = "experimental"))]
-fn refusal_phase() -> bool {
-    static MODE: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
-    let mode = *MODE.get_or_init(|| {
-        let set = std::env::var("EMERGE_PROBE_REFUSAL_PHASE").ok()?;
-        let angular = set == "angular";
-        if angular {
-            println!("knob active: a refusal by the angular check after a held contact is a contact phase");
-        } else {
-            println!("knob active: a refusal after a held contact is a contact phase");
-        }
-        Some(angular)
-    });
-    match mode {
-        None => false,
-        Some(true) => ANGULAR_REFUSED.get(),
-        Some(false) => true,
-    }
-}
-
-// KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: with k above about 20 the fixed contact step is cut to the frame's remaining time, so the whole contact phase is one conserving midpoint step and k no longer sets it | source: FAST_MODE_PLAN.md sec. 14b, 21a | replace when: the contact phase is stepped at k <= 1/4 within every frame's budget, or an error-controlled large step bounds the contact's error | state: researched; the sourced contact-time rule (sec. 21) measured and not adopted | gap: k is chosen, not derived (sec. 21a)
-/// S1's control for the next controlled step: with
-/// `EMERGE_PROBE_CONTACT_FIXED_STEP=k` set and inside a contact phase, an
-/// infinite tolerance and the step `2 k h / c` (its two halves of `k h / c`
-/// kept, as reference A and the step sweep take theirs), cut to the
-/// frame's remaining time; `c` the body's fastest P wave, `sqrt((lambda +
-/// 2 mu) / rho)` with `lambda + 2 mu` the code's `bulk + mu`. Otherwise
-/// `control` unchanged.
-#[cfg(all(test, feature = "experimental"))]
-pub(super) fn contact_phase_control(
-    control: &StepControl,
-    state: &mut TotalLagrangianState,
-    planes: &[Plane],
-    remaining: f64,
-) -> StepControl {
-    let control = probes_control(control, state, planes, remaining);
-    // FAST_MODE_PLAN.md sec. 36.2 (K-1, K-2), with the step's length set.
-    if tracing() {
-        wall_gap_probes::before_step(state, planes);
-    }
-    control
-}
-
-/// `contact_phase_control`'s choice of the step.
-#[cfg(all(test, feature = "experimental"))]
-fn probes_control(
-    control: &StepControl,
-    state: &mut TotalLagrangianState,
-    planes: &[Plane],
-    remaining: f64,
-) -> StepControl {
-    // FAST_MODE_PLAN.md sec. 31 (C-1): the held contacts' total normal
-    // multiplier and the least point gap to a wall before each step.
+pub(super) fn before_step(state: &mut TotalLagrangianState, planes: &[Plane]) {
     if tracing() {
         let (held, force) = state.cache.as_ref().map_or((0, 0.0), |c| {
             (
@@ -240,194 +156,14 @@ fn probes_control(
             .fold(f64::INFINITY, f64::min);
         trace(|| {
             format!(
-                "C-1: before the step: {held} contacts held, normal multiplier sum {force:+.4e}, least point gap {gap:+.4e} m, contact phase {}",
-                CONTACT_PHASE.get()
+                "C-1: before the step: {held} contacts held, normal multiplier sum {force:+.4e}, least point gap {gap:+.4e} m"
             )
         });
     }
-    // MIXED_FORMULATION_PLAN.md: the Theta cells, once, at the first step.
     theta_cells::ensure(state);
-    static K: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
-    let k = *K.get_or_init(|| {
-        std::env::var("EMERGE_PROBE_CONTACT_FIXED_STEP")
-            .ok()
-            .and_then(|v| v.parse().ok())
-    });
-    // FAST_MODE_PLAN.md sec. 21: the contact step from the contact's own
-    // duration, in place of k.
-    static N: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
-    let n = *N.get_or_init(|| {
-        std::env::var("EMERGE_PROBE_CONTACT_STEP_RULE")
-            .ok()
-            .and_then(|v| v.parse().ok())
-    });
-    if let Some(n) = n {
-        assert!(
-            k.is_none(),
-            "EMERGE_PROBE_CONTACT_STEP_RULE replaces EMERGE_PROBE_CONTACT_FIXED_STEP: set one"
-        );
-        if !CONTACT_PHASE.get() {
-            return *control;
-        }
-        let held = round_trip_time(state, planes);
-        if held.is_some() {
-            CONTACT_TIME.set(held);
-        }
-        let Some(contact_time) = held.or(CONTACT_TIME.get()).or(smallest_round_trip(state)) else {
-            return *control;
-        };
-        let piece = contact_time / n;
-        static ANNOUNCED: std::sync::Once = std::sync::Once::new();
-        ANNOUNCED.call_once(|| {
-            println!(
-                "knob active: contact step rule, N {n}, first T_c {contact_time:.6e} s, piece {piece:.6e} s"
-            );
-        });
-        state.step_length = (2.0 * piece).min(remaining);
-        trace(|| {
-            format!(
-                "R: rule step {:.6e} s (T_c {contact_time:.6e} s, N {n})",
-                state.step_length
-            )
-        });
-        return StepControl {
-            tolerance: f64::INFINITY,
-            ..*control
-        };
+    if tracing() {
+        wall_gap_probes::before_step(state, planes);
     }
-    // FAST_MODE_PLAN.md sec. 27.1, a diagnostic only: with
-    // `EMERGE_PROBE_FIXED_STEP_WHERE=held` the fixed step applies only while
-    // a contact is held at the last step, with `=air` only while none is; the
-    // other frames of the phase go to the error controller.
-    static WHERE: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
-    let place = *WHERE.get_or_init(|| {
-        let place = match std::env::var("EMERGE_PROBE_FIXED_STEP_WHERE").as_deref() {
-            Ok("held") => Some(true),
-            Ok("air") => Some(false),
-            Ok(other) => panic!("EMERGE_PROBE_FIXED_STEP_WHERE is held or air, not {other}"),
-            Err(_) => None,
-        };
-        if let Some(held) = place {
-            println!(
-                "knob active: fixed step only {} (diagnostic)",
-                if held {
-                    "while a contact is held"
-                } else {
-                    "while no contact is held"
-                }
-            );
-        }
-        place
-    });
-    let held = state.cache.as_ref().is_some_and(|c| !c.contacts.is_empty());
-    let allowed = place.is_none_or(|want| want == held);
-    let (Some(k), true) = (k, CONTACT_PHASE.get() && allowed) else {
-        return *control;
-    };
-    // The knob's confirmation, once, from inside the patched path.
-    static ANNOUNCED: std::sync::Once = std::sync::Once::new();
-    ANNOUNCED.call_once(|| println!("knob active: S1 fixed contact step, k {k}"));
-    let Some(cell) = state.cache.as_ref().map(|c| c.grid.cell) else {
-        return *control;
-    };
-    let c = (0..state.particles)
-        .filter(|&p| state.v0[p] > 0.0)
-        .map(|p| ((state.solids[p].bulk + state.solids[p].mu) * state.v0[p] / state.mass[p]).sqrt())
-        .fold(0.0, f64::max);
-    state.step_length = (2.0 * k * cell / c).min(remaining);
-    trace(|| {
-        format!(
-            "S1: fixed step {:.6e} s (k {k}, h {cell} m, c {c:.4} m/s)",
-            state.step_length
-        )
-    });
-    StepControl {
-        tolerance: f64::INFINITY,
-        ..*control
-    }
-}
-
-// KNOWN-LIMIT[DISCRETIZATION/NO-SOURCE]: the contact step's N = 18 pieces per contact time is one example's statement (Love and Sulsky TR 2004-002 sec. 4.1: "about 18 times the time step, so reasonable accuracy is expected"), not a convergence result; the body's extent along the normal and the fastest bulk speed are adaptations | source: FAST_MODE_PLAN.md sec. 21, 21a | replace when: an error estimate inside the contact phase sets the step at a cost within the frame's budget | state: measured, not adopted | gap: fails the 50 % floor on the resting block (P1 sag kept 0.152, k = 39.33 keeps 0.885), cause not measured
-/// FAST_MODE_PLAN.md sec. 21: the shortest contact time among the held
-/// contacts, `T_c = 2 L_n / c_b`: the time a wave takes across the body and
-/// back (Love and Sulsky TR 2004-002 sec. 4.1; Acary 2013, CMAME 256, the
-/// elastic bar's exact `2 L / c0`), `L_n` the body's extent along the
-/// contact's normal (its outline points, now), `c_b = sqrt(kappa / rho0)`
-/// the linearised bulk wave, `kappa = bulk - mu / 3` (`bulk` is `lambda +
-/// mu`), the fastest over the solid particles. `None` without a held
-/// contact or a wave.
-#[cfg(all(test, feature = "experimental"))]
-fn round_trip_time(state: &TotalLagrangianState, planes: &[Plane]) -> Option<f64> {
-    let cache = state.cache.as_ref()?;
-    let c = bulk_wave(state)?;
-    let x = &state.x;
-    let extent = |outline: &[usize], normal: DVec2| extent(x, outline, normal);
-    cache
-        .contacts
-        .iter()
-        .flat_map(|contact| {
-            contact
-                .points
-                .iter()
-                .map(move |(point, _)| (contact.key, point))
-        })
-        .filter_map(|((kind, _, plane), point)| {
-            let outline = state
-                .outlines
-                .iter()
-                .find(|o| o.contains(&point.particle))?;
-            // The normal: a segment's (against another body), else the
-            // wall's axis (kinds 0 and 3 key the wall's plane; a point's
-            // own `plane` indexes the step's copies, not `planes`). A pair
-            // across a plane of its own (kind 1) names no wall: the body's
-            // smaller extent, the shorter time (a declared adaptation).
-            let length = match (point.segment, kind) {
-                (Some((a, b)), _) => extent(outline, (x[b] - x[a]).perp().normalize_or_zero()),
-                (None, 0 | 3) => extent(outline, DVec2::AXES[planes[plane].axis]),
-                _ => extent(outline, DVec2::X).min(extent(outline, DVec2::Y)),
-            };
-            (length > 0.0).then(|| 2.0 * length / c)
-        })
-        .reduce(f64::min)
-}
-
-/// FAST_MODE_PLAN.md sec. 21: at a contact phase's first step no contact is
-/// held yet: the shortest round trip through any body's smaller extent, the
-/// shorter time (a declared adaptation). `None` without a body or a wave.
-#[cfg(all(test, feature = "experimental"))]
-fn smallest_round_trip(state: &TotalLagrangianState) -> Option<f64> {
-    let c = bulk_wave(state)?;
-    state
-        .outlines
-        .iter()
-        .map(|o| extent(&state.x, o, DVec2::X).min(extent(&state.x, o, DVec2::Y)))
-        .filter(|&length| length > 0.0)
-        .map(|length| 2.0 * length / c)
-        .reduce(f64::min)
-}
-
-/// The fastest linearised bulk wave over the solid particles, `sqrt(kappa /
-/// rho0)`, `kappa = bulk - mu / 3`; `None` without one.
-#[cfg(all(test, feature = "experimental"))]
-fn bulk_wave(state: &TotalLagrangianState) -> Option<f64> {
-    let c = (0..state.particles)
-        .filter(|&p| state.v0[p] > 0.0)
-        .map(|p| {
-            let solid = &state.solids[p];
-            ((solid.bulk - solid.mu / 3.0) * state.v0[p] / state.mass[p]).sqrt()
-        })
-        .fold(0.0, f64::max);
-    (c > 0.0).then_some(c)
-}
-
-/// An outline's extent along `normal`, m.
-#[cfg(all(test, feature = "experimental"))]
-fn extent(x: &[DVec2], outline: &[usize], normal: DVec2) -> f64 {
-    let along = outline.iter().map(|&q| x[q].dot(normal));
-    let (low, high) = along.fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), d| {
-        (l.min(d), h.max(d))
-    });
-    high - low
 }
 
 impl Simulation {
@@ -443,35 +179,6 @@ impl Simulation {
         (t0, t1): (f64, f64),
     ) -> (f64, f64) {
         #[cfg(all(test, feature = "experimental"))]
-        ANGULAR_REFUSED.set(false);
-        let reached = self.fly_or_refuse(state, (planes, gravity), (t0, t1));
-        // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: C2 takes a refused body's frame at the fixed contact step; on the hopping clay it keeps the floor (long run 0.66), on the Norton plasticine the impact at that step turns nearly elastic (plastic work 8.4e-3 against 1.12 J/m) | source: FAST_MODE_PLAN.md sec. 23a, 24a | replace when: a refused flight is stepped at a step that resolves the law's own rate | state: measured, not adopted (C2' limited to the angular check: no regression on V0, the rows or Norton; the clay run keeps 66 contact episodes against RT's 77) | gap: the energy rise's two shares (fixed step, flights) not named
-        // FAST_MODE_PLAN.md sec. 23 (C2): with
-        // `EMERGE_PROBE_REFUSAL_PHASE` set, an attempt that took no flight
-        // after a contact held since the last one is a contact phase, so
-        // the fixed contact step takes the frame instead of the error
-        // controller.
-        #[cfg(all(test, feature = "experimental"))]
-        if reached.0 <= t0 && state.held_since_flight && !CONTACT_PHASE.get() && refusal_phase() {
-            trace(|| format!("t {t0:.6}: C2: the refusal after a held contact is a contact phase"));
-            contact_phase(true);
-        }
-        reached
-    }
-
-    /// `fly_as_far_as_clear`'s attempt itself.
-    fn fly_or_refuse(
-        &self,
-        state: &mut TotalLagrangianState,
-        (planes, gravity): (&[Plane], DVec2),
-        (t0, t1): (f64, f64),
-    ) -> (f64, f64) {
-        // Not a contact phase unless the flight stops at the clearance bound
-        // or on a held contact (a refusal is not one: no modes, yielded, a
-        // bound refused, damped, a failed rebuild or angular check).
-        #[cfg(all(test, feature = "experimental"))]
-        contact_phase(false);
-        #[cfg(all(test, feature = "experimental"))]
         if let Some(reached) =
             self.fly_exponential_as_far_as_clear(state, (planes, gravity), (t0, t1))
         {
@@ -483,10 +190,6 @@ impl Simulation {
             if !free {
                 #[cfg(all(test, feature = "experimental"))]
                 trace(|| format!("t {t0:.6}: not free (a contact held at the last step)"));
-                // A contact phase only if a contact is held (before the first
-                // step there is no cache: not a contact).
-                #[cfg(all(test, feature = "experimental"))]
-                contact_phase(state.cache.as_ref().is_some_and(|c| !c.contacts.is_empty()));
                 return (t0, 0.0);
             }
             if state.modes.is_none() {
@@ -560,8 +263,6 @@ impl Simulation {
             });
         }
         if reach <= t0 {
-            #[cfg(all(test, feature = "experimental"))]
-            contact_phase(true);
             state.hand_backs += 1;
             return (t0, 0.0);
         }
@@ -593,8 +294,6 @@ impl Simulation {
             (state.x, state.v, state.f) = start;
             state.modes = Some(Some(modes));
             state.hand_backs += 1;
-            #[cfg(all(test, feature = "experimental"))]
-            ANGULAR_REFUSED.set(true);
             return (t0, 0.0);
         }
         flight.carry_branches(&modes, state, &start.2);
@@ -602,11 +301,7 @@ impl Simulation {
         let change = self.total_lagrangian_energy(state) - before;
         if reach >= t1 {
             state.flight = Some(flight);
-            #[cfg(all(test, feature = "experimental"))]
-            CONTACT_TIME.set(None);
         } else {
-            #[cfg(all(test, feature = "experimental"))]
-            contact_phase(true);
             state.hand_backs += 1;
         }
         (reach, change)

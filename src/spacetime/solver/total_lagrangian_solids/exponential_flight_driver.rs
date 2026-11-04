@@ -202,13 +202,9 @@ impl Simulation {
         if !knob.on {
             return None;
         }
-        // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: on the real-time baseline this flight removes the angular-check refusals and the long-run chatter of the hopping clay, but each hand-back keeps the linear basis's residual (the law's energy of the rebuilt state against the modes' quadratic energy, -7.5e-2 to +6.7e-2 J/m per segment), a net gain of 0.17 J/m over 420 frames: higher hops, fewer contacts (long run kept 0.46) | source: FAST_MODE_PLAN.md sec. 25a | replace when: the flight's energy is the law's own, so a hand-back keeps the step's energy | state: measured, not adopted | gap: none
-        // The contact-phase flags as today's flight sets them (handoff.rs;
-        // FAST_MODE_PLAN.md sec. 25): a contact phase on a held contact, a
-        // stop at the clearance bound or a partial reach, never on a refusal.
+        // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: on the former real-time baseline (fixed contact step, now removed) this flight removes the angular-check refusals and the long-run chatter of the hopping clay, but each hand-back keeps the linear basis's residual (the law's energy of the rebuilt state against the modes' quadratic energy, -7.5e-2 to +6.7e-2 J/m per segment), a net gain of 0.17 J/m over 420 frames: higher hops, fewer contacts (long run kept 0.46) | source: FAST_MODE_PLAN.md sec. 25a | replace when: the flight's energy is the law's own, so a hand-back keeps the step's energy | state: measured, not adopted | gap: none
         if !ensure(state, (t0, gravity), knob)? {
             let held = state.cache.as_ref().is_some_and(|c| !c.contacts.is_empty());
-            handoff::contact_phase(held);
             if held {
                 law::lemma::contact_held();
             }
@@ -240,16 +236,12 @@ impl Simulation {
                 ..Default::default()
             });
             state.hand_backs += 1;
-            handoff::contact_phase(true);
             handoff::trace(|| format!("t {t0:.6}: exponential flight: NotClear"));
             return Some((t0, 0.0));
         }
         let before = self.total_lagrangian_energy(state);
         let outcome = advance(state, flight, (planes, gravity), reach, knob.steps);
         if outcome != Outcome::Flown {
-            if outcome == Outcome::AngularMomentum {
-                handoff::mark_angular_refusal();
-            }
             handoff::trace(|| format!("t {t0:.6}: exponential flight: {outcome:?}"));
             return Some((t0, 0.0));
         }
@@ -262,9 +254,6 @@ impl Simulation {
         if reach < t1 {
             state.exponential = None;
             state.hand_backs += 1;
-            handoff::contact_phase(true);
-        } else {
-            handoff::forget_contact_time();
         }
         Some((reach, change))
     }

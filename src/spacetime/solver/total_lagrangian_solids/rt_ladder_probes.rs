@@ -2,10 +2,9 @@
 //! RT_LEVER_MEASUREMENT_PLAN.md, measurement worktree only, never committed
 //! to dev): tests/replay_ledger.rs's clay block and replay writer, copied
 //! unchanged except for the rung (`EMERGE_RT_CONFIG`: A0 stepped, A1 modal
-//! flight, A2 sub-frame handoff, A3 handoff plus the fixed contact step,
-//! which also needs `EMERGE_PROBE_CONTACT_FIXED_STEP`) and the header's
-//! build label (`EMERGE_REPLAY_BUILD`). In-crate because the fixed-step knob
-//! exists only in the library's test build.
+//! flight, A2 sub-frame handoff) and the header's build label
+//! (`EMERGE_REPLAY_BUILD`). In-crate because its knobs exist only in the
+//! library's test build.
 
 use super::TotalLagrangianConfig;
 use crate::materials::MaterialModel;
@@ -14,11 +13,6 @@ use crate::materials::relaxation::ViscoelasticRecord;
 use crate::materials::solid::viscoplastic_records::ViscoplasticRecord;
 use crate::{CorotatedMaterial, FromSI, SimConfig, Simulation, SpawnRegion};
 use glam::{IVec2, Vec2};
-
-// FAST_MODE_PLAN.md sec. 19: the capability scorecard in the real-time
-// configuration, beside this harness.
-#[path = "rt_capability_probes.rs"]
-mod capability;
 
 /// The 8 x 4 cm block of the material `made` builds, `props`' density,
 /// dropped `lift` cells, at the step tolerance `tolerance`, its free frames
@@ -59,8 +53,8 @@ fn block(
     config.total_lagrangian = Some(match rung {
         "A0" => path,
         "A1" => path.with_modal_flight(),
-        "A2" | "A3" => path.with_subframe_handoff(),
-        other => panic!("EMERGE_RT_CONFIG {other}: A0, A1, A2 or A3"),
+        "A2" => path.with_subframe_handoff(),
+        other => panic!("EMERGE_RT_CONFIG {other}: A0, A1 or A2"),
     });
     let mut sim = Simulation::empty(config);
     let id = sim.register_material(made(&config)).0;
@@ -165,7 +159,6 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
     let mut allowed = 0.0;
     let mut walls = Vec::with_capacity(frames);
     let mut breakdown = Vec::with_capacity(frames);
-    let mut single_solve_fallbacks = 0;
     crate::spacetime::total_lagrangian::hooks::take_parts();
     let rest = REST.with(|r| r.get());
     for k in 1..=frames {
@@ -180,8 +173,7 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
         allowed += f.residual_work + f.contact_work_bound;
         walls.push(1e3 * f.wall);
         out.push(frame_json(&sim, frame_s * k as f64, allowed));
-        let (line, fallbacks) = breakdown_json(&f);
-        breakdown.push(line);
+        breakdown.push(breakdown_json(&f));
         // FAST_MODE_PLAN.md sec. 50.4: the controller's tries by class and
         // outcome, per frame (`EMERGE_PROBE_TRIES`).
         if tries_knob() {
@@ -229,12 +221,7 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
                 );
             }
         }
-        if fallbacks > 0 {
-            println!("frame {k}: single-solve fallbacks {fallbacks}");
-        }
-        single_solve_fallbacks += fallbacks;
     }
-    println!("single-solve fallbacks over the run: {single_solve_fallbacks}");
     if rest {
         rest_report();
     }
@@ -319,14 +306,12 @@ fn tries_knob() -> bool {
 /// and the TEMPORARY solve counters of the snapshot summed over every solve
 /// of the frame (discarded and rejected tries included): Newton iterations,
 /// solves, Jacobian products, linearisations, residual evaluations, the
-/// solves' wall time; and the single-solve steps that fell back to the pair
-/// (returned beside the line).
-fn breakdown_json(f: &super::TotalLagrangianFrame) -> (String, u32) {
+/// solves' wall time.
+fn breakdown_json(f: &super::TotalLagrangianFrame) -> String {
     let t = &f.timing;
     let p = crate::spacetime::total_lagrangian::hooks::take_parts();
-    let fallbacks = crate::spacetime::total_lagrangian::take_single_solve_fallbacks();
-    let line = format!(
-        "{{\"wall_ms\":{:.3},\"steps\":{},\"rejected\":{},\"newton_kept\":{},\"gmres_kept\":{},\"modal\":{},\"contacts\":{},\"newton_all\":{},\"solves_all\":{},\"products_all\":{},\"linearisations_all\":{},\"residuals_all\":{},\"solve_wall_ms\":{:.3},\"ms\":{{\"residual\":{:.3},\"jacobian\":{:.3},\"linearisation\":{:.3},\"push_derivative\":{:.3},\"responses_jacobian\":{:.3},\"preconditioner_build\":{:.3},\"preconditioner_solve\":{:.3},\"gmres\":{:.3},\"responses\":{:.3},\"contact\":{:.3},\"multipliers\":{:.3},\"grid\":{:.3},\"finishing\":{:.3},\"controller\":{:.3}}},\"internal_evaluations\":{},\"factorizations\":{},\"single_solve_fallbacks\":{},\"relaxation_heat\":{:.9e},\"relaxation_strain\":{:.3e},\"relaxation_beyond\":{}}}",
+    format!(
+        "{{\"wall_ms\":{:.3},\"steps\":{},\"rejected\":{},\"newton_kept\":{},\"gmres_kept\":{},\"modal\":{},\"contacts\":{},\"newton_all\":{},\"solves_all\":{},\"products_all\":{},\"linearisations_all\":{},\"residuals_all\":{},\"solve_wall_ms\":{:.3},\"ms\":{{\"residual\":{:.3},\"jacobian\":{:.3},\"linearisation\":{:.3},\"push_derivative\":{:.3},\"responses_jacobian\":{:.3},\"preconditioner_build\":{:.3},\"preconditioner_solve\":{:.3},\"gmres\":{:.3},\"responses\":{:.3},\"contact\":{:.3},\"multipliers\":{:.3},\"grid\":{:.3},\"finishing\":{:.3},\"controller\":{:.3}}},\"internal_evaluations\":{},\"factorizations\":{},\"relaxation_heat\":{:.9e},\"relaxation_strain\":{:.3e},\"relaxation_beyond\":{}}}",
         1e3 * f.wall,
         f.steps,
         f.rejected,
@@ -356,12 +341,10 @@ fn breakdown_json(f: &super::TotalLagrangianFrame) -> (String, u32) {
         1e3 * t.controller,
         t.internal_evaluations,
         t.factorizations,
-        fallbacks,
         f.relaxation_heat,
         f.relaxation_strain,
         f.relaxation_beyond
-    );
-    (line, fallbacks)
+    )
 }
 
 /// `EMERGE_RT_CELLS_ACROSS` (default 4): the cells through the block's
@@ -376,36 +359,6 @@ fn cells_across() -> i32 {
         println!("knob active: cells across {n}");
         n
     })
-}
-
-/// The declared real-time baseline (FAST_MODE_PLAN.md secs. 16-17), rung
-/// `RT`: A3 (modal flight, sub-frame handoff) with the conserving midpoint
-/// at the fixed contact step k = 39.33 (pieces of 1/240 s at n = 2, cut to
-/// the frame's remainder), one solve per step, two cells through the
-/// block's thickness. Measured on the 8 x 4 cm clay drop (release, 4
-/// threads, 5 clean runs): every frame <= 13.4 ms; rebound kept at the 50 %
-/// floor's edge. The knobs it needs are checked here, not set, so a run
-/// cannot carry the name with other values. A measurement-branch baseline:
-/// the handoff and the knobs are probes, porting it into the default
-/// configuration is its own step. Its compromises:
-// KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the body is meshed at two cells through its thickness (h = 2 cm on the clay drop), coarser than the reference's four | source: RT_RESOLUTION_SWEEP_PLAN.md sec. 10; FAST_MODE_PLAN.md sec. 16 | replace when: the per-step cost allows n = 4 within every frame's budget | state: researched | gap: none
-// KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the rebound is 50.0 % faster and 43.3 % higher than the precise reference's (the 50 % floor's edge, kept 0.5004), the contact phase being one large midpoint step | source: FAST_MODE_PLAN.md sec. 14b | replace when: apex and rebound vy are within 25 % of A0 n = 4 in the real-time configuration | state: researched | gap: none
-// KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the frame bound (every frame <= 13.4 ms) was measured over 40 frames only; over 420 frames the hopping block's flights are refused by the angular-momentum check and its frames fall to the error controller (about 90 kept and 45 rejected steps per heavy frame, up to 633 ms in the release viewer) | source: FAST_MODE_PLAN.md sec. 22a | replace when: every frame of a 420-frame run is within the budget | state: measured | gap: none
-fn rt_baseline() {
-    let want = [
-        ("EMERGE_PROBE_CONTACT_FIXED_STEP", Some("39.33")),
-        ("EMERGE_PROBE_SINGLE_SOLVE", None),
-        ("EMERGE_RT_CELLS_ACROSS", Some("2")),
-    ];
-    for (name, value) in want {
-        let set = std::env::var(name).ok();
-        assert!(
-            set.is_some() && (value.is_none() || set.as_deref() == value),
-            "rung RT needs {name}{}",
-            value.map_or(String::new(), |v| format!("={v}"))
-        );
-    }
-    println!("knob active: declared real-time baseline (k 39.33, single solve, 2 cells across)");
 }
 
 #[test]
@@ -527,12 +480,6 @@ fn rest_report() {
 fn ladder() {
     let rung = std::env::var("EMERGE_RT_CONFIG").expect("EMERGE_RT_CONFIG names the rung");
     println!("knob active: real-time ladder rung {rung}");
-    let rung = if rung == "RT" {
-        rt_baseline();
-        "A3".to_string()
-    } else {
-        rung
-    };
     let clay = Elastic {
         e_pa: 1.125e7,
         nu: 0.3,
@@ -555,11 +502,7 @@ fn ladder() {
     let name = match rung.as_str() {
         "A0" => "clay_drop_e2",
         "A1" => "clay_drop_e2_modal",
-        "A2" => "clay_drop_e2_handoff",
-        "A3" if std::env::var("EMERGE_RT_CONFIG").as_deref() == Ok("RT") => {
-            "clay_drop_e2_rt_baseline"
-        }
-        _ => "clay_drop_e2_fixed_step",
+        _ => "clay_drop_e2_handoff",
     };
     // FAST_MODE_PLAN.md sec. 22: the long run (`EMERGE_RT_FRAMES`, default
     // 40) and the dissipative clay (`EMERGE_RT_MATERIAL=norton`: the

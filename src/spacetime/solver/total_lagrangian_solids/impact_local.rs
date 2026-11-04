@@ -746,76 +746,8 @@ fn probe_floor_candidates() {
     });
 }
 
-/// S1's criterion 4 (`tmp/papers/dl_realtime/S1_FIXED_CONTACT_STEP_PLAN.md`):
-/// run D to frame 7's end, then frame 8 with every controlled pair sampled
-/// against its 64-piece reference (`hooks::EffectivityRow`); for the pairs
-/// of the fixed contact-phase step (`EMERGE_PROBE_CONTACT_FIXED_STEP`), the
-/// median true error of the kept halves and of the whole step, in the
-/// controller's norm. A probe.
-#[test]
-#[ignore = "diagnostic probe: run with --ignored --nocapture"]
-fn probe_s1_contact_convergence() {
-    use crate::spacetime::total_lagrangian::hooks;
-    super::cap::capped("probe_s1_contact_convergence", 7200, || {
-        let mut sim = drop(
-            FRAME_S,
-            TotalLagrangianConfig::new(1e-2).with_subframe_handoff(),
-        );
-        for _ in 0..8 {
-            sim.step();
-        }
-        hooks::set_effectivity(1, 0);
-        sim.step();
-        hooks::set_effectivity(0, 0);
-        let rows = hooks::take_effectivity();
-        let f = sim.total_lagrangian_frame().expect("on");
-        // The fixed step's pairs: the most frequent step length among the
-        // sampled pairs (the phase's `2 k h / c`; the cut steps differ).
-        let mut lengths: Vec<f64> = rows.iter().map(|r| r.dt).collect();
-        lengths.sort_by(f64::total_cmp);
-        let mode = lengths
-            .chunk_by(|a, b| (a - b).abs() <= 1e-12 * a.abs())
-            .max_by_key(|run| run.len())
-            .map_or(f64::NAN, |run| run[0]);
-        let fixed: Vec<&hooks::EffectivityRow> = rows
-            .iter()
-            .filter(|r| (r.dt - mode).abs() <= 1e-12 * mode.abs())
-            .collect();
-        let median = |mut v: Vec<f64>| -> f64 {
-            v.sort_by(f64::total_cmp);
-            v.get(v.len() / 2).copied().unwrap_or(f64::NAN)
-        };
-        let halves = median(fixed.iter().map(|r| r.halves_error).collect());
-        // The split by the pair's class (S1 plan sec. 12): switching
-        // (an activation or release inside the pair) or not.
-        for (class, switching) in [("switching", true), ("non-switching", false)] {
-            let errors: Vec<f64> = fixed
-                .iter()
-                .filter(|r| r.switching == switching)
-                .map(|r| r.halves_error)
-                .collect();
-            println!(
-                "S1 convergence frame 8, {class} pairs: {}, median kept-halves error {:.6e}",
-                errors.len(),
-                median(errors.clone())
-            );
-        }
-        let whole = median(fixed.iter().map(|r| r.whole_error).collect());
-        println!(
-            "S1 convergence frame 8: sampled pairs {}, at the fixed step {mode:.6e} s {}, of them holding a contact {}; median true error: kept halves {halves:.6e} (controller's norm), whole step {whole:.6e}; frame steps {} rejected {} wall {:.3} s",
-            rows.len(),
-            fixed.len(),
-            fixed.iter().filter(|r| r.held).count(),
-            f.steps,
-            f.rejected,
-            f.wall
-        );
-    });
-}
-
 /// S3 (`tmp/papers/dl_realtime/S3_DENSE_SOLVE_PLAN.md`): run D's frame 8,
-/// in the regime the environment selects (the baseline, or S1' with
-/// `EMERGE_PROBE_CONTACT_FIXED_STEP`), its GMRES time and Jacobian products
+/// its GMRES time and Jacobian products
 /// per Newton iteration over every solve, against a dense LU with partial
 /// pivoting (textbook Gaussian elimination, timing only, never used by the
 /// solver) at the frame's own active-unknown count and at 612 and 2244. A
