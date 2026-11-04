@@ -22,8 +22,8 @@
 //!   model is proven for their scheme; on this one it was measured (the
 //!   velocity's error through a bar's impact falls as `tau^0.4` to
 //!   `tau^0.5`, `probe_bar_impact`).
-//! - The energy norm is taken on the particles: kinetic from their mean
-//!   velocity over the step (`controlled_step`'s note), `a(u, u)` as `sum V0 (2 mu |sym dF|^2 + lambda (tr
+//! - The energy norm is taken on the particles: kinetic from their end
+//!   velocities (`controlled_step`'s note), `a(u, u)` as `sum V0 (2 mu |sym dF|^2 + lambda (tr
 //!   dF)^2)` from their deformation gradients.
 //! - The tolerance is relative: `err <= tol sqrt(E0)`, so the error's
 //!   energy per step is at most `tol^2 E0`, with `E0` the scene's
@@ -233,17 +233,6 @@ fn floor_knobs() -> (usize, bool) {
     (2, false)
 }
 
-/// Whether the norm's kinetic part reads the END velocities' difference
-/// (`EMERGE_PROBE_NORM=velocity`, NORM_AT_IMPULSE_PLAN.md's N2, KSD's
-/// energy norm) instead of the step-mean `dx / dt`; test builds only.
-fn velocity_norm_knob() -> bool {
-    #[cfg(all(test, feature = "experimental"))]
-    if std::env::var("EMERGE_PROBE_NORM").as_deref() == Ok("velocity") {
-        return true;
-    }
-    false
-}
-
 /// The estimator a path uses, or in test builds the one
 /// `EMERGE_PROBE_ESTIMATOR` names (`klapproth`, `acary`): a measurement's
 /// knob (`SWITCH_ESTIMATE_SOURCES.md`, candidate D).
@@ -408,19 +397,14 @@ pub fn controlled_step(
     {
         kept.factors = Factors::default();
     }
-    // The kinetic part on the step's mean velocity, the displacement over
-    // the step over its length: the tries end on different parities of
-    // the contact points' velocity alternation (route C holds the mean,
-    // `u' (n+1) = -u'(n)` at an active point), which the end velocity
-    // would measure as error.
-    // Source: Exl, Mauser, Schrefl and Suess, arXiv 1703.02479, sec. 3
-    // (after Gragg 1965): the midpoint rule's error expansions differ for
-    // even and odd step counts, and Gragg's smoothing removes the
-    // alternating term. Adaptation: the analogy between the explicit
-    // midpoint's parasitic root and the contact's alternation is this
-    // engine's, measured, not proven.
-    let by_velocity = velocity_norm_knob();
-    let rate = |d: &State, p: usize, dt: f64| if by_velocity { d.v[p] } else { d.x[p] / dt };
+    // The kinetic part on the tries' END velocities, the energy norm as
+    // KSD write it (eqs. 11-12, `1/2 ||u'||_M^2`). The tries end on
+    // different parities of the held points' velocity alternation (route C
+    // holds the mean, `u'(n+1) = -u'(n)` at an active point), and that
+    // difference is counted as error: it is the held contact's own error
+    // (measured: a norm that leaves it out also hides the impact's error,
+    // FAST_MODE_PLAN.md sec. 72.6).
+    let rate = |d: &State, p: usize| d.v[p];
     // With per-body scales (`hooks::body_scales`, test builds only, several
     // bodies): the norm the target is compared with becomes `sqrt(E0) max_b
     // err_b / sqrt(E0_b)`, so `norm <= tol sqrt(E0)` holds iff every body's
@@ -428,7 +412,7 @@ pub fn controlled_step(
     // body takes the unchanged sum.
     #[cfg(all(test, feature = "experimental"))]
     let per_body = hooks::body_scales().filter(|b| b.1.len() > 1);
-    let norm = |d: &State, dt: f64| -> f64 {
+    let norm = |d: &State| -> f64 {
         #[cfg(all(test, feature = "experimental"))]
         if let Some(scales) = &per_body {
             let (body_of, e0) = (&scales.0, &scales.1);
@@ -440,7 +424,7 @@ pub fn controlled_step(
                     + 0.5 * (g.y_axis.x + g.x_axis.y).powi(2);
                 let trace = g.x_axis.x + g.y_axis.y;
                 let lambda = solids[p].bulk - solids[p].mu;
-                energy[body_of[p]] += 0.5 * mass[p] * rate(d, p, dt).length_squared()
+                energy[body_of[p]] += 0.5 * mass[p] * rate(d, p).length_squared()
                     + 0.5 * v0[p] * (2.0 * solids[p].mu * shear + lambda * trace * trace);
             }
             let worst = energy
@@ -452,7 +436,7 @@ pub fn controlled_step(
         }
         let mut energy = 0.0;
         for p in 0..d.x.len() {
-            energy += 0.5 * mass[p] * rate(d, p, dt).length_squared();
+            energy += 0.5 * mass[p] * rate(d, p).length_squared();
             let g = d.f[p];
             let shear =
                 g.x_axis.x.powi(2) + g.y_axis.y.powi(2) + 0.5 * (g.y_axis.x + g.x_axis.y).powi(2);
@@ -463,10 +447,10 @@ pub fn controlled_step(
         energy.max(0.0).sqrt()
     };
     // The norm's two parts.
-    let split = |d: &State, dt: f64| -> (f64, f64) {
+    let split = |d: &State| -> (f64, f64) {
         let (mut kinetic, mut elastic) = (0.0, 0.0);
         for p in 0..d.x.len() {
-            kinetic += 0.5 * mass[p] * rate(d, p, dt).length_squared();
+            kinetic += 0.5 * mass[p] * rate(d, p).length_squared();
             let g = d.f[p];
             let shear =
                 g.x_axis.x.powi(2) + g.y_axis.y.powi(2) + 0.5 * (g.y_axis.x + g.x_axis.y).powi(2);
@@ -709,7 +693,7 @@ pub fn controlled_step(
             account(&whole_reports, &mut timing);
             account(&halves_reports, &mut timing);
             let difference = combine(1.0, &halves, -1.0, &whole);
-            let parts = split(&difference, dt);
+            let parts = split(&difference);
             // `EMERGE_PROBE_ERROR_SPLIT`, a measurement:
             // the estimate's energy split between the particles' rigid motion
             // as one body (the only motion below the frame rate for a block
@@ -738,7 +722,7 @@ pub fn controlled_step(
                 let all = parts.0 * parts.0 + parts.1 * parts.1;
                 println!(
                     "error split: dt {dt:.3e}, error {:.3e} of the target, energy {all:.3e} (kinetic {:.3e}, strain {:.3e}), rigid share {:.4e}",
-                    norm(&difference, dt) / divisor / target.max(f64::MIN_POSITIVE),
+                    norm(&difference) / divisor / target.max(f64::MIN_POSITIVE),
                     parts.0 * parts.0,
                     parts.1 * parts.1,
                     rigid / all.max(f64::MIN_POSITIVE)
@@ -764,14 +748,6 @@ pub fn controlled_step(
                     solids: start.solids.clone(),
                     cache: None,
                 };
-                // The kinetic part from the velocity error instead of the
-                // displacement's (Lacoma and Romero's eq. 32).
-                let velocity_form = |d: &State, dt: f64| -> f64 {
-                    let kinetic: f64 = (0..d.x.len())
-                        .map(|p| 0.5 * mass[p] * d.v[p].length_squared())
-                        .sum();
-                    (kinetic + split(d, dt).1.powi(2)).sqrt()
-                };
                 let estimate = state_of(dx, df, dv);
                 let (reference, _, _) = timed(&start, 64, dt);
                 let whole_off = combine(1.0, &whole, -1.0, &reference);
@@ -782,9 +758,9 @@ pub fn controlled_step(
                             hooks::want_lobatto(true);
                             let (step, _, _) = timed(&start, 1, h);
                             let guess = hooks::take_lobatto()
-                                .map_or(f64::NAN, |(dx, df, dv, _)| norm(&state_of(dx, df, dv), h));
+                                .map_or(f64::NAN, |(dx, df, dv, _)| norm(&state_of(dx, df, dv)));
                             let (fine, _, _) = timed(&start, 64, h);
-                            (h, guess, norm(&combine(1.0, &step, -1.0, &fine), h))
+                            (h, guess, norm(&combine(1.0, &step, -1.0, &fine)))
                         })
                         .collect()
                 } else {
@@ -800,15 +776,13 @@ pub fn controlled_step(
                     compared: if reaching {
                         parts.1
                     } else {
-                        norm(&difference, dt) / divisor
+                        norm(&difference) / divisor
                     },
                     plastic: whole_reports.iter().map(|r| r.plastic).sum(),
-                    estimate: norm(&estimate, dt),
-                    estimate_velocity: velocity_form(&estimate, dt),
-                    whole_error: norm(&whole_off, dt),
-                    whole_error_velocity: velocity_form(&whole_off, dt),
-                    doubling: norm(&difference, dt) / divisor,
-                    halves_error: norm(&combine(1.0, &halves, -1.0, &reference), dt),
+                    estimate: norm(&estimate),
+                    whole_error: norm(&whole_off),
+                    doubling: norm(&difference) / divisor,
+                    halves_error: norm(&combine(1.0, &halves, -1.0, &reference)),
                     halving: halving_rows,
                 };
                 println!("  effectivity: {row:?}");
@@ -818,7 +792,7 @@ pub fn controlled_step(
             let (error, order) = if reaching {
                 (parts.1, 0.0)
             } else {
-                (norm(&difference, dt) / divisor, 2.0)
+                (norm(&difference) / divisor, 2.0)
             };
             let relative = error / (control.safety * target).max(f64::MIN_POSITIVE);
             // Eqs. 64 and 66.
@@ -1074,9 +1048,9 @@ pub fn controlled_step(
         let (kept, reports, error, ratio, contact, parts) = if !contact {
             // Eqs. 33 and 42.
             let difference = combine(1.0, &second, -1.0, &second_two);
-            let error = norm(&difference, dt);
+            let error = norm(&difference);
             let ratio = (control.safety * target / error.max(f64::MIN_POSITIVE)).cbrt();
-            let parts = split(&difference, dt);
+            let parts = split(&difference);
             (second, second_reports, error, ratio, false, parts)
         } else {
             let (third, third_reports, _) =
@@ -1095,11 +1069,11 @@ pub fn controlled_step(
             );
             // Eq. 39.
             let difference = combine(1.0, &third, -1.0, &best);
-            let error = norm(&difference, dt);
+            let error = norm(&difference);
             // X from the same model: the two extrapolations differ by
             // `(beta - alpha) X tau^(1/2)`. Adaptation: this direct form of
             // their p. 26 estimate.
-            let x_size = norm(&combine(1.0, &second_two, -1.0, &third_two), dt)
+            let x_size = norm(&combine(1.0, &second_two, -1.0, &third_two))
                 / ((beta - alpha).abs() * dt.sqrt()).max(f64::MIN_POSITIVE);
             // Eq. 44 for `r = tau* / tau`, by bisection on `ln r`: its left
             // side grows with `r` from 0.
@@ -1116,7 +1090,7 @@ pub fn controlled_step(
                 }
                 a.exp()
             };
-            let parts = split(&difference, dt);
+            let parts = split(&difference);
             (third, third_reports, error, ratio, true, parts)
         };
         let next = (ratio.min(control.growth) * dt).clamp(floor, control.largest);
@@ -1179,7 +1153,7 @@ pub fn controlled_step(
             // concurrently.
             let (reference, _, _) = timed(&start, 64, dt);
             solves += 64;
-            let truth = norm(&combine(1.0, &kept, -1.0, &reference), dt);
+            let truth = norm(&combine(1.0, &kept, -1.0, &reference));
             println!(
                 "  ksd effectivity: dt {dt:.6e}, contact {contact}, estimate {error:.6e}, true {truth:.6e}, target {target:.6e}, accepted {}",
                 error <= target || at_floor

@@ -549,9 +549,8 @@ pub(super) fn take_lobatto() -> Option<super::estimate::ParticleError> {
 /// One sampled pair (`step_control`), every size in the controller's norm:
 /// the step `dt`; whether the pair is switching-class, and whether its
 /// whole step held a contact; the estimate of the
-/// whole step (`estimate`), also with its kinetic part from the velocity
-/// error (Lacoma and Romero's eq. 32 form); the whole step's error against
-/// the 64-substep reference (both forms); the doubling's estimate of the
+/// whole step (`estimate`); the whole step's error against the 64-substep
+/// reference; the doubling's estimate of the
 /// halves and the halves' error against the reference; and, on halving
 /// samples, `(h, estimate, reference error)` at `dt`, `dt/2`, `dt/4`,
 /// `dt/8`.
@@ -572,9 +571,7 @@ pub(crate) struct EffectivityRow {
     pub(crate) compared: f64,
     pub(crate) plastic: f64,
     pub(crate) estimate: f64,
-    pub(crate) estimate_velocity: f64,
     pub(crate) whole_error: f64,
-    pub(crate) whole_error_velocity: f64,
     pub(crate) doubling: f64,
     pub(crate) halves_error: f64,
     pub(crate) halving: Vec<(f64, f64, f64)>,

@@ -750,9 +750,8 @@ fn probe_floor_candidates() {
 /// run D to frame 7's end, then frame 8 with every controlled pair sampled
 /// against its 64-piece reference (`hooks::EffectivityRow`); for the pairs
 /// of the fixed contact-phase step (`EMERGE_PROBE_CONTACT_FIXED_STEP`), the
-/// median true error of the kept halves, in the controller's norm (the
-/// end-velocity norm when `EMERGE_PROBE_NORM=velocity`), and the whole
-/// step's in both forms, for information. A probe.
+/// median true error of the kept halves and of the whole step, in the
+/// controller's norm. A probe.
 #[test]
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
 fn probe_s1_contact_convergence() {
@@ -802,9 +801,8 @@ fn probe_s1_contact_convergence() {
             );
         }
         let whole = median(fixed.iter().map(|r| r.whole_error).collect());
-        let whole_velocity = median(fixed.iter().map(|r| r.whole_error_velocity).collect());
         println!(
-            "S1 convergence frame 8: sampled pairs {}, at the fixed step {mode:.6e} s {}, of them holding a contact {}; median true error: kept halves {halves:.6e} (controller's norm), whole step {whole:.6e} (dx/dt form) and {whole_velocity:.6e} (end-velocity form); frame steps {} rejected {} wall {:.3} s",
+            "S1 convergence frame 8: sampled pairs {}, at the fixed step {mode:.6e} s {}, of them holding a contact {}; median true error: kept halves {halves:.6e} (controller's norm), whole step {whole:.6e}; frame steps {} rejected {} wall {:.3} s",
             rows.len(),
             fixed.len(),
             fixed.iter().filter(|r| r.held).count(),

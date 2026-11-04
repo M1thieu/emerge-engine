@@ -129,10 +129,6 @@ fn report(scene: &str, rows: &[EffectivityRow]) {
             index(&|r| r.estimate / r.whole_error),
         );
         line(
-            "estimate / whole step's error, velocity form",
-            index(&|r| r.estimate_velocity / r.whole_error_velocity),
-        );
-        line(
             "doubling / halves' error",
             index(&|r| r.doubling / r.halves_error),
         );
