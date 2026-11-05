@@ -55,6 +55,19 @@ fn block(
         other => panic!("EMERGE_RT_CONFIG {other}: stepped, modal or handoff"),
     });
     let mut sim = Simulation::empty(config);
+    // A Coulomb floor (`EMERGE_PROBE_FLOOR_FRICTION`, its coefficient; default
+    // the frictionless walls): every wall then takes it, as the path takes one
+    // coefficient for every contact.
+    if let Some(mu) = std::env::var("EMERGE_PROBE_FLOOR_FRICTION")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+    {
+        println!("knob active: Coulomb walls, friction coefficient {mu}");
+        sim.add_boundary_condition(Box::new(crate::boundary::FrictionBoundary::new(
+            config.boundary_thickness,
+            mu,
+        )));
+    }
     let id = sim.register_material(made(&config)).0;
     let floor = config.boundary_thickness as f32;
     let _block = sim.add_body(

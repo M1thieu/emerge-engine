@@ -1,6 +1,7 @@
 //! The walls held at the step's end, with the energy that takes refunded after
-//! the solve (test builds, `EMERGE_PROBE_END_GAP` = `gap` or `refund`, default
-//! off). A measurement: nothing here is the engine's default.
+//! the solve (test builds, `EMERGE_PROBE_END_GAP` = `gap`, `refund` or
+//! `refund_friction`, default off). A measurement: nothing here is the engine's
+//! default.
 //!
 //! Source: Laursen and Love, IJNME 53 (2002) 245-274. The end gap is their eq.
 //! 69, Signorini at the step's end (also Doyen, Ern and Piperno 2011, eq. 109),
@@ -13,8 +14,14 @@
 //! exactly. The root is the one that vanishes with `w_l` (eqs. 67-68).
 //!
 //! Adaptation, declared: their quadrature points are this engine's weighted-gap
-//! conditions. Frictionless only: the friction form is Love and Laursen, CMAME 192
-//! (2003) 2223-2248.
+//! conditions.
+//!
+//! With friction (`refund_friction`): each impulse acts along the condition's
+//! whole contact force, normal push and friction together, not the normal alone
+//! (Love and Laursen, CMAME 192 (2003) 2223-2248, eq. 56). The energy owed stays
+//! the normal work: the engine already books friction's work as heat, from the
+//! step's displacement, which the refund leaves unchanged. Declared: their
+//! examples use a lumped mass, this engine a consistent one; flat walls only.
 //!
 //! Not addressed, by construction: at a held condition `w_l = 0`, so `p = 0` and
 //! `G v_n+1 = -G v_n` stays.
@@ -27,6 +34,7 @@ enum Asked {
     Off,
     Gap,
     Refund,
+    RefundFriction,
 }
 
 fn asked() -> Asked {
@@ -40,7 +48,13 @@ fn asked() -> Asked {
             println!("knob active: the walls held at the step's end, the energy refunded");
             Asked::Refund
         }
-        Ok(other) => panic!("EMERGE_PROBE_END_GAP {other}: gap or refund"),
+        Ok("refund_friction") => {
+            println!(
+                "knob active: the walls held at the step's end, the energy refunded along the whole contact force"
+            );
+            Asked::RefundFriction
+        }
+        Ok(other) => panic!("EMERGE_PROBE_END_GAP {other}: gap, refund or refund_friction"),
         Err(_) => Asked::Off,
     })
 }
@@ -52,7 +66,13 @@ pub(crate) fn gap_on() -> bool {
 
 /// Whether the energy is refunded after the solve.
 pub(crate) fn refund_on() -> bool {
-    asked() == Asked::Refund
+    matches!(asked(), Asked::Refund | Asked::RefundFriction)
+}
+
+/// Whether the refund takes friction: its impulses along the whole contact
+/// force.
+pub(crate) fn with_friction() -> bool {
+    asked() == Asked::RefundFriction
 }
 
 /// The impulses of one step, and how their solve went.
@@ -117,6 +137,7 @@ static NO_ROOT: AtomicU64 = AtomicU64::new(0);
 static UNCONVERGED: AtomicU64 = AtomicU64::new(0);
 static PULLING: AtomicU64 = AtomicU64::new(0);
 static INWARD: AtomicU64 = AtomicU64::new(0);
+static REVERSED: AtomicU64 = AtomicU64::new(0);
 
 /// Counts one refund: the impulses, and the end normal velocities after it.
 pub(crate) fn count(solved: &Impulses, end_rates: &[f64]) {
@@ -130,17 +151,30 @@ pub(crate) fn count(solved: &Impulses, end_rates: &[f64]) {
     INWARD.fetch_add(inward as u64, Ordering::Relaxed);
 }
 
+/// Counts the conditions whose tangential end velocity the refund turned
+/// around: its sign before the update against after it (Love and Laursen do
+/// not exclude it).
+pub(crate) fn count_reversals(before: &[f64], after: &[f64]) {
+    let reversed = before
+        .iter()
+        .zip(after)
+        .filter(|(b, a)| **b * **a < 0.0)
+        .count();
+    REVERSED.fetch_add(reversed as u64, Ordering::Relaxed);
+}
+
 /// One line: the refunds so far on all threads.
 pub(crate) fn report() -> String {
     let read = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
     format!(
-        "{} refunds over {} conditions; no real root {}, unconverged {}; pulling impulses {}, inward end velocities {}",
+        "{} refunds over {} conditions; no real root {}, unconverged {}; pulling impulses {}, inward end velocities {}, tangential end velocities turned around {}",
         read(&STEPS),
         read(&CONDITIONS),
         read(&NO_ROOT),
         read(&UNCONVERGED),
         read(&PULLING),
-        read(&INWARD)
+        read(&INWARD),
+        read(&REVERSED)
     )
 }
 

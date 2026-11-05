@@ -373,9 +373,13 @@ pub fn step_total_lagrangian_contact(
     let at_wall = super::end_gap_refund::gap_on();
     #[cfg(not(all(test, feature = "experimental")))]
     let at_wall = false;
+    #[cfg(all(test, feature = "experimental"))]
+    let frictional = super::end_gap_refund::with_friction();
+    #[cfg(not(all(test, feature = "experimental")))]
+    let frictional = false;
     assert!(
-        !at_wall || friction == 0.0,
-        "the end gap's refund is frictionless so far"
+        !at_wall || friction == 0.0 || frictional,
+        "the end gap with friction is asked as `refund_friction`"
     );
     let contact_tolerance = if at_wall {
         0.0
@@ -810,24 +814,38 @@ pub fn step_total_lagrangian_contact(
     #[cfg(all(test, feature = "experimental"))]
     if super::end_gap_refund::refund_on() {
         let held: Vec<&Contact> = contacts.iter().filter(|c| c.multiplier > 0.0).collect();
-        // Each held condition's row, from its points' shares, as the push is
-        // assembled below.
-        let rows: Vec<Vec<f64>> = held
-            .iter()
-            .map(|c| {
-                let (_, shares) = contact_geometry(grid, x, used, &u, c);
-                let mut row = vec![0.0; grid.len];
-                for share in &shares {
-                    for (r, weight) in share.spread {
-                        for a in 0..2 {
-                            let along = share.weight * weight * share.normal[a];
-                            grid.visit(r, a, |k, w, _| row[k] += w * along);
-                        }
+        // A held condition's row along `normal_part n + tangential_part t`
+        // (`t` the normal turned a quarter), from its points' shares, as the
+        // push is assembled below.
+        let row_along = |c: &Contact, normal_part: f64, tangential_part: f64| -> Vec<f64> {
+            let (_, shares) = contact_geometry(grid, x, used, &u, c);
+            let mut row = vec![0.0; grid.len];
+            for share in &shares {
+                let direction = normal_part * share.normal + tangential_part * share.normal.perp();
+                for (r, weight) in share.spread {
+                    for a in 0..2 {
+                        let along = share.weight * weight * direction[a];
+                        grid.visit(r, a, |k, w, _| row[k] += w * along);
                     }
                 }
-                row
-            })
-            .collect();
+            }
+            row
+        };
+        // The impulse's direction: the normal alone, or with friction the
+        // whole contact force, `lambda_N n + lambda_T t` over `lambda_N`.
+        let normal_rows: Vec<Vec<f64>> = held.iter().map(|c| row_along(c, 1.0, 0.0)).collect();
+        let rows: Vec<Vec<f64>> = if frictional {
+            held.iter()
+                .map(|c| row_along(c, 1.0, c.tangential / c.multiplier))
+                .collect()
+        } else {
+            normal_rows.clone()
+        };
+        let tangent_rows: Vec<Vec<f64>> = if frictional {
+            held.iter().map(|c| row_along(c, 0.0, 1.0)).collect()
+        } else {
+            Vec::new()
+        };
         let band = factors.mass.as_ref().expect("built by the solve");
         let inverse = |y: &[f64]| -> Vec<f64> {
             preconditioned_cg(
@@ -846,10 +864,15 @@ pub fn step_total_lagrangian_contact(
             .map(|row| columns.iter().map(|z| dot(row, z)).collect())
             .collect();
         let b: Vec<f64> = rows.iter().map(|row| dot(row, &end_velocity)).collect();
+        // The work owed: the normal push's alone (friction's is heat).
         let work: Vec<f64> = held
             .iter()
-            .zip(&rows)
+            .zip(&normal_rows)
             .map(|(c, row)| c.multiplier * dot(row, &u))
+            .collect();
+        let slips_before: Vec<f64> = tangent_rows
+            .iter()
+            .map(|row| dot(row, &end_velocity))
             .collect();
         let solved = super::end_gap_refund::impulses(&s, &b, &work);
         for (z, &p) in columns.iter().zip(&solved.p) {
@@ -858,8 +881,16 @@ pub fn step_total_lagrangian_contact(
                 .zip(z)
                 .for_each(|(e, zk)| *e += p * zk);
         }
-        let end_rates: Vec<f64> = rows.iter().map(|row| dot(row, &end_velocity)).collect();
+        let end_rates: Vec<f64> = normal_rows
+            .iter()
+            .map(|row| dot(row, &end_velocity))
+            .collect();
         super::end_gap_refund::count(&solved, &end_rates);
+        let slips_after: Vec<f64> = tangent_rows
+            .iter()
+            .map(|row| dot(row, &end_velocity))
+            .collect();
+        super::end_gap_refund::count_reversals(&slips_before, &slips_after);
         updates = kinetic(&end_velocity) - before;
     }
     if mode == ContactMode::Recovered {

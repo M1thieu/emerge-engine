@@ -854,3 +854,88 @@ fn probe_factor_builds_traced() {
         );
     });
 }
+
+/// The Coulomb slide of `tests/total_lagrangian_path.rs` (an 8 by 4 cm clay
+/// block at 1 m/s on a floor of friction 0.3, 30 frames), inside the crate so
+/// the test builds' knobs reach it: the centroid's travel against the rigid
+/// block's `v0^2 / (2 mu g)`, the heat over `1/2 M v0^2`, and the worst frame
+/// balance over what the solves allow. A probe.
+#[test]
+#[ignore = "diagnostic probe: run with --ignored --nocapture"]
+fn probe_coulomb_slide_travel_and_heat() {
+    super::cap::capped("probe_coulomb_slide_travel_and_heat", 3600, || {
+        const CELL_M: f32 = 0.01;
+        let mut config = SimConfig::earth(40, CELL_M, 1.0 / 60.0);
+        config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
+        let props = ElasticProps {
+            e_pa: 1.125e7,
+            nu: 0.3,
+            rho_kg_m3: 1700.0,
+        };
+        let mut sim = Simulation::empty(config);
+        let id = sim
+            .register_material(Box::new(CorotatedMaterial::from_physical(&props, &config)))
+            .0;
+        let floor = config.boundary_thickness as f32;
+        let _block = sim.add_body(
+            SpawnRegion::for_sim(&config)
+                .box_of(IVec2::new(8, 4))
+                .at(Vec2::new(10.0, floor + 2.0))
+                .spacing(0.5)
+                .material(id)
+                .mass_from(&props, &config),
+        );
+        let mu = 0.3f32;
+        sim.add_boundary_condition(Box::new(crate::boundary::FrictionBoundary::new(
+            config.boundary_thickness,
+            mu,
+        )));
+        let speed = 1.0 / CELL_M;
+        for v in sim.particles_mut().v.iter_mut() {
+            *v = Vec2::new(speed, 0.0);
+        }
+        let mass: f64 = sim.particles().mass.iter().map(|&m| f64::from(m)).sum();
+        let centre = |sim: &Simulation| -> f64 {
+            let p = sim.particles();
+            p.x.iter()
+                .zip(&p.mass)
+                .map(|(x, &m)| f64::from(x.x) * f64::from(m))
+                .sum::<f64>()
+                / mass
+                * f64::from(CELL_M)
+        };
+        let unit = f64::from(config.grid_mass_unit_kg_per_m()) * f64::from(CELL_M).powi(2);
+        let kinetic0 = 0.5 * mass * f64::from(speed) * f64::from(speed) * unit;
+        let start = centre(&sim);
+        let count = sim.particles().len() as f64;
+        let (mut allowed, mut worst) = (0.0f64, 0.0f64);
+        for _ in 0..30 {
+            sim.step();
+            let frame = sim.total_lagrangian_frame().expect("the path is on");
+            allowed += frame.residual_work + frame.contact_work_bound;
+            let round_off = count
+                * f64::EPSILON
+                * (frame.parts.iter().map(|e| e.abs()).sum::<f64>()
+                    + frame.heat.abs()
+                    + frame.start_energy.abs());
+            worst = worst.max(frame.balance.abs() / (allowed + round_off));
+        }
+        let frame = sim.total_lagrangian_frame().expect("the path is on");
+        let travel = centre(&sim) - start;
+        // In metres: the grid's speed and gravity, as the tests' own heat check.
+        let stopping = f64::from(speed) * f64::from(speed)
+            / (2.0 * f64::from(mu) * f64::from(config.gravity.length()))
+            * f64::from(CELL_M);
+        println!(
+            "coulomb slide: travel {travel:.6} m against {stopping:.6} m (relative {:+.3e}), heat {:.6} of 1/2 M v0^2, worst balance {worst:.3e} of the allowance",
+            travel / stopping - 1.0,
+            frame.heat / kinetic0
+        );
+        if crate::spacetime::total_lagrangian::end_gap_refund::refund_on() {
+            println!(
+                "coulomb slide: end-gap refund: {}",
+                crate::spacetime::total_lagrangian::end_gap_refund::report()
+            );
+        }
+    });
+}
