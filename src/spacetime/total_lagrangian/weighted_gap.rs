@@ -185,9 +185,9 @@ pub(crate) fn reaching_conditions(
 ) -> Vec<Contact> {
     // With the walls held at the step's end (`end_gap_refund`), every wall
     // condition is a candidate, against the wall itself.
-    #[cfg(all(test, feature = "experimental"))]
+    #[cfg(feature = "experimental")]
     let at_wall = super::end_gap_refund::gap_on();
-    #[cfg(not(all(test, feature = "experimental")))]
+    #[cfg(not(feature = "experimental"))]
     let at_wall = false;
     let mut found = Vec::new();
     let mut function = 0usize;

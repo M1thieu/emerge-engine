@@ -369,18 +369,12 @@ pub fn step_total_lagrangian_contact(
     // With the walls held at the step's end (`end_gap_refund`), every wall
     // condition is a candidate, against the wall itself, its tolerance the
     // resolution alone.
-    #[cfg(all(test, feature = "experimental"))]
+    #[cfg(feature = "experimental")]
     let at_wall = super::end_gap_refund::gap_on();
-    #[cfg(not(all(test, feature = "experimental")))]
+    #[cfg(not(feature = "experimental"))]
     let at_wall = false;
-    #[cfg(all(test, feature = "experimental"))]
+    #[cfg(feature = "experimental")]
     let frictional = super::end_gap_refund::with_friction();
-    #[cfg(not(all(test, feature = "experimental")))]
-    let frictional = false;
-    assert!(
-        !at_wall || friction == 0.0 || frictional,
-        "the end gap with friction is asked as `refund_friction`"
-    );
     let contact_tolerance = if at_wall {
         0.0
     } else {
@@ -811,7 +805,7 @@ pub fn step_total_lagrangian_contact(
         })
         .collect();
     let mut updates = 0.0;
-    #[cfg(all(test, feature = "experimental"))]
+    #[cfg(feature = "experimental")]
     if super::end_gap_refund::refund_on() {
         let held: Vec<&Contact> = contacts.iter().filter(|c| c.multiplier > 0.0).collect();
         // A held condition's row along `normal_part n + tangential_part t`

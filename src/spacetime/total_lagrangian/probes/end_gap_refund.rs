@@ -1,7 +1,7 @@
 //! The walls held at the step's end, with the energy that takes refunded after
-//! the solve (test builds, `EMERGE_PROBE_END_GAP` = `gap`, `refund` or
-//! `refund_friction`, default off). A measurement: nothing here is the engine's
-//! default.
+//! the solve (builds with the `experimental` feature, so the integration tests
+//! reach it too; `EMERGE_PROBE_END_GAP` = `gap`, `refund` or `refund_friction`,
+//! default off). A measurement: nothing here is the engine's default.
 //!
 //! Source: Laursen and Love, IJNME 53 (2002) 245-274. The end gap is their eq.
 //! 69, Signorini at the step's end (also Doyen, Ern and Piperno 2011, eq. 109),
@@ -15,6 +15,9 @@
 //!
 //! Adaptation, declared: their quadrature points are this engine's weighted-gap
 //! conditions.
+//!
+//! On a Coulomb floor, `refund` repays along the normal alone (a diagnostic,
+//! the frictionless form on a gripping floor).
 //!
 //! With friction (`refund_friction`): each impulse acts along the condition's
 //! whole contact force, normal push and friction together, not the normal alone
@@ -163,7 +166,8 @@ pub(crate) fn count_reversals(before: &[f64], after: &[f64]) {
     REVERSED.fetch_add(reversed as u64, Ordering::Relaxed);
 }
 
-/// One line: the refunds so far on all threads.
+/// One line: the refunds so far on all threads (read by the test probes).
+#[cfg(test)]
 pub(crate) fn report() -> String {
     let read = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
     format!(
