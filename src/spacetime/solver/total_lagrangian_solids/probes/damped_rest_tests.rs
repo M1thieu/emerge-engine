@@ -28,6 +28,21 @@ fn settled_plasticine_at(
     kick: f64,
     (modal, tolerance): (bool, f64),
 ) -> Simulation {
+    settled_on(dx, height, kick, (modal, tolerance), 0.0).unwrap_or_else(|beyond| {
+        panic!("the block does not start a rest (beyond the limit: {beyond})")
+    })
+}
+
+/// The same on walls of Coulomb friction `friction` (none at 0), or why its
+/// rest did not start: `true` beyond the record's limit, `false` a held
+/// multiplier outside its bounds.
+fn settled_on(
+    dx: f32,
+    height: i32,
+    kick: f64,
+    (modal, tolerance): (bool, f64),
+    friction: f32,
+) -> Result<Simulation, bool> {
     let record = ViscoelasticRecord::plasticine_crandall_1970_fresh();
     let mut config = SimConfig::earth(64, dx, 1.0 / 60.0);
     let path = TotalLagrangianConfig::new(tolerance);
@@ -35,6 +50,12 @@ fn settled_plasticine_at(
     let mut material = CorotatedMaterial::from_physical(&record.relaxed, &config);
     material.relaxation = Some(record.spectrum);
     let mut sim = Simulation::empty(config);
+    if friction > 0.0 {
+        sim.add_boundary_condition(Box::new(crate::boundary::FrictionBoundary::new(
+            config.boundary_thickness,
+            friction,
+        )));
+    }
     let id = sim.register_material(Box::new(material)).0;
     let floor = config.boundary_thickness as f32;
     let _block = sim.add_body(
@@ -54,27 +75,23 @@ fn settled_plasticine_at(
             break;
         }
     }
-    let planes = sim.total_lagrangian_walls().0;
+    let (planes, walls_friction) = sim.total_lagrangian_walls();
     let gravity = sim.total_lagrangian_gravity();
     let length = f64::from(config.dt);
     let mut state = sim.total_lagrangian.take().expect("on the path");
     let cache = state.cache.as_ref().expect("stepped");
-    let basis = rest::Basis::build(&state, (&cache.grid, &planes, 0.0)).expect("a basis");
-    let rest = match rest::Rest::start_for_settling(
+    let basis =
+        rest::Basis::build(&state, (&cache.grid, &planes, walls_friction)).expect("a basis");
+    let rest = rest::Rest::start_for_settling(
         basis,
         &state,
         (&cache.grid, &planes),
         (gravity, state.time, length),
-    ) {
-        Ok(rest) => rest,
-        Err(refused) => panic!(
-            "the block does not start a rest (beyond the limit: {})",
-            refused.beyond_limit
-        ),
-    };
+    )
+    .map_err(|refused| refused.beyond_limit)?;
     rest.settle(kick, &mut state);
     sim.total_lagrangian = Some(state);
-    sim
+    Ok(sim)
 }
 
 /// One run: the frame before it (the counters' baseline), then per frame
@@ -136,6 +153,14 @@ fn integrated(omega: f64, memory: &[(f64, f64)], length: f64, y: &[f64], steps: 
 /// linearisation residual and the sums' round-off, every frame
 /// (`tests/modal_flight.rs`'s criterion); no frame's heat negative.
 fn check_ledger(name: &str, frames: &[(TotalLagrangianFrame, Vec<DVec2>)]) {
+    check_ledger_since(name, 0.0, frames);
+}
+
+/// `check_ledger` on the balance's change since `start`: for a scene that
+/// `settle` placed after settling frames on a Coulomb floor, which leave a
+/// vibration the placement drops outside any step (measured: -6.3e-8 J/m
+/// on the 1 cm block, the same stepped or rested).
+fn check_ledger_since(name: &str, start: f64, frames: &[(TotalLagrangianFrame, Vec<DVec2>)]) {
     let mut allowed = 0.0;
     for (k, (f, x)) in frames.iter().enumerate() {
         allowed += f.residual_work + f.contact_work_bound + f.modal_energy_change.abs();
@@ -143,10 +168,10 @@ fn check_ledger(name: &str, frames: &[(TotalLagrangianFrame, Vec<DVec2>)]) {
             * f64::EPSILON
             * (f.parts.iter().map(|e| e.abs()).sum::<f64>() + f.heat.abs() + f.start_energy.abs());
         assert!(
-            f.balance.abs() <= allowed + round_off,
+            (f.balance - start).abs() <= allowed + round_off,
             "{name}, frame {}: balance {:e} beyond {:e}",
             k + 1,
-            f.balance,
+            f.balance - start,
             allowed + round_off
         );
         assert!(f.relaxation_heat >= 0.0, "{name}: negative heat");
@@ -346,5 +371,134 @@ fn probe_kicked_rest_heat_against_the_step_tolerance() {
             stepped[0].0.steps,
             stepped[0].0.rejected
         );
+    }
+}
+
+/// On a rough Coulomb floor (`mu` 1.0: the block needs at least 0.31 to stick
+/// everywhere, its edges' cone ratio 1.04 at 0.3), the damped block rests by
+/// its constrained modes with its contacts sticking: each
+/// held condition keeps its tangential gap as well as its normal one, and
+/// its friction inside the cone. The same gates as the frictionless rest,
+/// and the modes against the held rows.
+#[test]
+fn a_damped_block_rests_on_a_coulomb_floor_by_its_constrained_modes() {
+    const FRAMES: usize = 30;
+    let rested_scene =
+        settled_on(0.0025, 2, 0.0, (true, 1e-2), 1.0).expect("a rest on the Coulomb floor");
+    let clock = std::time::Instant::now();
+    let (base, rested, _) = run(rested_scene, FRAMES);
+    let rested_s = clock.elapsed().as_secs_f64();
+    let clock = std::time::Instant::now();
+    let (_, stepped, _) = run(
+        settled_on(0.0025, 2, 0.0, (false, 1e-2), 1.0).expect("the stepped twin"),
+        FRAMES,
+    );
+    let stepped_s = clock.elapsed().as_secs_f64();
+    let last = rested.last().expect("frames").0;
+    let (rest_frames, hand_backs, refused) = (
+        last.modal_rest_frames - base.modal_rest_frames,
+        last.rest_hand_backs - base.rest_hand_backs,
+        last.modal_rest_refused - base.modal_rest_refused,
+    );
+    let mut largest = 0.0f64;
+    for ((_, xr), (_, xs)) in rested.iter().zip(&stepped) {
+        for (a, b) in xr.iter().zip(xs) {
+            largest = largest.max((*a - *b).length());
+        }
+    }
+    let rest_friction: f64 = rested
+        .iter()
+        .filter(|(f, _)| f.modal_rest)
+        .map(|(f, _)| f.friction_work.abs())
+        .sum();
+    println!(
+        "damped rest on a Coulomb floor: {rest_frames} rest frames of {FRAMES}, {hand_backs} hand-backs, {refused} refused, {} checks failed; friction work over the rest frames {rest_friction:.3e} J/m; largest position difference to the stepped run {largest:.3e} m; 30 frames {rested_s:.1} s at rest, {stepped_s:.1} s stepped",
+        last.modal_check_failed
+    );
+    check_ledger_since("damped rest on a Coulomb floor", base.balance, &rested);
+    assert_eq!((refused, hand_backs), (0, 0));
+    assert_eq!(last.modal_check_failed, 0);
+    assert!(
+        rest_frames as usize >= FRAMES - 2,
+        "{rest_frames} rest frames"
+    );
+    assert_eq!(rest_friction, 0.0, "a sticking rest does no friction work");
+}
+
+/// The rest's modes keep every held row, the tangential ones included, and
+/// the start's friction is inside the cone (`|lambda_T| / (mu lambda_N)`,
+/// reported).
+#[test]
+fn a_sticking_rest_keeps_its_held_rows_and_its_cone() {
+    let sim = settled_on(0.0025, 2, 0.0, (true, 1e-2), 1.0).expect("a rest on the Coulomb floor");
+    let state = sim.total_lagrangian.as_ref().expect("on the path");
+    let config = sim.config();
+    let (planes, friction) = sim.total_lagrangian_walls();
+    let cache = state.cache.as_ref().expect("stepped");
+    let basis = rest::Basis::build(state, (&cache.grid, &planes, friction)).expect("a basis");
+    let residual = basis.held_rows_residual();
+    let rest = rest::Rest::start_for_settling(
+        basis,
+        state,
+        (&cache.grid, &planes),
+        (
+            sim.total_lagrangian_gravity(),
+            state.time,
+            f64::from(config.dt),
+        ),
+    )
+    .unwrap_or_else(|_| panic!("the settled block starts a rest"));
+    let ratios = rest.cone_ratios();
+    println!("sticking rest: held rows residual {residual:.3e}; cone ratios {ratios:.3?}");
+    assert!(residual < 1e-12, "a mode moves a held gap: {residual:e}");
+    assert!(!ratios.is_empty() && ratios.iter().all(|&r| r < 1.0));
+}
+
+/// A floor of `mu = 1e-9` cannot hold the outward push of the block's bottom
+/// under its own weight (Poisson), so no rest starts: the cone, not a tuned
+/// value, refuses it.
+#[test]
+fn a_floor_that_cannot_grip_starts_no_rest() {
+    assert!(matches!(
+        settled_on(0.0025, 2, 0.0, (true, 1e-2), 1e-9),
+        Err(false)
+    ));
+}
+
+/// The Coulomb floor's frame ledger from the settled block, stepped (no
+/// modal rest) and rested, per frame: balance, the allowance so far and the
+/// friction work, for `mu` 0.3 and 1.0. A diagnostic probe.
+#[test]
+#[ignore = "diagnostic probe: run with --ignored --nocapture"]
+fn probe_coulomb_floor_settled_ledger() {
+    for mu in [0.3f32, 1.0] {
+        for modal in [false, true] {
+            let Ok(sim) = settled_on(0.0025, 2, 0.0, (modal, 1e-2), mu) else {
+                println!("mu {mu}, modal {modal}: the settling rest did not start");
+                continue;
+            };
+            let (base, frames, _) = run(sim, 5);
+            let mut allowed = 0.0;
+            for (k, (f, _)) in frames.iter().enumerate() {
+                allowed += f.residual_work + f.contact_work_bound + f.modal_energy_change.abs();
+                println!(
+                    "mu {mu}, modal {modal}, frame {}: balance {:+.3e} J/m, allowed {:.3e}, friction work {:+.3e}, heat {:.3e}, modal rest {}, steps {}, rejected {}",
+                    k + 1,
+                    f.balance,
+                    allowed,
+                    f.friction_work,
+                    f.heat,
+                    f.modal_rest,
+                    f.steps,
+                    f.rejected
+                );
+            }
+            let last = frames.last().expect("frames").0;
+            println!(
+                "mu {mu}, modal {modal}: rest frames {}, hand-backs {}",
+                last.modal_rest_frames - base.modal_rest_frames,
+                last.rest_hand_backs - base.rest_hand_backs
+            );
+        }
     }
 }

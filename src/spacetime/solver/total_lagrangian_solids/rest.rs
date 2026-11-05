@@ -18,8 +18,16 @@
 //! state; their least value over the rest is bounded from the modes'
 //! amplitudes, so a rest frame is flown only while every held multiplier
 //! provably stays compressive and every other contact point provably stays
-//! clear. Frictionless walls only (a sticking contact's cone is not built):
-//! a friction coefficient hands the body to the step.
+//! clear.
+//!
+//! On Coulomb walls a held contact sticks: its tangential motion is zero and
+//! its friction lies inside the cone, `|lambda_T| < mu lambda_N`, doing no
+//! work (Chawla and Laursen, IJNME 42 (1998), eqs. 35-36; Love and Laursen,
+//! CMAME 192 (2003), eq. 70). Each held condition then holds its tangential
+//! gap too, a second row on the wall's other axis with the same weights, and
+//! the rest is flown only while both cone faces, `mu lambda_N +- lambda_T`,
+//! provably stay positive, bounded as the normal multiplier is. Outside the
+//! cone the body goes to the step, where slip is decided.
 //!
 //! The material energy of the rebuilt state differs from the modes'
 //! quadratic one by the linear basis's residual, reported per frame
@@ -97,6 +105,13 @@ pub(crate) struct Basis {
     coupling: Vec<Vec<f64>>,
     /// The (point, wall) pairs the held conditions hold.
     held_pairs: Vec<(usize, usize)>,
+    /// The held conditions' count, and the walls' friction coefficient: with
+    /// friction the rows are the normal ones, then the tangential ones.
+    conditions: usize,
+    friction: f64,
+    /// `G`, kept for the tests' check of the modes against it.
+    #[cfg(all(test, feature = "experimental"))]
+    g: Vec<f64>,
     /// The body's relaxation mechanisms as `(theta, kappa)` (empty without)
     /// and its record's strain limit.
     memory: Vec<(f64, f64)>,
@@ -116,7 +131,7 @@ impl Basis {
         (grid, planes, friction): (&Grid, &[Plane], f64),
     ) -> Option<Self> {
         let cache = state.cache.as_ref()?;
-        if friction > 0.0 || cache.contacts.is_empty() || state.outlines.len() != 1 {
+        if cache.contacts.is_empty() || state.outlines.len() != 1 {
             return None;
         }
         let trace = cache.traces.first()?;
@@ -146,8 +161,14 @@ impl Basis {
         for (i, &u) in unknowns.iter().enumerate() {
             slot[u] = i;
         }
-        // `G`: one row per held condition, `dg/du`.
-        let rows = held.len();
+        // `G`: one row per held condition, `dg/du`; with friction, then one
+        // per held condition along the wall, its tangential gap.
+        let conditions = held.len();
+        let rows = if friction > 0.0 {
+            2 * conditions
+        } else {
+            conditions
+        };
         let mut g = vec![0.0; rows * n];
         for (h, (_, members, plane)) in held.iter().enumerate() {
             for &(q, w) in members {
@@ -156,6 +177,13 @@ impl Basis {
                         g[h * n + slot[kk]] += w * plane.inward * nn;
                     }
                 });
+                if friction > 0.0 {
+                    grid.visit(q, 1 - plane.axis, |kk, nn, _| {
+                        if slot[kk] != usize::MAX {
+                            g[(conditions + h) * n + slot[kk]] += w * nn;
+                        }
+                    });
+                }
             }
         }
         // The null space of `G`: the eigenvectors of `G^T G + I` at 1, the
@@ -234,6 +262,10 @@ impl Basis {
             schur,
             coupling: Vec::new(),
             held_pairs,
+            conditions,
+            friction,
+            #[cfg(all(test, feature = "experimental"))]
+            g: g.clone(),
             memory,
             strain_limit,
         };
@@ -241,6 +273,42 @@ impl Basis {
             .map(|e| basis.multipliers(&times(&basis.k, (n, n), &basis.columns[e], 1)))
             .collect();
         Some(basis)
+    }
+
+    /// The largest `|G_a . phi_e|` over the held rows and the modes, each
+    /// over `|G_a| |phi_e|`: zero to round-off when every mode keeps every
+    /// held gap, normal and tangential, at its start value.
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) fn held_rows_residual(&self) -> f64 {
+        let rows = self.g.len() / self.n;
+        let mut worst = 0.0f64;
+        for column in &self.columns {
+            for a in 0..rows {
+                let row = &self.g[a * self.n..(a + 1) * self.n];
+                let size = dot(row, row).sqrt() * dot(column, column).sqrt();
+                if size > 0.0 {
+                    worst = worst.max(dot(row, column).abs() / size);
+                }
+            }
+        }
+        worst
+    }
+
+    /// What must stay positive for the rest to hold, from multipliers
+    /// `lambda` (or their change per unit of a mode, being linear): each held
+    /// condition's normal multiplier and, with friction, its cone faces `mu
+    /// lambda_N + lambda_T` and `mu lambda_N - lambda_T`.
+    pub(super) fn faces(&self, lambda: &[f64]) -> Vec<f64> {
+        if self.friction == 0.0 {
+            return lambda.to_vec();
+        }
+        let (normal, tangential) = lambda.split_at(self.conditions);
+        let mut faces = normal.to_vec();
+        for (&n, &t) in normal.iter().zip(tangential) {
+            faces.push(self.friction * n + t);
+            faces.push(self.friction * n - t);
+        }
+        faces
     }
 
     /// The multipliers a force `x` on the unknowns calls for, `S^-1 G M^-1
@@ -453,7 +521,7 @@ impl Rest {
                 elastic
             )
         });
-        if multiplier.iter().any(|&l| l <= 0.0) {
+        if basis.faces(&multiplier).iter().any(|&l| l <= 0.0) {
             return Err(Refused {
                 basis: Box::new(basis),
                 beyond_limit: false,
@@ -536,6 +604,21 @@ impl Rest {
         (centre, (centre * centre + (q0 / w) * (q0 / w)).sqrt())
     }
 
+    /// Per held condition at the start, `|lambda_T| / (mu lambda_N)`: below
+    /// one inside the cone (empty without friction).
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) fn cone_ratios(&self) -> Vec<f64> {
+        if self.basis.friction == 0.0 {
+            return Vec::new();
+        }
+        let (normal, tangential) = self.multiplier.split_at(self.basis.conditions);
+        normal
+            .iter()
+            .zip(tangential)
+            .map(|(&n, &t)| t.abs() / (self.basis.friction * n))
+            .collect()
+    }
+
     /// Whether the rest holds to `t1`: every held multiplier stays
     /// compressive and every other contact point clear of every wall, by
     /// bounds from the modes' amplitudes.
@@ -547,15 +630,26 @@ impl Rest {
         let reaches: Vec<(f64, f64)> = (0..self.basis.omega.len())
             .map(|i| self.reach(i, tau1))
             .collect();
-        let compressive = self.multiplier.iter().enumerate().all(|(h, &l0)| {
-            let low = reaches
-                .iter()
-                .zip(&self.basis.coupling)
-                .fold(l0, |low, (&(centre, amplitude), c)| {
-                    low + c[h] * centre - c[h].abs() * amplitude
-                });
-            low > 0.0
-        });
+        let coupling: Vec<Vec<f64>> = self
+            .basis
+            .coupling
+            .iter()
+            .map(|c| self.basis.faces(c))
+            .collect();
+        let compressive = self
+            .basis
+            .faces(&self.multiplier)
+            .iter()
+            .enumerate()
+            .all(|(h, &l0)| {
+                let low = reaches
+                    .iter()
+                    .zip(&coupling)
+                    .fold(l0, |low, (&(centre, amplitude), c)| {
+                        low + c[h] * centre - c[h].abs() * amplitude
+                    });
+                low > 0.0
+            });
         compressive
             && self.free.iter().all(|&(q, i, gap)| {
                 let plane = planes[i];

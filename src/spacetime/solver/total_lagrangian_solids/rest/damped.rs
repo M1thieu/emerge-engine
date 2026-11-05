@@ -148,19 +148,35 @@ impl Rest {
                 (damped.offset[i] - memory, weight * size, size)
             })
             .collect();
-        let compressive = self.multiplier.iter().enumerate().all(|(h, &l0)| {
-            let mut low = modes
+        let coupling: Vec<Vec<f64>> = self
+            .basis
+            .coupling
+            .iter()
+            .map(|c| self.basis.faces(c))
+            .collect();
+        let outside: Vec<(f64, Vec<f64>)> = damped
+            .outside
+            .iter()
+            .map(|(theta, d)| (*theta, self.basis.faces(d)))
+            .collect();
+        let compressive =
+            self.basis
+                .faces(&self.multiplier)
                 .iter()
-                .zip(&self.basis.coupling)
-                .fold(l0, |low, (&(centre, amplitude, _), c)| {
-                    low + c[h] * centre - c[h].abs() * amplitude
+                .enumerate()
+                .all(|(h, &l0)| {
+                    let mut low = modes.iter().zip(&coupling).fold(
+                        l0,
+                        |low, (&(centre, amplitude, _), c)| {
+                            low + c[h] * centre - c[h].abs() * amplitude
+                        },
+                    );
+                    for (theta, d) in &outside {
+                        let at = |tau: f64| d[h] * ((-theta * tau).exp() - 1.0);
+                        low += at(tau0.max(0.0)).min(at(tau1));
+                    }
+                    low > 0.0
                 });
-            for (theta, d) in &damped.outside {
-                let at = |tau: f64| d[h] * ((-theta * tau).exp() - 1.0);
-                low += at(tau0.max(0.0)).min(at(tau1));
-            }
-            low > 0.0
-        });
         compressive
             && self.free.iter().all(|&(q, i, gap)| {
                 let plane = planes[i];
