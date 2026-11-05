@@ -254,6 +254,12 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
         )
         .expect("the replay directory is writable");
     }
+    if crate::spacetime::total_lagrangian::end_gap_refund::refund_on() {
+        println!(
+            "{name}: end-gap refund: {}",
+            crate::spacetime::total_lagrangian::end_gap_refund::report()
+        );
+    }
     if crate::spacetime::total_lagrangian::ledger_guard::on() {
         let balance = sim.total_lagrangian_frame().map_or(0.0, |f| f.balance);
         println!(

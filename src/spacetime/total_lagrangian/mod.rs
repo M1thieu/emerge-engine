@@ -72,6 +72,9 @@ mod diagnostics;
 #[path = "research/dirichlet.rs"]
 mod dirichlet;
 mod elastic;
+#[cfg(all(test, feature = "experimental"))]
+#[path = "probes/end_gap_refund.rs"]
+pub(crate) mod end_gap_refund;
 /// A one-solve local error estimate, measured beside the controller's
 /// doubling, never deciding a step.
 #[cfg(all(test, feature = "experimental"))]

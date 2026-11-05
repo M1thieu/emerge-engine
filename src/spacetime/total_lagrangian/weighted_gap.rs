@@ -183,6 +183,12 @@ pub(crate) fn reaching_conditions(
     own: &mut Vec<Plane>,
     reaches: Reaches<'_>,
 ) -> Vec<Contact> {
+    // With the walls held at the step's end (`end_gap_refund`), every wall
+    // condition is a candidate, against the wall itself.
+    #[cfg(all(test, feature = "experimental"))]
+    let at_wall = super::end_gap_refund::gap_on();
+    #[cfg(not(all(test, feature = "experimental")))]
+    let at_wall = false;
     let mut found = Vec::new();
     let mut function = 0usize;
     #[cfg(feature = "experimental")]
@@ -204,16 +210,20 @@ pub(crate) fn reaching_conditions(
                         d + w / total * plane.inward * v[q][plane.axis],
                     )
                 });
-                if !reaches(gap, rate) {
+                if !at_wall && !reaches(gap, rate) {
                     continue;
                 }
                 let points = facing
                     .iter()
                     .map(|&(r, w)| {
                         let q = outline[r];
-                        own.push(Plane {
-                            at: x[q][plane.axis],
-                            ..*plane
+                        own.push(if at_wall {
+                            *plane
+                        } else {
+                            Plane {
+                                at: x[q][plane.axis],
+                                ..*plane
+                            }
                         });
                         (
                             ContactPoint {

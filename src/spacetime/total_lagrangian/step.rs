@@ -366,7 +366,22 @@ pub fn step_total_lagrangian_contact(
     // start gap instead of crossing by `v dt`.
     let reaches =
         |gap: f64, rate: f64| gap < 0.0 || (settings.forecast_activation && gap + dt * rate <= 0.0);
-    let contact_tolerance = settings.contact_tolerance;
+    // With the walls held at the step's end (`end_gap_refund`), every wall
+    // condition is a candidate, against the wall itself, its tolerance the
+    // resolution alone.
+    #[cfg(all(test, feature = "experimental"))]
+    let at_wall = super::end_gap_refund::gap_on();
+    #[cfg(not(all(test, feature = "experimental")))]
+    let at_wall = false;
+    assert!(
+        !at_wall || friction == 0.0,
+        "the end gap's refund is frictionless so far"
+    );
+    let contact_tolerance = if at_wall {
+        0.0
+    } else {
+        settings.contact_tolerance
+    };
     let mut own: Vec<Plane> = Vec::new();
     // The conditions that may join the set in velocity, each holding its
     // points' normal displacement over the step.
@@ -406,10 +421,14 @@ pub fn step_total_lagrangian_contact(
                     continue;
                 }
                 let gap = plane.inward * (q[plane.axis] - plane.at);
-                if reaches(gap, plane.inward * v[p][plane.axis]) {
-                    own.push(Plane {
-                        at: q[plane.axis],
-                        ..*plane
+                if at_wall || reaches(gap, plane.inward * v[p][plane.axis]) {
+                    own.push(if at_wall {
+                        *plane
+                    } else {
+                        Plane {
+                            at: q[plane.axis],
+                            ..*plane
+                        }
                     });
                     candidates.push(Contact::at(
                         ContactPoint {
@@ -788,6 +807,61 @@ pub fn step_total_lagrangian_contact(
         })
         .collect();
     let mut updates = 0.0;
+    #[cfg(all(test, feature = "experimental"))]
+    if super::end_gap_refund::refund_on() {
+        let held: Vec<&Contact> = contacts.iter().filter(|c| c.multiplier > 0.0).collect();
+        // Each held condition's row, from its points' shares, as the push is
+        // assembled below.
+        let rows: Vec<Vec<f64>> = held
+            .iter()
+            .map(|c| {
+                let (_, shares) = contact_geometry(grid, x, used, &u, c);
+                let mut row = vec![0.0; grid.len];
+                for share in &shares {
+                    for (r, weight) in share.spread {
+                        for a in 0..2 {
+                            let along = share.weight * weight * share.normal[a];
+                            grid.visit(r, a, |k, w, _| row[k] += w * along);
+                        }
+                    }
+                }
+                row
+            })
+            .collect();
+        let band = factors.mass.as_ref().expect("built by the solve");
+        let inverse = |y: &[f64]| -> Vec<f64> {
+            preconditioned_cg(
+                &|w: &[f64]| grid.mass_times(w, mass, settings.epsilon),
+                y,
+                &|r: &[f64]| band.solve(r),
+                &massive,
+            )
+        };
+        let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
+        let kinetic = |w: &[f64]| 0.5 * dot(w, &grid.mass_times(w, mass, settings.epsilon));
+        let before = kinetic(&end_velocity);
+        let columns: Vec<Vec<f64>> = rows.iter().map(|row| inverse(row)).collect();
+        let s: Vec<Vec<f64>> = rows
+            .iter()
+            .map(|row| columns.iter().map(|z| dot(row, z)).collect())
+            .collect();
+        let b: Vec<f64> = rows.iter().map(|row| dot(row, &end_velocity)).collect();
+        let work: Vec<f64> = held
+            .iter()
+            .zip(&rows)
+            .map(|(c, row)| c.multiplier * dot(row, &u))
+            .collect();
+        let solved = super::end_gap_refund::impulses(&s, &b, &work);
+        for (z, &p) in columns.iter().zip(&solved.p) {
+            end_velocity
+                .iter_mut()
+                .zip(z)
+                .for_each(|(e, zk)| *e += p * zk);
+        }
+        let end_rates: Vec<f64> = rows.iter().map(|row| dot(row, &end_velocity)).collect();
+        super::end_gap_refund::count(&solved, &end_rates);
+        updates = kinetic(&end_velocity) - before;
+    }
     if mode == ContactMode::Recovered {
         let band = factors.mass.as_ref().expect("built by the solve");
         let inverse = |y: &[f64]| -> Vec<f64> {
