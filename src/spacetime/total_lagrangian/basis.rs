@@ -137,7 +137,7 @@ pub(crate) struct Grid {
     /// Each point's reach per component, merged by unknown (`Grid::relump`
     /// builds it; `visit` reads it): the expanded reach repeats an unknown
     /// once per degenerate face folded into it (62.6 entries against 21.4
-    /// distinct at a block's first touch, FAST_MODE_PLAN.md sec. 63.4).
+    /// distinct at a block's first touch).
     pub(crate) reach: Option<std::sync::Arc<Vec<[Reach; 2]>>>,
     /// Per particle, per lattice, the weight function of the web-splines
     /// and its gradient at the particle's reference position, when the
@@ -290,10 +290,10 @@ impl Grid {
                             })
                         }),
                     };
-                    // FAST_MODE_PLAN.md sec. 51.4: the axisymmetric
+                    // The axisymmetric
                     // path's mirrored columns are no unknowns of their own.
                     #[cfg(all(test, feature = "experimental"))]
-                    if super::axisymmetric::excluded(a, i) {
+                    if super::axisymmetric::excluded(a, i, j) {
                         stable[k] = false;
                         continue;
                     }
@@ -324,6 +324,11 @@ impl Grid {
             for j in 0..nj {
                 for i in 0..ni {
                     let k = l.start + (i + ni * j) as usize;
+                    // A mirrored face takes its coefficients from `mirror`.
+                    #[cfg(all(test, feature = "experimental"))]
+                    if super::axisymmetric::excluded(a, i as usize, j as usize) {
+                        continue;
+                    }
                     let wall_only = grid.slot[k] != usize::MAX && !stable[k];
                     if (grid.slot[k] != usize::MAX && !wall_only) || !touched[k] {
                         continue;
@@ -656,7 +661,7 @@ impl Grid {
         #[cfg(all(test, feature = "experimental"))]
         let assembled = clock.elapsed().as_secs_f64();
         band.factor();
-        // FAST_MODE_PLAN.md sec. 63.3: the build's micro-count.
+        // The build's micro-count.
         #[cfg(all(test, feature = "experimental"))]
         hooks::add_band_build(
             (band.n, band.width),
@@ -732,8 +737,7 @@ impl Grid {
     /// unknowns, so the same unknown comes back once per face folded into
     /// it): sorted by unknown. The band's entries are bilinear in `(w, g)`,
     /// so a pairwise loop over this list gives the same matrix as over the
-    /// expanded one, in a list of distinct unknowns (FAST_MODE_PLAN.md sec.
-    /// 63.4: the expanded list made the assembly quadratic in its length,
+    /// expanded one, in a list of distinct unknowns (the expanded list made the assembly quadratic in its length,
     /// 83 % of a build, measured).
     fn merged_reach(&self, p: usize) -> Vec<(usize, usize, f64, DVec2)> {
         let mut list: Vec<(usize, usize, f64, DVec2)> = Vec::with_capacity(18);

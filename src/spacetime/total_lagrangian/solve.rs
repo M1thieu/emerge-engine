@@ -251,6 +251,9 @@ pub(crate) fn solve(
             .map(|k| grid.lumped[k] * gravity[grid.axis_of[k]])
             .collect(),
     };
+    // The axisymmetric cases' dead loads.
+    #[cfg(all(test, feature = "experimental"))]
+    let external = super::axisymmetric::with_point_loads(grid, external);
     let f_now: &[DMat2] = f;
     let deformation_at = |u: &[f64], p: usize| -> DMat2 {
         let (_, gu) = grid.read(u, p, 0);
@@ -262,13 +265,13 @@ pub(crate) fn solve(
             (DMat2::IDENTITY + grad) * f_now[p]
         }
     };
-    // FAST_MODE_PLAN.md sec. 51.4: the axisymmetric path's hoop, when set.
+    // The axisymmetric path's hoop, when set.
     #[cfg(all(test, feature = "experimental"))]
     let hoop = super::axisymmetric::hoop(grid, n);
     #[cfg(all(test, feature = "experimental"))]
     assert!(
         hoop.is_none() || lagrangian,
-        "the axisymmetric path's first slice is the total Lagrangian midpoint only"
+        "the axisymmetric path is the total Lagrangian midpoint only"
     );
     // The internal force (eq. 30a) with the algorithmic stress. On the
     // reference basis `F_n^T grad_n N` is `grad_X N` itself.
@@ -328,7 +331,7 @@ pub(crate) fn solve(
         // Each point's first Piola stress in a parallel map, its order kept,
         // then scattered in the same chunks and order as before: the same
         // expressions on the same inputs, the same sums, so the force is
-        // bitwise the serial one (FAST_MODE_PLAN.md sec. 63.8; one chunk
+        // bitwise the serial one (one chunk
         // holds 64 points, so a small body's law ran on one thread).
         let first_at = |p: usize| -> DMat2 {
             let f1 = deformation_at(u, p);
@@ -626,8 +629,20 @@ pub(crate) fn solve(
     // past the body, may invert without anything inverting (measured: a
     // sliding block's side and top outline points, inverted at `det F =
     // -0.25`, froze every line search of the step).
-    let admissible =
-        |u: &[f64]| (0..n).all(|p| v0[p] <= 0.0 || deformation_at(u, p).determinant() > 0.0);
+    // On the axisymmetric path a point must also stay off the axis: `J = det
+    // F F_33`, with `F_33 = r / R`.
+    #[cfg(all(test, feature = "experimental"))]
+    let through_axis = |u: &[f64], p: usize| {
+        hoop.as_ref()
+            .is_some_and(|h| super::axisymmetric::through_axis(grid, h, (p, u, x[p])))
+    };
+    #[cfg(not(all(test, feature = "experimental")))]
+    let through_axis = |_: &[f64], _: usize| false;
+    let admissible = |u: &[f64]| {
+        (0..n).all(|p| {
+            v0[p] <= 0.0 || (deformation_at(u, p).determinant() > 0.0 && !through_axis(u, p))
+        })
+    };
     let mut u: Vec<f64> = (0..grid.len)
         .map(|k| if grid.active[k] { dt * v_n[k] } else { 0.0 })
         .collect();

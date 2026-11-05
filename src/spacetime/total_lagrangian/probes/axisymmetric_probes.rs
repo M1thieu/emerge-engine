@@ -1,4 +1,4 @@
-//! FAST_MODE_PLAN.md sec. 49d, a test-only measurement before any build
+//! A test-only measurement before any build
 //! plan: does this engine's basis (quadratic B-splines, nodes at `i h`,
 //! 2 x 2 points per cell at the quarter points) carry the axisymmetric
 //! weak form, the axis included? A static probe, knob
@@ -9,7 +9,7 @@
 //! per radian, the hoop term `P_33 N_i / r` in the internal force (their
 //! eq. 3), `v_r = 0` on the axis by a mirrored ghost node (Fig. 6), the
 //! classic point limit of their shape functions (sec. 2). The total-
-//! Lagrangian form is derived from it in sec. 49c.2 (an adaptation,
+//! Lagrangian form is derived from it (an adaptation,
 //! declared): `F_33 = 1 + u_r / R`, weights `A_p R_p`.
 //!
 //! Adaptations, declared: the static assembly lives here, not in
@@ -23,6 +23,9 @@
 
 use glam::{DMat2, DVec2};
 
+#[path = "axisymmetric_dynamic.rs"]
+mod dynamic;
+
 use super::basis::axis;
 use super::multipliers::dense_solve;
 use crate::matter::materials::solid::neo_hookean::neo_hookean_second_pk_axisymmetric;
@@ -33,7 +36,7 @@ fn knob() -> bool {
     *ON.get_or_init(|| {
         let on = std::env::var_os("EMERGE_PROBE_AXISYMMETRIC").is_some();
         if on {
-            println!("knob active: EMERGE_PROBE_AXISYMMETRIC (sec. 49d static probe)");
+            println!("knob active: EMERGE_PROBE_AXISYMMETRIC (static probe)");
         }
         on
     })
@@ -84,7 +87,7 @@ struct Problem {
     planar: bool,
 }
 
-/// The quadrature: the engine's quarter points (the counts of sec. 49d),
+/// The quadrature: the engine's quarter points,
 /// or two diagnostics measured after them: two Gauss points per cell, and
 /// two Gauss points per knot span of the quadratic B-splines (the knots
 /// sit at the half cells, so a span is `[k - 1/2, k + 1/2] h` cut by the
@@ -501,10 +504,10 @@ fn bisect(mut a: f64, mut b: f64, f: impl Fn(f64) -> f64) -> f64 {
     0.5 * (a + b)
 }
 
-/// AX-1 (sec. 49d.3): uniform radial compression of a disk between two
+/// Uniform radial compression of a disk between two
 /// slip planes, the rim pushed to `u_r = e R_0`.
 #[test]
-fn ax1_uniform_radial_compression() {
+fn uniform_radial_compression_of_a_disk() {
     if !knob() {
         return;
     }
@@ -571,7 +574,7 @@ fn ax1_uniform_radial_compression() {
                 }
             }
             println!(
-                "AX-1 cells {nr}x{nz}{} J {target} (exact {j_exact:.6}): worst |J/J_exact - 1| {worst_j:.3e}, worst stress error {worst_sigma:.3e} of {size:.4e} Pa, last Newton iterations {}; nearest the axis (R/h, J error): {}",
+                "compressed disk, cells {nr}x{nz}{} J {target} (exact {j_exact:.6}): worst |J/J_exact - 1| {worst_j:.3e}, worst stress error {worst_sigma:.3e} of {size:.4e} Pa, last Newton iterations {}; nearest the axis (R/h, J error): {}",
                 layout.label(),
                 state.iterations,
                 near_axis.join(" ")
@@ -580,10 +583,10 @@ fn ax1_uniform_radial_compression() {
     }
 }
 
-/// AX-2 (sec. 49d.3): an end-loaded cylinder (Nairn and Guilkey sec. 4.2
+/// An end-loaded cylinder (Nairn and Guilkey sec. 4.2
 /// geometry), the top under a dead nominal traction.
 #[test]
-fn ax2_end_loaded_cylinder() {
+fn end_loaded_cylinder() {
     if !knob() {
         return;
     }
@@ -643,13 +646,13 @@ fn ax2_end_loaded_cylinder() {
             .filter(inner)
             .fold(0.0f64, |m, p| m.max(error(p)));
         println!(
-            "AX-2 cells {nr}x{nz}{}: worst P_zz at (R/h, Z/h) ({:.2}, {:.2}); worst away from the free surfaces' outermost cells {worst_inner:.3e}",
+            "end-loaded cylinder, cells {nr}x{nz}{}: worst P_zz at (R/h, Z/h) ({:.2}, {:.2}); worst away from the free surfaces' outermost cells {worst_inner:.3e}",
             layout.label(),
             at.x.x / h,
             at.x.y / h
         );
         println!(
-            "AX-2 cells {nr}x{nz}{}: exact stretches b {b:.6} a {:.6}; worst |P_zz/T_0 - 1| {worst_pzz:.3e}, worst |P_rr|/T_0 {worst_prr:.3e}, top on the axis {:.6e} m vs exact {top_exact:.6e} m ({:+.3e} relative), last Newton iterations {}",
+            "end-loaded cylinder, cells {nr}x{nz}{}: exact stretches b {b:.6} a {:.6}; worst |P_zz/T_0 - 1| {worst_pzz:.3e}, worst |P_rr|/T_0 {worst_prr:.3e}, top on the axis {:.6e} m vs exact {top_exact:.6e} m ({:+.3e} relative), last Newton iterations {}",
             layout.label(),
             a2(b).sqrt(),
             state.top_axis_uz,
@@ -659,17 +662,17 @@ fn ax2_end_loaded_cylinder() {
     }
 }
 
-/// AX-5 and AX-6 (sec. 49d.3): a cylinder under its own weight on a slip
+/// A column under its own weight on a slip
 /// base, its rim free (uniaxial stress) or held (uniaxial strain).
 #[test]
-fn ax5_ax6_self_weight() {
+fn column_under_its_own_weight() {
     if !knob() {
         return;
     }
     let (rho, g, height) = (1000.0, 9.81, 0.04);
     for (case, young, held) in [
-        ("AX-5", rho * g * height / 1e-4, false),
-        ("AX-6", 6000.0, true),
+        ("free-rim column", rho * g * height / 1e-4, false),
+        ("held-rim column", 6000.0, true),
     ] {
         let (lambda, mu) = lame(young, 0.33);
         let exact = if held {
@@ -740,15 +743,14 @@ fn ax5_ax6_self_weight() {
     }
 }
 
-/// The AX-2 question in plane strain (sec. 49g.2, measured after the
-/// counts): a half block 10 x 40 mm against a symmetry plane, a slip base,
+/// The end-loaded cylinder's question in plane strain: a half block 10 x 40 mm against a symmetry plane, a slip base,
 /// the top under a dead nominal traction, the side free. Exact: homogeneous
 /// plane-strain uniaxial stress, `F = diag(a, b)`, `P_xx = 0`, `P_yy =
 /// T_0`, from this law (`mu (a^2 - 1) + lambda ln(a b) = 0`, `mu (b^2 -
 /// a^2) / b = T_0`). The engine's plane-strain path uses the quarter
 /// points.
 #[test]
-fn ax2_plane_strain_end_loaded_block() {
+fn plane_strain_end_loaded_block() {
     if !knob() {
         return;
     }
@@ -799,7 +801,7 @@ fn ax2_plane_strain_end_loaded_block() {
             .fold(0.0f64, |m, p| m.max(error(p)));
         let top_exact = (b - 1.0) * length;
         println!(
-            "AX-2 plane strain cells {nr}x{nz}{}: worst |P_yy/T_0 - 1| {worst:.3e} at (x/h, y/h) ({:.2}, {:.2}), away from the free surfaces' outermost cells {worst_inner:.3e}; top at the symmetry plane {:.6e} m vs exact {top_exact:.6e} m ({:+.3e})",
+            "end-loaded block, plane strain, cells {nr}x{nz}{}: worst |P_yy/T_0 - 1| {worst:.3e} at (x/h, y/h) ({:.2}, {:.2}), away from the free surfaces' outermost cells {worst_inner:.3e}; top at the symmetry plane {:.6e} m vs exact {top_exact:.6e} m ({:+.3e})",
             layout.label(),
             at.x.x / h,
             at.x.y / h,

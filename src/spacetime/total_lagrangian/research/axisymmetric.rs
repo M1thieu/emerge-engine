@@ -1,4 +1,4 @@
-//! FAST_MODE_PLAN.md sec. 51.4, the axisymmetric path's first slice, test-only
+//! The axisymmetric path, test-only
 //! (knob `EMERGE_PROBE_AXISYMMETRIC_PATH = i_a`, the axis's node column; off
 //! by default): the symmetry axis on the grid's unknowns.
 //!
@@ -6,7 +6,7 @@
 //! `v_r = 0` on the axis, a mirrored ghost node `v_r(-dr) = -v_r(dr)`. Here
 //! the B-spline coefficients are mirrored about the axis's node column `i_a`
 //! (the static probe's rule, `axisymmetric_probes`, exact for uniform states
-//! with an exact quadrature, sec. 49g): the radial component is odd, its
+//! with an exact quadrature): the radial component is odd, its
 //! coefficient on the axis zero; the axial component is even. The engine's
 //! extended B-splines already write a face's coefficient as a list of
 //! unknowns and weights (`Grid::extension`), so a ghost face takes its
@@ -14,18 +14,23 @@
 //! Adaptation, declared: only the column next to the axis is mirrored (the
 //! quadratic B-splines of points at `R > 0` reach one node beyond it).
 //!
-//! The hoop (sec. 49c.2, derived from the source's weak form): each point's
+//! The hoop (derived from the source's weak form): each point's
 //! `F_33 = r / R`, the current radius over the reference one; the internal
 //! force gains `w P_33 N_i / R` on the radial rows, `P_33 = F_33 S_33`, with
 //! the weights `w = A_p R_p` (per radian) the caller gives as `v0` and the
 //! masses per radian. The law's step stress is the discrete gradient over
 //! the block-diagonal `C` (the in-plane block and `C_33`), Gonzalez's formula
-//! in that space. Declared limits of this slice: the reference radii come
+//! in that space. Declared limits: the reference radii come
 //! through this thread (`set_radii`), so only a step run on the caller's
 //! thread sees them (`step_total_lagrangian`, not the controller's
 //! concurrent tries); the internal force's derivative is taken by central
 //! differences; the midpoint only (no theta step, no backward Euler); the
 //! neo-Hookean and J2 laws only, with no dashpot and no relaxation branch.
+//!
+//! For the cases of `probes/axisymmetric_dynamic`: slip planes and a held rim
+//! as the same mirror on other node lines (`set_planes`: the normal
+//! coefficient odd, the tangential even, the static probe's rule), and dead
+//! loads per radian on massless points (`set_point_loads`).
 
 use std::cell::{Cell, RefCell};
 
@@ -41,6 +46,46 @@ use crate::matter::materials::solid::neo_hookean::{
 thread_local! {
     static AXIS: Cell<Option<usize>> = const { Cell::new(None) };
     static RADII: RefCell<Option<Vec<f64>>> = const { RefCell::new(None) };
+    static PLANES: RefCell<Vec<(usize, usize, i64)>> = const { RefCell::new(Vec::new()) };
+    static POINT_LOADS: RefCell<Vec<(usize, DVec2)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The mirror planes beside the axis for this thread's grids: each `(normal
+/// axis, node line, side of the body)`, the side `1` above or right of the line.
+pub(crate) fn set_planes(planes: Vec<(usize, usize, i64)>) {
+    PLANES.with(|p| *p.borrow_mut() = planes);
+}
+
+/// Dead loads per radian for this thread's solves: `(point, force)`.
+pub(crate) fn set_point_loads(loads: Vec<(usize, DVec2)>) {
+    POINT_LOADS.with(|l| *l.borrow_mut() = loads);
+}
+
+/// The step's external force with this thread's dead loads.
+pub(crate) fn with_point_loads(grid: &Grid, mut external: Vec<f64>) -> Vec<f64> {
+    POINT_LOADS.with(|l| {
+        for &(p, force) in l.borrow().iter() {
+            for (a, component) in force.to_array().into_iter().enumerate() {
+                grid.visit(p, a, |k, w, _| external[k] += w * component);
+            }
+        }
+    });
+    external
+}
+
+/// Every mirror: the axis, then the planes.
+fn mirrors() -> Vec<(usize, usize, i64)> {
+    let Some(axis) = axis() else {
+        return Vec::new();
+    };
+    let mut all = vec![(0, axis, 1)];
+    PLANES.with(|p| all.extend(p.borrow().iter().copied()));
+    all
+}
+
+/// Whether displacement `u` takes point `p` through the axis (`F_33 <= 0`).
+pub(crate) fn through_axis(grid: &Grid, hoop: &Hoop, (p, u, x): (usize, &[f64], DVec2)) -> bool {
+    x.x - hoop.axis_x + grid.read(u, p, 0).0 <= 0.0
 }
 
 /// Each point's reference radius for this thread's solves.
@@ -73,7 +118,7 @@ pub(crate) fn energy_with_stretch(solid: &Elastic, f: DMat2, f33: f64) -> f64 {
         ElasticLaw::NeoHookean => {
             neo_hookean_energy_axisymmetric(f.transpose() * f, f33 * f33, lambda, mu)
         }
-        _ => panic!("the axisymmetric path's energy is the neo-Hookean law's only (sec. 51.4)"),
+        _ => panic!("the axisymmetric path's energy is the neo-Hookean law's only"),
     }
 }
 
@@ -91,7 +136,7 @@ impl Elastic {
     ) -> (DMat2, f64) {
         assert!(
             !self.is_viscous() && !self.is_relaxing(),
-            "the axisymmetric path's first slice carries no dashpot and no relaxation branch"
+            "the axisymmetric path carries no dashpot and no relaxation branch"
         );
         let (lambda, mu) = self.lame();
         let ((s0, t0), (s1, t1), work) = match &self.law {
@@ -108,9 +153,7 @@ impl Elastic {
                     stepped.energy_change + stepped.dissipated,
                 )
             }
-            _ => panic!(
-                "the axisymmetric path's first slice carries the neo-Hookean and J2 laws only"
-            ),
+            _ => panic!("the axisymmetric path carries the neo-Hookean and J2 laws only"),
         };
         let (mean, mean33) = (0.5 * (s0 + s1), 0.5 * (t0 + t1));
         let (dc, da) = (c1 - c0, a1 - a0);
@@ -170,45 +213,64 @@ pub(crate) fn axis() -> Option<usize> {
                 .ok()?
                 .parse()
                 .ok()?;
-            println!("knob active: axisymmetric path, axis on node column {axis} (sec. 51.4)");
+            println!("knob active: axisymmetric path, axis on node column {axis}");
             Some(axis)
         })
     })
 }
 
-/// Whether face column `i` of lattice `a` (0 the radial component, 1 the
-/// axial) is no unknown of its own: every column left of the axis, and the
-/// axis's own for the radial component.
-pub(crate) fn excluded(a: usize, i: usize) -> bool {
-    axis().is_some_and(|axis| i < axis || (a == 0 && i == axis))
+/// Whether face `(i, j)` of lattice `a` (0 the radial component, 1 the axial)
+/// is no unknown of its own: every face on a mirror's far side, and for the
+/// component normal to it a face on the mirror.
+pub(crate) fn excluded(a: usize, i: usize, j: usize) -> bool {
+    mirrors().into_iter().any(|(normal, node, side)| {
+        let along = if normal == 0 { i } else { j } as i64 - node as i64;
+        along * side < 0 || (a == normal && along == 0)
+    })
 }
 
 /// The mirrored faces' coefficients, once the grid's unknowns and extensions
-/// are built: the radial component zero on the axis, each ghost face (one
-/// column left of it) its mirror's list times `-1` (radial) or `+1` (axial).
+/// are built: the normal component zero on a mirror, each ghost face (one line
+/// beyond it) its image's list times `-1` (normal) or `+1` (tangential). Two
+/// passes, so that a corner's ghost, whose image is another mirror's ghost, is
+/// filled.
 pub(crate) fn mirror(grid: &mut Grid) {
-    let Some(axis) = axis() else {
-        return;
-    };
-    for (a, l) in grid.lattices.iter().enumerate() {
-        let sign = if a == 0 { -1.0 } else { 1.0 };
-        for j in 0..l.nj {
-            let face = |i: usize| l.start + i + l.ni * j;
-            if a == 0 && axis < l.ni {
-                grid.extension[face(axis)] = Some(Box::default());
+    let all = mirrors();
+    for _ in 0..2 {
+        for &(normal, node, side) in &all {
+            for (a, l) in grid.lattices.iter().enumerate() {
+                let sign = if a == normal { -1.0 } else { 1.0 };
+                let (across, along) = if normal == 0 {
+                    (l.ni, l.nj)
+                } else {
+                    (l.nj, l.ni)
+                };
+                for t in 0..along {
+                    let face = |c: usize| {
+                        if normal == 0 {
+                            l.start + c + l.ni * t
+                        } else {
+                            l.start + t + l.ni * c
+                        }
+                    };
+                    if a == normal && node < across {
+                        grid.extension[face(node)] = Some(Box::default());
+                    }
+                    let (ghost, image) = (node as i64 - side, node as i64 + side);
+                    if ghost.min(image) < 0 || ghost.max(image) >= across as i64 {
+                        continue;
+                    }
+                    let (ghost, image) = (face(ghost as usize), face(image as usize));
+                    let list: Option<Box<[(usize, f64)]>> = if grid.slot[image] != usize::MAX {
+                        Some(Box::new([(grid.slot[image], sign)]))
+                    } else {
+                        grid.extension[image]
+                            .as_ref()
+                            .map(|list| list.iter().map(|&(u, e)| (u, sign * e)).collect())
+                    };
+                    grid.extension[ghost] = list;
+                }
             }
-            if axis == 0 || axis + 1 >= l.ni {
-                continue;
-            }
-            let (ghost, image) = (face(axis - 1), face(axis + 1));
-            let list: Option<Box<[(usize, f64)]>> = if grid.slot[image] != usize::MAX {
-                Some(Box::new([(grid.slot[image], sign)]))
-            } else {
-                grid.extension[image]
-                    .as_ref()
-                    .map(|list| list.iter().map(|&(u, e)| (u, sign * e)).collect())
-            };
-            grid.extension[ghost] = list;
         }
     }
 }
@@ -266,8 +328,53 @@ mod tests {
         }
     }
 
-    /// AX-8 (FAST_MODE_PLAN.md sec. 51.4, criterion written before the
-    /// run, the axisymmetric analogue of the plane gate (g)): a neo-Hookean
+    /// A displacement that takes a point
+    /// through the axis is refused, one short of it admitted.
+    #[test]
+    fn a_trial_through_the_axis_is_refused() {
+        let axis = 4usize;
+        set_axis(Some(axis));
+        let layout = GridLayout::new(16, 16, 1.0);
+        let mut x = Vec::new();
+        for i in 0..4 {
+            for j in 0..4 {
+                for (s, t) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
+                    x.push(DVec2::new((axis + i) as f64 + s, 6.0 + j as f64 + t));
+                }
+            }
+        }
+        let radii: Vec<f64> = x.iter().map(|q| q.x - axis as f64).collect();
+        let mass = vec![1.0; x.len()];
+        let volume = vec![0.25; x.len()];
+        let grid = Grid::new(&layout, &x, (&mass, &volume), &|_, _, _| None, Some(0.5));
+        set_axis(None);
+        let hoop = Hoop {
+            axis_x: axis as f64,
+            radii,
+        };
+        // A uniform radial field, odd about the axis: `u_r = a R`.
+        let field = |a: f64| -> Vec<f64> {
+            (0..grid.len)
+                .map(|k| {
+                    let l = grid.lattices[grid.axis_of[k]];
+                    let i = (grid.stacked_of[k] - l.start) % l.ni;
+                    if grid.axis_of[k] == 0 {
+                        a * (i as f64 - axis as f64)
+                    } else {
+                        0.0
+                    }
+                })
+                .collect()
+        };
+        let (short, through) = (field(-0.9), field(-1.1));
+        for (p, q) in x.iter().enumerate() {
+            assert!(!through_axis(&grid, &hoop, (p, &short, *q)), "point {p}");
+            assert!(through_axis(&grid, &hoop, (p, &through, *q)), "point {p}");
+        }
+    }
+
+    /// The axisymmetric analogue of the plane energy gate (criterion written
+    /// before the run): a neo-Hookean
     /// cylinder released from a uniform radial stretch of 1.3 (`F = diag(1.3,
     /// 1)` in plane and `F_33 = 1.3`) in free space rings with its energy
     /// per radian kept: over 20 steps the kinetic plus stored energy (the
@@ -278,8 +385,7 @@ mod tests {
     /// Newton stagnates there (residual 0.27 down to 6.7e-4, the hoop's
     /// stiffness missing from the preconditioner and the derivative taken by
     /// differences), while stretches of 1.01 and 1.1 pass at 0.2 and 1.3
-    /// passes at 0.05. The gate runs at 0.05; the failure at 0.2 is recorded
-    /// (FAST_MODE_PLAN.md sec. 51.5). Traced there: the homotopy reaches an
+    /// passes at 0.05. The gate runs at 0.05. Traced at 0.2: the homotopy reaches an
     /// admissible solution, while Newton stalls 7.4 (of 27) away from it with
     /// step lengths of 1e-3; neither the hoop's stiffness in the
     /// preconditioner nor the energy's increment form moves the stall.
@@ -359,7 +465,7 @@ mod tests {
         set_axis(None);
         set_radii(None);
         println!(
-            "AX-8: stored at the start {:.6e} per radian, largest kinetic {largest_kinetic:.6e}, worst |balance| {worst:.3e} within residual work {allowed:.3e}",
+            "released cylinder: stored at the start {:.6e} per radian, largest kinetic {largest_kinetic:.6e}, worst |balance| {worst:.3e} within residual work {allowed:.3e}",
             start.1
         );
         assert!(largest_kinetic > 0.1 * start.1, "the cylinder rings");
