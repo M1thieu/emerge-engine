@@ -541,6 +541,10 @@ pub fn controlled_step(
     // estimate's Richardson divisor `pieces^2 - 1` (3 for the halves).
     let (pieces, by_contacts) = floor_knobs();
     let divisor = (pieces * pieces - 1) as f64;
+    // The last try refused by its error, `(relative error, step)`, while the
+    // next is a retry (`observed_order`, test builds).
+    #[cfg(all(test, feature = "experimental"))]
+    let mut last_refused: Option<(f64, f64)> = None;
     loop {
         let dt = *tau;
         // The try pair's wall time, for the trace below.
@@ -869,6 +873,10 @@ pub fn controlled_step(
                 hooks::add_return_split(returns.0, returns.1, false);
                 #[cfg(all(test, feature = "experimental"))]
                 hooks::add_try(reaching, 2);
+                #[cfg(all(test, feature = "experimental"))]
+                {
+                    last_refused = None;
+                }
                 keep_factors(&mut start, [&whole, &halves]);
                 rejected += 1;
                 unconverged += 1;
@@ -918,6 +926,16 @@ pub fn controlled_step(
             hooks::add_return_split(returns.0, returns.1, false);
             #[cfg(all(test, feature = "experimental"))]
             hooks::add_try(reaching, 1);
+            // A second refusal in a row: the next try from the order the two
+            // observed (`observed_order`), when asked.
+            #[cfg(all(test, feature = "experimental"))]
+            let next = match last_refused.replace((relative, dt)) {
+                Some(previous) if super::observed_order::on() => {
+                    super::observed_order::ratio(previous, (relative, dt), order + 1.0)
+                        .map_or(next, |ratio| (ratio * dt).clamp(floor, control.largest))
+                }
+                _ => next,
+            };
             keep_factors(&mut start, [&whole, &halves]);
             rejected += 1;
             *tau = next.min(dt).max(floor);

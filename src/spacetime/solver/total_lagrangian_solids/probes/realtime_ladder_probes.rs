@@ -267,6 +267,12 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
         )
         .expect("the replay directory is writable");
     }
+    if crate::spacetime::total_lagrangian::observed_order::on() {
+        println!(
+            "{name}: observed order: {}",
+            crate::spacetime::total_lagrangian::observed_order::report()
+        );
+    }
     if crate::spacetime::total_lagrangian::end_gap_refund::refund_on() {
         println!(
             "{name}: end-gap refund: {}",

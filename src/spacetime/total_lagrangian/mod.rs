@@ -99,6 +99,9 @@ mod multipliers;
 #[cfg(all(test, feature = "experimental"))]
 #[path = "probes/nitsche_probes.rs"]
 mod nitsche_probes;
+#[cfg(all(test, feature = "experimental"))]
+#[path = "probes/observed_order.rs"]
+pub(crate) mod observed_order;
 mod relaxation;
 /// The internal force's micro-count.
 #[cfg(all(test, feature = "experimental"))]
