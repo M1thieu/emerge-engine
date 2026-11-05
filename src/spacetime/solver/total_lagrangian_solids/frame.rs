@@ -44,6 +44,10 @@ pub struct TotalLagrangianFrame {
     /// Kept steps whose Newton stagnated on its residual's noise: a
     /// reported failure (`StepReport::stagnated`).
     pub stagnated: u32,
+    /// Kept steps that broke their energy identity at the estimator's floor
+    /// (`ledger_guard`): the flag a host reads.
+    #[cfg(all(test, feature = "experimental"))]
+    pub ledger_breaches: u32,
     pub unconverged: u32,
     /// Tries rejected because Newton did not converge, and kept steps
     /// where a point reached a wall (Acary's order-0 estimate).

@@ -680,6 +680,10 @@ impl Simulation {
             frame.reaching += u32::from(step.reaching);
             frame.at_floor += u32::from(step.at_floor);
             frame.stagnated += step.stagnated;
+            #[cfg(all(test, feature = "experimental"))]
+            {
+                frame.ledger_breaches += step.ledger_breaches;
+            }
             // Once a contact held since the last flight has ended (in this
             // frame or an earlier one), the rest of the frame flown again
             // (`handoff`).

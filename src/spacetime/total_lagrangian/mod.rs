@@ -88,6 +88,9 @@ mod galerkin2;
 #[path = "probes/hooks.rs"]
 pub(crate) mod hooks;
 mod krylov;
+#[cfg(all(test, feature = "experimental"))]
+#[path = "probes/ledger_guard.rs"]
+pub(crate) mod ledger_guard;
 mod modes;
 mod multipliers;
 #[cfg(all(test, feature = "experimental"))]

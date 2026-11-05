@@ -169,9 +169,29 @@ pub struct ControlledStep {
     /// Whether the kept step was one where a point reached a wall
     /// (Acary's order-0 estimate).
     pub reaching: bool,
+    /// Whether the kept step broke its energy identity, kept only because it
+    /// is at the estimator's floor (`ledger_guard`).
+    #[cfg(all(test, feature = "experimental"))]
+    pub ledger_breaches: u32,
     /// Every try's time by part, the rejected ones' included, and the
     /// controller's own (`Timing::controller`).
     pub timing: Timing,
+}
+
+/// A state's kinetic, stored and potential energy, as the frame's ledger
+/// counts them.
+#[cfg(all(test, feature = "experimental"))]
+fn energy_parts(
+    s: &State,
+    (mass, v0, gravity): (&[f64], &[f64], DVec2),
+) -> super::ledger_guard::EnergyParts {
+    (0..s.x.len()).fold((0.0, 0.0, 0.0), |e, p| {
+        (
+            e.0 + 0.5 * mass[p] * s.v[p].length_squared(),
+            e.1 + v0[p] * s.solids[p].energy(s.f[p]),
+            e.2 + mass[p] * gravity.dot(s.x[p]),
+        )
+    })
 }
 
 /// The particles' state a try changes.
@@ -822,7 +842,28 @@ pub fn controlled_step(
             // A try Newton left unconverged is no solution of the step's
             // equations, and the step keeps the energy exactly only as a
             // solution: it is never kept, the step is halved.
-            let failed = halves_reports.iter().any(|r| !r.converged && !r.stagnated);
+            #[cfg(all(test, feature = "experimental"))]
+            let breach = super::ledger_guard::on().then(|| {
+                super::ledger_guard::timed(|| {
+                    super::ledger_guard::Balance::of(
+                        energy_parts(&start, (mass, v0, gravity)),
+                        energy_parts(&halves, (mass, v0, gravity)),
+                        &halves_reports,
+                        start.x.len(),
+                    )
+                })
+            });
+            #[cfg(all(test, feature = "experimental"))]
+            let breach = breach.filter(super::ledger_guard::Balance::breached);
+            #[cfg(all(test, feature = "experimental"))]
+            if let Some(balance) = breach {
+                super::ledger_guard::report(balance, dt, dt <= floor);
+            }
+            #[cfg(all(test, feature = "experimental"))]
+            let refused = breach.is_some() && dt > floor;
+            #[cfg(not(all(test, feature = "experimental")))]
+            let refused = false;
+            let failed = refused || halves_reports.iter().any(|r| !r.converged && !r.stagnated);
             if failed && dt > floor {
                 #[cfg(all(test, feature = "experimental"))]
                 hooks::add_return_split(returns.0, returns.1, false);
@@ -869,6 +910,8 @@ pub fn controlled_step(
                     unconverged,
                     stagnated: stalled,
                     reaching,
+                    #[cfg(all(test, feature = "experimental"))]
+                    ledger_breaches: u32::from(breach.is_some()),
                 };
             }
             #[cfg(all(test, feature = "experimental"))]
@@ -1052,7 +1095,28 @@ pub fn controlled_step(
             );
         }
         // A try Newton left unconverged is no solution (as above).
-        if reports.iter().any(|r| !r.converged && !r.stagnated) && dt > floor {
+        #[cfg(all(test, feature = "experimental"))]
+        let breach = super::ledger_guard::on().then(|| {
+            super::ledger_guard::timed(|| {
+                super::ledger_guard::Balance::of(
+                    energy_parts(&start, (mass, v0, gravity)),
+                    energy_parts(&kept, (mass, v0, gravity)),
+                    &reports,
+                    start.x.len(),
+                )
+            })
+        });
+        #[cfg(all(test, feature = "experimental"))]
+        let breach = breach.filter(super::ledger_guard::Balance::breached);
+        #[cfg(all(test, feature = "experimental"))]
+        if let Some(balance) = breach {
+            super::ledger_guard::report(balance, dt, dt <= floor);
+        }
+        #[cfg(all(test, feature = "experimental"))]
+        let refused = breach.is_some();
+        #[cfg(not(all(test, feature = "experimental")))]
+        let refused = false;
+        if (refused || reports.iter().any(|r| !r.converged && !r.stagnated)) && dt > floor {
             rejected += 1;
             unconverged += 1;
             *tau = (0.5 * dt).max(floor);
@@ -1088,6 +1152,8 @@ pub fn controlled_step(
                 unconverged,
                 stagnated: stalled,
                 reaching: false,
+                #[cfg(all(test, feature = "experimental"))]
+                ledger_breaches: u32::from(breach.is_some()),
             };
         }
         rejected += 1;

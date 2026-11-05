@@ -157,6 +157,7 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
     let mut allowed = 0.0;
     let mut walls = Vec::with_capacity(frames);
     let mut breakdown = Vec::with_capacity(frames);
+    let mut ledger_breaches = 0;
     crate::spacetime::total_lagrangian::hooks::take_parts();
     let rest = REST.with(|r| r.get());
     for k in 1..=frames {
@@ -169,6 +170,13 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
         }
         let f = sim.total_lagrangian_frame().expect("the path is on");
         allowed += f.residual_work + f.contact_work_bound;
+        ledger_breaches += f.ledger_breaches;
+        if f.ledger_breaches > 0 {
+            println!(
+                "frame {k}: {} kept steps broke their energy identity at the floor, balance {:+.4e} J/m",
+                f.ledger_breaches, f.balance
+            );
+        }
         walls.push(1e3 * f.wall);
         out.push(frame_json(&sim, frame_s * k as f64, allowed));
         breakdown.push(breakdown_json(&f));
@@ -245,6 +253,14 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
             ),
         )
         .expect("the replay directory is writable");
+    }
+    if crate::spacetime::total_lagrangian::ledger_guard::on() {
+        let balance = sim.total_lagrangian_frame().map_or(0.0, |f| f.balance);
+        println!(
+            "{name}: ledger guard: {ledger_breaches} kept steps broke their energy identity at the floor; balance {balance:+.4e} J/m; the checks took {:.1} ms of {:.1} ms",
+            1e3 * crate::spacetime::total_lagrangian::ledger_guard::spent(),
+            walls.iter().sum::<f64>()
+        );
     }
     let flown = sim.total_lagrangian_frame().map_or(0, |f| f.modal_frames);
     let mut sorted = walls.clone();
