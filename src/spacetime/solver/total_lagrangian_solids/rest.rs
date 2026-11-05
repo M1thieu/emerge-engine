@@ -372,7 +372,7 @@ impl Rest {
             }
         }
         let multiplier = basis.multipliers(&start_force);
-        // FAST_MODE_PLAN.md sec. 32: the multipliers split by term against
+        // The multipliers split by term against
         // the step's own, and the vertical resultants (the unit vertical
         // translation `t_y` against each force), at every start.
         #[cfg(all(test, feature = "experimental"))]

@@ -1,4 +1,4 @@
-//! FAST_MODE_PLAN.md secs. 42-42b, a test-only probe: each Maxwell branch
+//! A test-only probe: each Maxwell branch
 //! advanced over the WHOLE step (no splitting, no fraction of the step) by
 //! an update that stays damped when the step is much longer than the
 //! branch's relaxation time `tau = eta_b / mu_b`, where Liu and Guan's
@@ -7,15 +7,15 @@
 //! mu_b)` and `eta_b dE/dt = Q`, the branch relaxes toward `E* = S_P(C) /
 //! mu_b` and dissipates `eta_b |dE/dt|^2 / 2`. Selected by
 //! `EMERGE_PROBE_BRANCH_UPDATE`:
-//! - `frozen` (C-2a): the exact relaxation toward `E*_n` held over the step,
+//! - `frozen`: the exact relaxation toward `E*_n` held over the step,
 //!   `E_n+1 = E*_n + exp(-h)(E_n - E*_n)`; the stress the discrete gradient
 //!   of `Ups` in `C` at fixed `E_n+1` (Liu and Guan's eq. 4.18 structure),
 //!   the heat `Ups(C_n, E_n) - Ups(C_n, E_n+1)`, never negative;
-//! - `linear` (C-2b): the exact solution with `E*` linear in time over the
+//! - `linear`: the exact solution with `E*` linear in time over the
 //!   step; the heat that path's exact dissipation; the stress the midpoint's
 //!   projected so that `Z : S` is `Ups`'s change plus the heat (derived, not
 //!   sourced);
-//! - `backward` (C-2d): backward Euler toward `E*_n+1` (Shutov, Landgraf and
+//! - `backward`: backward Euler toward `E*_n+1` (Shutov, Landgraf and
 //!   Ihlemann, arXiv 1304.3380, eq. 20, the linear branch's form), the
 //!   stress and heat as `frozen`'s, the heat's sign not guaranteed.
 //!
@@ -168,14 +168,14 @@ pub(super) fn stress(
     s_neq + z * ((work - colon(s_neq, z)) / norm2)
 }
 
-/// X-2 (sec. 42): a kept step's branch heat below zero, counted and printed
+/// A kept step's branch heat below zero, counted and printed
 /// (the first 20, then every 1000th).
 pub(super) fn count_negative(heat: f64) {
     static COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     if heat < 0.0 {
         let k = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         if k <= 20 || k.is_multiple_of(1000) {
-            println!("X-2 negative branch heat #{k}: {heat:.6e} J/m");
+            println!("negative branch heat #{k}: {heat:.6e} J/m");
         }
     }
 }

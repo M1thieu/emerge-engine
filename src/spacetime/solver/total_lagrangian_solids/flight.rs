@@ -393,7 +393,7 @@ impl Flight {
         })
     }
 
-    /// For the probes (MODE_FREE_HANDOFF_PLAN.md M0): each contact point's
+    /// For the probes: each contact point's
     /// vibration bound, each mode's size `|z_i|`, whether the flight carries
     /// a memory (then the sizes are `|y_i|`, not used), and the same flight
     /// with the contact points' bounds replaced.
@@ -672,7 +672,7 @@ impl Flight {
         self.memory.is_some()
     }
 
-    // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the flight leaves out the turning frame's terms (Coriolis coupling, centrifugal softening, the vibration's change of the inertia), so a spinning, vibrating body's flight does not keep its angular momentum and this check refuses it (in exact arithmetic the flight's own change exceeds the tolerance in 1622 of 1673 refusals on the hopping clay block); each refused frame is then stepped | source: Legrand 2009 (this file's head); FAST_MODE_PLAN.md sec. 22a-23 | replace when: the flight carries the turning frame's terms | state: measured; the turning flight (exponential_flight.rs) removes these refusals on the hopping clay, not adopted (FAST_MODE_PLAN.md sec. 25a) | gap: that flight's hand-backs gain energy (the linear basis's residual)
+    // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the flight leaves out the turning frame's terms (Coriolis coupling, centrifugal softening, the vibration's change of the inertia), so a spinning, vibrating body's flight does not keep its angular momentum and this check refuses it (in exact arithmetic the flight's own change exceeds the tolerance in 1622 of 1673 refusals on the hopping clay block); each refused frame is then stepped | source: Legrand 2009 (this file's head) | replace when: the flight carries the turning frame's terms | state: measured; the turning flight (exponential_flight.rs) removes these refusals on the hopping clay, not adopted | gap: that flight's hand-backs gain energy (the linear basis's residual)
     pub(crate) fn keeps_angular_momentum(&self, state: &TotalLagrangianState) -> bool {
         let n = state.particles;
         let total: f64 = state.mass[..n].iter().sum();

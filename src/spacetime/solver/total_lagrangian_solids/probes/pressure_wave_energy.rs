@@ -1,5 +1,4 @@
-//! G0_PWAVE_ENERGY_PLAN.md sec. 2 (test builds, `EMERGE_PROBE_G0`): the
-//! share of the energy the pressure waves carry. Two measures, printed
+//! The share of the energy the pressure waves carry. Two measures, printed
 //! only: (1) per step, the stored energy split by the engine's own
 //! isochoric/volumetric form (`Elastic::law_energy`'s fallback, `mu |F^ -
 //! R^|^2` with `F^ = J^(-1/2) F`, and `K / 2 (J - 1)^2`, `K` the 2D bulk
@@ -26,13 +25,13 @@ thread_local! {
     static FRAME: Cell<(f64, f64, u32)> = const { Cell::new((0.0, 0.0, 0)) };
 }
 
-/// Whether `EMERGE_PROBE_G0` is set (`steps` also prints every step); says
+/// Whether `EMERGE_PROBE_PRESSURE_WAVE` is set (`steps` also prints every step); says
 /// so once, from inside.
 pub(super) fn on() -> bool {
     static SAID: std::sync::Once = std::sync::Once::new();
-    let on = std::env::var_os("EMERGE_PROBE_G0").is_some();
+    let on = std::env::var_os("EMERGE_PROBE_PRESSURE_WAVE").is_some();
     if on {
-        SAID.call_once(|| println!("knob active: G0 prints (G0_PWAVE_ENERGY_PLAN.md)"));
+        SAID.call_once(|| println!("knob active: pressure-wave energy prints"));
     }
     on
 }
@@ -53,7 +52,7 @@ fn split(state: &TotalLagrangianState) -> (f64, f64, f64) {
     (law, dev, vol)
 }
 
-/// FAST_MODE_PLAN.md sec. 45.4: the impact path, printed per kept step.
+/// The impact path, printed per kept step.
 #[path = "impact_path_probes.rs"]
 mod impact_path;
 
@@ -65,9 +64,9 @@ pub(super) fn after_step(state: &TotalLagrangianState, dt: f64) {
     }
     let (law, dev, vol) = split(state);
     let share = vol / (dev + vol).max(f64::MIN_POSITIVE);
-    if std::env::var("EMERGE_PROBE_G0").is_ok_and(|v| v == "steps") {
+    if std::env::var("EMERGE_PROBE_PRESSURE_WAVE").is_ok_and(|v| v == "steps") {
         println!(
-            "G0 step {dt:.4e} s: stored (law) {law:.6e} J/m, split isochoric {dev:.6e} + volumetric {vol:.6e} J/m, volumetric share {share:.4e}"
+            "pressure-wave energy, step {dt:.4e} s: stored (law) {law:.6e} J/m, split isochoric {dev:.6e} + volumetric {vol:.6e} J/m, volumetric share {share:.4e}"
         );
     }
     FRAME.with(|c| {
@@ -89,7 +88,7 @@ pub(super) fn frame_end(state: &TotalLagrangianState, frame: u64) {
     let (worst, at, steps) = FRAME.with(|c| c.replace((0.0, 0.0, 0)));
     let (law, dev, vol) = split(state);
     println!(
-        "G0 frame {frame}: {steps} steps, largest volumetric share {worst:.4e} (stored {at:.4e} J/m there); end: stored (law) {law:.6e} J/m, isochoric {dev:.6e}, volumetric {vol:.6e}, share {:.4e}",
+        "pressure-wave energy, frame {frame}: {steps} steps, largest volumetric share {worst:.4e} (stored {at:.4e} J/m there); end: stored (law) {law:.6e} J/m, isochoric {dev:.6e}, volumetric {vol:.6e}, share {:.4e}",
         vol / (dev + vol).max(f64::MIN_POSITIVE)
     );
 }
@@ -129,24 +128,24 @@ pub(super) fn at_flight_start(flight: &Flight, modes: &Modes, state: &TotalLagra
     }
     rows.sort_by(|a, b| b.2.total_cmp(&a.2));
     println!(
-        "G0 flight start t {:.6}: vibration in the modes {total:.6e} J/m, P-wave-like E_P {pressure:.6e} J/m, share {:.4e}; fractions' check: worst |strain / (omega^2/2) - 1| {worst_check:.3e}",
+        "pressure-wave energy, flight start t {:.6}: vibration in the modes {total:.6e} J/m, P-wave-like E_P {pressure:.6e} J/m, share {:.4e}; fractions' check: worst |strain / (omega^2/2) - 1| {worst_check:.3e}",
         state.time,
         pressure / total.max(f64::MIN_POSITIVE)
     );
     for (i, hz, energy, fraction) in rows.iter().take(12) {
         println!(
-            "  G0 mode {i}: {hz:.1} Hz, energy {energy:.4e} J/m ({:.4e} of it), volumetric fraction {fraction:.4e}",
+            "  pressure-wave energy, mode {i}: {hz:.1} Hz, energy {energy:.4e} J/m ({:.4e} of it), volumetric fraction {fraction:.4e}",
             energy / total.max(f64::MIN_POSITIVE)
         );
     }
 }
 
-/// Part C's series (sec. 3): `EMERGE_PROBE_G0_KG=x` sets the 3D `K/G` to
+/// A series in `K/G`: `EMERGE_PROBE_PRESSURE_WAVE_KG=x` sets the 3D `K/G` to
 /// `x` at the record's own shear modulus and density, `nu = (3x - 2) /
 /// (2 (3x + 1))`, `E = 2 G (1 + nu)`; says so once, from inside. Unset, the
 /// record unchanged.
 pub(super) fn series(record: ElasticProps) -> ElasticProps {
-    let Some(x) = std::env::var("EMERGE_PROBE_G0_KG")
+    let Some(x) = std::env::var("EMERGE_PROBE_PRESSURE_WAVE_KG")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
     else {
@@ -159,7 +158,7 @@ pub(super) fn series(record: ElasticProps) -> ElasticProps {
     static SAID: std::sync::Once = std::sync::Once::new();
     SAID.call_once(|| {
         println!(
-            "knob active: G0 series K/G {x} (G {g:.6e} Pa kept, nu {nu:.9}, E {:.6e} Pa)",
+            "knob active: pressure-wave series K/G {x} (G {g:.6e} Pa kept, nu {nu:.9}, E {:.6e} Pa)",
             2.0 * g * (1.0 + nu)
         )
     });
@@ -171,10 +170,10 @@ pub(super) fn series(record: ElasticProps) -> ElasticProps {
 }
 
 /// The series' P-wave speed over the record's at the same `G` and `rho`,
-/// `sqrt((K/G + 4/3) / (K0/G + 4/3))`, so reference A keeps its Courant
+/// `sqrt((K/G + 4/3) / (K0/G + 4/3))`, so the fixed-step reference keeps its Courant
 /// number by its own `c_p` (1 without the knob).
 pub(super) fn wave_ratio(record: &ElasticProps) -> f64 {
-    let Some(x) = std::env::var("EMERGE_PROBE_G0_KG")
+    let Some(x) = std::env::var("EMERGE_PROBE_PRESSURE_WAVE_KG")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
     else {

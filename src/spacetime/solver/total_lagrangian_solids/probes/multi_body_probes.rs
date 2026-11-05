@@ -1,5 +1,4 @@
-//! Several bodies on one shared step (`tmp/papers/dl_realtime/
-//! MULTI_BODY_PLAN.md`): 1, 4 and 16 of E2's clay blocks far apart, each
+//! Several bodies on one shared step: 1, 4 and 16 of E2's clay blocks far apart, each
 //! flying, resting or impacting, 30 frames; per frame the step's counts,
 //! wall and ledger, per body its energy and largest velocity change. A
 //! probe: measurement, nothing held.
@@ -17,8 +16,7 @@ enum Role {
     Impacting,
 }
 
-/// 30 frames, or `EMERGE_PROBE_MULTI_FRAMES` (MULTI_BODY_PLAN.md's declared
-/// short window for N16 with one impact).
+/// 30 frames, or `EMERGE_PROBE_MULTI_FRAMES`.
 fn frames() -> usize {
     std::env::var("EMERGE_PROBE_MULTI_FRAMES")
         .ok()
@@ -31,13 +29,13 @@ fn frames() -> usize {
 /// (1.23 m in 0.5 s), resting on the floor, impacting from 10 cm.
 fn scene(roles: &[Role]) -> (Simulation, Vec<u32>) {
     // `EMERGE_PROBE_REFINE` / `EMERGE_PROBE_SPACING` (`impact_local::refinement`):
-    // the same physical scene on cells `r` times finer, as reference A's.
+    // the same physical scene on cells `r` times finer, as the fixed-step reference's.
     let (r, spacing) = super::impact_local::refinement();
     let res = (16 * roles.len() + 16).max(160) * r;
     let mut config = SimConfig::earth(res, 0.01 / r as f32, FRAME_S as f32);
     config.min_dt = config.min_dt.min(FRAME_S as f32);
     // The step tolerance, 1e-2, or `EMERGE_PROBE_MULTI_TOLERANCE` (the
-    // shared-step candidate's test, MULTI_BODY_PLAN.md).
+    // shared-step candidate's test).
     let tolerance = std::env::var("EMERGE_PROBE_MULTI_TOLERANCE")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -48,7 +46,7 @@ fn scene(roles: &[Role]) -> (Simulation, Vec<u32>) {
         .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
         .0;
     let floor = config.boundary_thickness as f32;
-    // Check 6 (STATE_SPACE_COVERAGE_PLAN.md): `EMERGE_PROBE_MULTI_REVERSE`
+    // `EMERGE_PROBE_MULTI_REVERSE`
     // spawns the bodies in reverse order at the same positions; the tags are
     // put back in the roles' order.
     let reverse = std::env::var_os("EMERGE_PROBE_MULTI_REVERSE").is_some();
@@ -169,7 +167,7 @@ fn run_scene(label: &str, (mut sim, tags): (Simulation, Vec<u32>), roles: &[Role
         println!("knob active: one ulp on particle {p}'s height");
     }
     // A start line from inside the run (an empty log is then visible at
-    // once, MULTI_BODY_PLAN.md), and `EMERGE_PROBE_MULTI_FRAME_CAP_S`: a
+    // once), and `EMERGE_PROBE_MULTI_FRAME_CAP_S`: a
     // frame longer than it ends the run after its print.
     println!(
         "{label} start: {bodies} bodies {roles:?}, {} frames",
@@ -252,7 +250,7 @@ fn run_scene(label: &str, (mut sim, tags): (Simulation, Vec<u32>), roles: &[Role
                     },
                 );
                 let mean = momentum / mass;
-                // PER_BODY_TOLERANCE_PLAN.md sec. 3: the centre's specific
+                // The centre's specific
                 // energy `1/2 |v_c|^2 + |g| y_c` and the vibration (kinetic
                 // about the rigid motion plus stored), both constant in free
                 // flight, so comparable across runs whose impacts register in
@@ -309,7 +307,7 @@ fn run_scene(label: &str, (mut sim, tags): (Simulation, Vec<u32>), roles: &[Role
             f.contact_work_bound,
             per_body.join("; ")
         );
-        m2_check(&sim, (&owner, roles), n, &mut m2_previous);
+        pair_bound_check(&sim, (&owner, roles), n, &mut m2_previous);
         if cap.is_some_and(|cap| f.wall > cap) {
             println!("{label}: frame {n} over the frame cap, run ended (capped, not a verdict)");
             break;
@@ -396,9 +394,9 @@ fn probe_multi_body() {
             ("N1 impacting", vec![Impacting]),
             ("N4 quiet", vec![Flying, Resting, Flying, Resting]),
             ("N4 one impact", vec![Impacting, Resting, Flying, Resting]),
-            ("N16 quiet", [Flying, Resting].repeat(8)),
+            ("16 blocks, quiet", [Flying, Resting].repeat(8)),
             (
-                "N16 one impact",
+                "16 blocks, one impact",
                 std::iter::once(Impacting)
                     .chain([Resting, Flying].repeat(8).into_iter().skip(1))
                     .collect(),
@@ -410,32 +408,31 @@ fn probe_multi_body() {
             }
             run(label, &roles);
         }
-        // E4's scene, traced (BODY_BODY_GAP_FIX_PLAN.md: its second
-        // impact off, none on), only when asked by name.
+        // E4's scene, traced, only when asked by name.
         if only == "E4" {
             run_scene("E4", e4_scene(), &[Role::Impacting, Role::Resting]);
         }
     });
 }
 
-/// One pair's M2 record from a frame end: the bodies, their outlines'
+/// One pair's bound record from a frame end: the bodies, their outlines'
 /// points, the best direction and its lower bound over the next frame.
 struct M2Pair {
     bodies: (usize, usize),
     points: (Vec<usize>, Vec<usize>),
     n: DVec2,
     lower: f64,
-    /// M2' (sec. 12.4): neither body can reach a wall over the interval by
+    /// Neither body can reach a wall over the interval by
     /// the mode-free bound less its solve term (so neither holds one).
     in_scope: bool,
 }
 
-/// MODE_FREE_HANDOFF_PLAN.md M2 at a frame end (`EMERGE_PROBE_MODE_FREE`):
+/// The pair bound at a frame end (`EMERGE_PROBE_MODE_FREE`):
 /// the last frame end's pair bounds checked against the measured
 /// separations, with each body's solve term over the frame's `S` equal
-/// steps, `S^2` times one step's (sec. 10.1: `sum_s (1 + 2 (S - s)) =
+/// steps, `S^2` times one step's (`sum_s (1 + 2 (S - s)) =
 /// S^2`); then this frame end's bounds.
-fn m2_check(
+fn pair_bound_check(
     sim: &Simulation,
     (owner, roles): (&[usize], &[Role]),
     frame: usize,
@@ -499,7 +496,7 @@ fn m2_check(
         let measured = separation(state, (&pair.points.0, &pair.points.1), pair.n);
         let resting = roles[a] == Role::Resting || roles[b] == Role::Resting;
         println!(
-            "M2 check frame {frame} pair {a}-{b} ({}, M2' {}): measured separation {measured:+.4e} m, bound {:+.4e} m, solve term {deviation:.3e} m, margin {:+.4e} m{}",
+            "pair bound check, frame {frame} pair {a}-{b} ({}, wall scope {}): measured separation {measured:+.4e} m, bound {:+.4e} m, solve term {deviation:.3e} m, margin {:+.4e} m{}",
             if resting {
                 "with a resting body: measurement only"
             } else {
@@ -524,7 +521,7 @@ fn m2_check(
         .map(|b| free_of(state, &particles[b], &state.outlines[outline_of[b]]))
         .collect();
     let next = (state.time, state.time + length);
-    // M2' scope per body: every outline point's wall bound over the next
+    // The scope per body: every outline point's wall bound over the next
     // frame, less the body's one-step solve term, stays positive.
     let planes = sim.total_lagrangian_walls().0;
     let scope: Vec<bool> = (0..bodies)
@@ -560,7 +557,7 @@ fn m2_check(
     }
 }
 
-/// PER_BODY_TOLERANCE_PLAN.md: with `EMERGE_PROBE_TOL_PER_BODY`, each
+/// With `EMERGE_PROBE_TOL_PER_BODY`, each
 /// particle's body (the outline's tag) and each body's own tolerance
 /// energy at the start, its kinetic and stored energy plus `m_b |g| L_b`
 /// over its outline's extent along gravity (`tolerance_energy`'s terms, per

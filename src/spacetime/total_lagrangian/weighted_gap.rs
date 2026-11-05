@@ -271,7 +271,7 @@ pub(crate) fn reaching_conditions(
                         }
                     }
                     if let Some((signed, ends, closing)) = best {
-                        // The proposed fix (BODY_BODY_GAP_FIX_PLAN.md), behind its switch: the gap's sign by
+                        // The proposed fix, behind its switch: the gap's sign by
                         // admissibility (Laursen and Chawla 1997, eq. (1)), so a point outside the other body whose
                         // normal line meets it only behind (through its own body) is not in penetration and has
                         // no facing segment. Adaptation: admissibility tested on the other body's outline polygon.
@@ -335,7 +335,7 @@ pub(crate) fn reaching_conditions(
     found
 }
 
-/// The zero-change census of `tmp/papers/dl_realtime/BODY_BODY_GAP_FIX_PLAN.md`: on when the environment variable
+/// The zero-change census of the proposed gap fix: on when the environment variable
 /// `EMERGE_PROBE_BODY_GAP_CENSUS` names a file.
 #[cfg(feature = "experimental")]
 fn census_on() -> bool {

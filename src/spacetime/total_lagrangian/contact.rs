@@ -118,7 +118,7 @@ pub(crate) fn contact_allowance(
         .max(f64::MIN_POSITIVE)
 }
 
-/// FAST_MODE_PLAN.md sec. 36.2 (K-2): for each held condition at a step's
+/// For each held condition at a step's
 /// end, which of `contact_allowance`'s terms binds (the relative term, the
 /// round-off, the resolution) and the relative term's value, m, counted in
 /// `hooks::add_allowance_term`. Test-only.

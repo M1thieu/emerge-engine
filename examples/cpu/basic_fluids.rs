@@ -70,7 +70,7 @@ const PUSH_STRENGTH_MAX: f32 = 20.0;
 // Particle spacing, the particles-per-cell (PPC) sampling rate: a discretization
 // parameter, not a cosmetic one. With grid_cell_size = 1.0, spacing s gives
 // PPC = (1/s)^2, so 0.5 gives the 4 PPC of standard 2D MPM (particles seeded at
-// dx/2, as in Hu et al.'s MLS-MPM and the reference implementations in tmp/). At
+// dx/2, as in Hu et al.'s MLS-MPM and other reference MPM implementations). At
 // 0.9 (1.23 PPC) each grid node is supported by barely one particle, which
 // under-resolves the transfer, makes the free surface ragged and starves both
 // density-based render paths. `box_size` is in cells, so the columns keep their

@@ -40,7 +40,7 @@ mod render_mode;
 /// rest, every column spreads into the same puddle no matter what tau_0
 /// says. That is a property of the model, not a bug in this one: the same
 /// limitation is visible in the reference implementation vendored under
-/// `tmp/GeoTaichi`.
+/// `GeoTaichi`.
 ///
 /// Holding a shape requires storing elastic shear energy, so these columns
 /// use the elastoviscoplastic form (Saramito, J. Non-Newtonian Fluid Mech.

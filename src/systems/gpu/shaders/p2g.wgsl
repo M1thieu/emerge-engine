@@ -548,7 +548,7 @@ fn grip_atomic_addf_mom(idx: u32, val: f32) {
 
 // Workgroup-local accumulation tile for the main-grid scatter (Gao et al.
 // 2018, "GPU Optimization of Material Point Methods", SIGGRAPH Asia: sorted
-// particles, shared-memory reduction before global atomics; `tmp/pbmpm`'s
+// particles, shared-memory reduction before global atomics; `pbmpm`'s
 // g2p2g does the same). Particles arrive block-sorted, so one workgroup's 64
 // particles touch a small patch of nodes: summing there first (float CAS on
 // shared memory, cheap) and flushing each touched node to the global grid

@@ -300,8 +300,7 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
     /// when the material has no such concept (an elastic solid, or
     /// `GranularFluidMaterial`'s SVD-clamp plasticity with no Drucker-Prager
     /// cone). MIBF (`FrictionBoundary::use_material_friction`) uses it so wall
-    /// friction follows the material's local state (Blatny & Gaume 2025,
-    /// `tmp/ref_matter.md` sec. 19, where the angle of repose emerges from this
+    /// friction follows the material's local state (Blatny & Gaume 2025, where the angle of repose emerges from this
     /// coupling). Defaults to `None`.
     fn current_friction_coefficient(&self, _particles: &Particles, _i: usize) -> Option<f32> {
         None

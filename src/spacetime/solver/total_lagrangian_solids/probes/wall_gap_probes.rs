@@ -1,4 +1,4 @@
-//! FAST_MODE_PLAN.md sec. 36.2 (K-1, K-2): where a held body's depth in a
+//! Where a held body's depth in a
 //! wall comes from, counted before each controlled step under the trace
 //! switch. For every condition of the lone outline against every wall (a
 //! patch function `f` and a wall plane, the step's key `(3, f, wall)`): its
@@ -50,7 +50,7 @@ fn measures(state: &TotalLagrangianState, planes: &[Plane]) -> Option<Vec<Measur
     Some(all)
 }
 
-/// FAST_MODE_PLAN.md sec. 36.11 (W-1 amended): a held wall condition's
+/// A held wall condition's
 /// in-patch bound. Its members' wall gaps against their reference
 /// arclength along the wall `s` (the reference coordinate across the
 /// wall's axis), fitted by least squares with the members' weights to `g0 +
@@ -146,12 +146,12 @@ fn in_patch_bound(
     let bound = theta.abs() * total / 2.0 + kappa.abs() * total * total / 8.0 + residual;
     let below = weighted - least;
     Some(format!(
-        "W-1 {key:?}: weighted wall gap {weighted:+.4e} m, least member {least:+.4e} m, below the weighted {below:.4e} m; theta {theta:+.4e}, kappa {kappa:+.4e} 1/m, fit residual {residual:.3e} m, H {total:.4e} m, in-patch bound {bound:.4e} m: {}",
+        "wall gap {key:?}: weighted wall gap {weighted:+.4e} m, least member {least:+.4e} m, below the weighted {below:.4e} m; theta {theta:+.4e}, kappa {kappa:+.4e} 1/m, fit residual {residual:.3e} m, H {total:.4e} m, in-patch bound {bound:.4e} m: {}",
         if below <= bound { "within" } else { "BEYOND" }
     ))
 }
 
-/// The K-1 lines before a controlled step of length `state.step_length`.
+/// The gap lines before a controlled step of length `state.step_length`.
 pub(super) fn before_step(state: &TotalLagrangianState, planes: &[Plane]) {
     let Some(all) = measures(state, planes) else {
         return;
@@ -166,19 +166,19 @@ pub(super) fn before_step(state: &TotalLagrangianState, planes: &[Plane]) {
         if let Some(&(key, gap, rate, least)) = find(c.key) {
             trace(|| {
                 format!(
-                    "K-1 held {key:?}: weighted wall gap {gap:+.4e} m, least member {least:+.4e} m, in-patch spread {:+.4e} m, rate {rate:+.4e} m/s, multiplier {:+.4e}",
+                    "held {key:?}: weighted wall gap {gap:+.4e} m, least member {least:+.4e} m, in-patch spread {:+.4e} m, rate {rate:+.4e} m/s, multiplier {:+.4e}",
                     least - gap,
                     c.multiplier
                 )
             });
         }
     }
-    // FAST_MODE_PLAN.md sec. 40: every condition NOT held with a member
-    // below its wall, with its in-patch bound (`in_patch_bound`, W-1's form).
+    // Every condition NOT held with a member
+    // below its wall, with its in-patch bound (`in_patch_bound`).
     for &(key, gap, rate, least) in all.iter().filter(|m| m.3 < 0.0 && !held.contains(&m.0)) {
         trace(|| {
             format!(
-                "K-1 unheld {key:?}: weighted wall gap {gap:+.4e} m, least member {least:+.4e} m, rate {rate:+.4e} m/s"
+                "unheld {key:?}: weighted wall gap {gap:+.4e} m, least member {least:+.4e} m, rate {rate:+.4e} m/s"
             )
         });
         if let Some(line) = in_patch_bound(state, planes, key) {
@@ -194,7 +194,7 @@ pub(super) fn before_step(state: &TotalLagrangianState, planes: &[Plane]) {
                 };
                 trace(|| {
                     format!(
-                        "K-1 joined {key:?} in the last step ({dt:.6e} s): start weighted gap {:+.4e} m, start rate {:+.4e} m/s, rate x dt {:+.4e} m; end weighted gap {:+.4e} m, end least member {:+.4e} m",
+                        "joined {key:?} in the last step ({dt:.6e} s): start weighted gap {:+.4e} m, start rate {:+.4e} m/s, rate x dt {:+.4e} m; end weighted gap {:+.4e} m, end least member {:+.4e} m",
                         start.1,
                         start.2,
                         start.2 * dt,
@@ -211,7 +211,7 @@ pub(super) fn before_step(state: &TotalLagrangianState, planes: &[Plane]) {
     if relative + round_off + resolution > 0.0 {
         trace(|| {
             format!(
-                "K-2 last step's held allowances bound by: the relative term {relative}, the round-off {round_off}, the resolution {resolution}; the largest relative term {largest:.4e} m"
+                "last step's held allowances bound by: the relative term {relative}, the round-off {round_off}, the resolution {resolution}; the largest relative term {largest:.4e} m"
             )
         });
     }

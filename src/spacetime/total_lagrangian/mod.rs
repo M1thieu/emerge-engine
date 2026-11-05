@@ -55,7 +55,7 @@ use crate::matter::materials::viscous_stress::{newtonian_dissipation, newtonian_
 use glam::{DMat2, DVec2};
 use rayon::prelude::*;
 
-/// The axisymmetric path's axis on the grid (FAST_MODE_PLAN.md sec. 51.4).
+/// The axisymmetric path's axis on the grid.
 #[cfg(all(test, feature = "experimental"))]
 #[path = "research/axisymmetric.rs"]
 pub(crate) mod axisymmetric;
@@ -94,7 +94,7 @@ mod multipliers;
 #[path = "probes/nitsche_probes.rs"]
 mod nitsche_probes;
 mod relaxation;
-/// The internal force's micro-count (FAST_MODE_PLAN.md sec. 63.6).
+/// The internal force's micro-count.
 #[cfg(all(test, feature = "experimental"))]
 #[path = "probes/residual_split.rs"]
 pub(crate) mod residual_split;

@@ -8,7 +8,7 @@ use super::{BoundaryCondition, apply_coulomb_wall, assert_friction_coefficient};
 /// come from outside, with no mass, inertia or constraint solver of its own.
 /// Not a rigid body (the engine has none).
 ///
-/// Prior art: `tmp/sparkl`'s rigid-collider coupling (`grid_update.rs`)
+/// Prior art: `sparkl`'s rigid-collider coupling (`grid_update.rs`)
 /// projects grid velocity against the collider's shape instead of running a
 /// second contact field, `new_vel = rigid_vel + project_velocity(vel -
 /// rigid_vel, normal)`; this does the same for a circle with this module's

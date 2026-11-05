@@ -2657,7 +2657,7 @@ fn diag_newtons_cradle_first_collision_immediate_aftermath() {
         anchor(0) + STRING_LENGTH * Vec2::new(-theta.sin(), -theta.cos())
     };
     // Same real formula as `grain_newtons_cradle_gui.rs::
-    // damping_ratio_from_restitution` (cited: `tmp/GeoTaichi/src/dem/
+    // damping_ratio_from_restitution` (cited: `GeoTaichi/src/dem/
     // contact/HertzMindlin.py`).
     let damping_ratio_from_restitution = |e: f32| -> f32 {
         let ln_e = e.ln();
@@ -2755,7 +2755,7 @@ fn diag_newtons_cradle_first_collision_immediate_aftermath() {
 /// Falsifiable counterpart to the diagnostic above with the Hertzian
 /// (nonlinear) contact model `grain_newtons_cradle_gui.rs` uses -- see
 /// `HertzianContactConfig`'s doc for the citations (Johnson 1985, Nesterenko
-/// 2001, Tsuji, Tanaka & Ishida 1992, cross-checked against `tmp/GeoTaichi/src/
+/// 2001, Tsuji, Tanaka & Ishida 1992, cross-checked against `GeoTaichi/src/
 /// physics_model/contact_model/HertzMindlinModel.py`). Same geometry and string
 /// constraint, same 40-degree pull, same post-first-contact window: a direct
 /// A/B comparison.

@@ -1,4 +1,4 @@
-//! FAST_MODE_PLAN.md sec. 45.4 (G-1 to G-3), a test-only measurement,
+//! A test-only measurement,
 //! `EMERGE_PROBE_IMPACT_PATH`: after each kept step, its end time (the
 //! frame's start plus the steps taken in it, so a flown part of the frame
 //! is not counted), its length, the contacts held at its end, the largest
@@ -23,7 +23,7 @@ fn on() -> bool {
     *ON.get_or_init(|| {
         let on = std::env::var_os("EMERGE_PROBE_IMPACT_PATH").is_some();
         if on {
-            println!("knob active: impact path printed after each kept step (sec. 45.4)");
+            println!("knob active: impact path printed after each kept step");
         }
         on
     })

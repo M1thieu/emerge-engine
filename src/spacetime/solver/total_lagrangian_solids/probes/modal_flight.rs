@@ -1,4 +1,4 @@
-//! A prototype for the real-time plan's vibration item: each impact
+//! A prototype for the vibration's cost: each impact
 //! resolved by the step, the flight between impacts carried by the body's
 //! exact modal oscillators. A probe: no engine change. It measures the
 //! flight frames' cost and their error against the fine reference over a

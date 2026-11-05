@@ -27,7 +27,7 @@
 //!   particles (section 5, eqs. 6 to 10), particle seeding (4.2.1) and at
 //!   most one cell of travel per substep (4.2.5).
 //! - `apic2d` (Bridson's variational solve with APIC transfers on a MAC
-//!   grid, `tmp/apic2d`) as the reference implementation.
+//!   grid, `apic2d`) as the reference implementation.
 //!
 //! Coordinates are the engine's grid coordinates. Cell `(i, j)` spans
 //! `[i dx, (i + 1) dx] x [j dx, (j + 1) dx]`; pressure and the liquid level
@@ -54,7 +54,7 @@ mod gates;
 mod bar_dispersion_probes;
 
 #[cfg(test)]
-pub(crate) mod c2_proper_probes;
+pub(crate) mod singular_mass_probes;
 
 pub use field::{FaceFlags, Field2, MacLayout, MacVelocity};
 pub use level_set::SurfaceSettings;

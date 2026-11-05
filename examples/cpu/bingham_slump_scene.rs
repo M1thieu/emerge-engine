@@ -129,7 +129,7 @@ pub fn column_material(
         // material computes its deviatoric stress purely from the CURRENT
         // rate of strain, so at rest it has none and all three columns
         // collapse into identical puddles -- the model's own limitation,
-        // not a bug, confirmed against the same model in `tmp/GeoTaichi`.
+        // not a bug, confirmed against the same model in `GeoTaichi`.
         // Holding a shape needs stored elastic shear energy; this is it.
         shear_modulus_pa: tau0_pa * yield_scale / YIELD_STRAIN,
         cavitation_pressure_pa: BinghamProps::air_entrained_cavitation_pressure(),

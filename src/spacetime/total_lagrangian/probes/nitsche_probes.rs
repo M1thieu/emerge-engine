@@ -1,4 +1,4 @@
-//! FAST_MODE_PLAN.md sec. 36.18 (R-b), the counts before any code:
+//! The counts before any code:
 //! Chouly, Hild and Renard's Nitsche contact (M2AN 49 (2015), part 1 eqs.
 //! 2.4-2.6, `Theta = 1`) at the outline points, each with its trapezoid
 //! weight on its wall (their Gauss points, an adaptation), on the linear
@@ -140,9 +140,9 @@ fn woodbury(
     Some(y)
 }
 
-/// `gamma0` by K-6's rule (sec. 36.17), on the points: the largest
+/// `gamma0` by the stability rule, on the points: the largest
 /// eigenvalue of `D^1/2 P A^-1 P^T D^1/2`, `D = diag(w_q h)`, `A` the
-/// operator K-6 took (inertia `2 M / dt^2`), set to 1/2.
+/// operator the stability rule took (inertia `2 M / dt^2`), set to 1/2.
 fn gamma0(a: &Band, points: &[Point], h: f64) -> f64 {
     let rows: Vec<&[f64]> = points.iter().map(|p| p.pressure.as_slice()).collect();
     let z: Vec<Vec<f64>> = rows.iter().map(|r| a.solve(r)).collect();
@@ -158,7 +158,7 @@ fn gamma0(a: &Band, points: &[Point], h: f64) -> f64 {
     0.5 / *sorted(scaled).last().expect("points")
 }
 
-/// N-1, by inertia: `A` is positive, so `K_N = A + U C U^T` is positive
+/// By inertia: `A` is positive, so `K_N = A + U C U^T` is positive
 /// definite exactly when `-C^-1 - U^T A^-1 U` has as many negative
 /// eigenvalues as `-C^-1` (Haynsworth's inertia additivity; Sylvester's law
 /// for the balancing congruence). Every point active. Returns the two
@@ -181,14 +181,14 @@ fn inertia(a: &Band, points: &[Point], gamma: f64) -> (usize, usize, f64) {
     (negative, points.len(), nearest)
 }
 
-/// N-2 and N-3 on G2's tank at cell `h`: one linear midpoint step of `dt`
-/// from the exact hydrostatic start (projected on the basis as in K-7), at
+/// The water tank at cell `h`: one linear midpoint step of `dt`
+/// from the exact hydrostatic start (projected on the basis), at
 /// rest, with Nitsche (`Theta = 1`, active set iterated until it repeats)
 /// and with today's two-cell multipliers held at the step's end (Part I);
 /// the outline points' end gaps, and Nitsche's contact pressure `[-g +
 /// gamma p]_+ / gamma` at the midpoint against the exact law's. With
-/// `(theta, penalty)` other than `(1, 1)` (N-5, sec. 36.18b) the penalty
-/// `1 / gamma` is `penalty` times K-6's minimum and one N-5 line is printed
+/// `(theta, penalty)` other than `(1, 1)` the penalty
+/// `1 / gamma` is `penalty` times the stability rule's minimum and one line is printed
 /// instead, with the stiffness `1 + lambda_max(C U^T A^-1 U)` (power
 /// iteration).
 fn tank_step(h: f64, dt: f64, (theta, penalty): (f64, f64)) {
@@ -233,7 +233,7 @@ fn tank_step(h: f64, dt: f64, (theta, penalty): (f64, f64)) {
     let k6 = grid.approximate_jacobian((&mass, &volume, &solids), 0.0, 2.0 / (dt * dt), &[]);
     let gamma = gamma0(&k6, &points, h) * h / penalty;
     let a = grid.approximate_jacobian((&mass, &volume, &solids), 0.0, 4.0 / (dt * dt), &[]);
-    // The start: the exact displacement projected (K-7), at rest.
+    // The start: the exact displacement projected, at rest.
     let displacement: Vec<DVec2> = x
         .iter()
         .map(|p| {
@@ -293,7 +293,7 @@ fn tank_step(h: f64, dt: f64, (theta, penalty): (f64, f64)) {
         active = next;
     };
     let nitsche_gaps = end_gaps(&u_m);
-    // N-3: Nitsche's pressure at the midpoint against the exact law's.
+    // Nitsche's pressure at the midpoint against the exact law's.
     let stretch = |big_y: f64| 1.0 - rho * g * (depth - big_y) / bulk;
     let exact = |p: DVec2, axis: usize| {
         let f = DMat2::from_diagonal(DVec2::new(1.0, stretch(p.y - corner.y)));
@@ -315,7 +315,7 @@ fn tank_step(h: f64, dt: f64, (theta, penalty): (f64, f64)) {
         if corner {
             if reported {
                 println!(
-                    "N-3 diagnostic, cell {h} m, wall {} corner at ({:.3}, {:.3}) m: returned {returned:.4e} Pa, exact {truth:.4e} Pa, end gap over gamma {:.4e} Pa",
+                    "pressure diagnostic, cell {h} m, wall {} corner at ({:.3}, {:.3}) m: returned {returned:.4e} Pa, exact {truth:.4e} Pa, end gap over gamma {:.4e} Pa",
                     p.wall,
                     x[p.particle].x,
                     x[p.particle].y,
@@ -357,7 +357,7 @@ fn tank_step(h: f64, dt: f64, (theta, penalty): (f64, f64)) {
             v = w.iter().map(|x| x / norm).collect();
         }
         println!(
-            "N-5 water tank, theta {theta}, penalty {penalty} x K-6's minimum, cell {h} m: largest |end gap| {:.4e} m; pressure error floor {:.4e} (without corners {:.4e}), left wall {:.4e}, right wall {:.4e}; stiffness 1 + lambda_max {:.4e}; {} of {} active after {passes} passes",
+            "water tank, theta {theta}, penalty {penalty} x the stability rule's minimum, cell {h} m: largest |end gap| {:.4e} m; pressure error floor {:.4e} (without corners {:.4e}), left wall {:.4e}, right wall {:.4e}; stiffness 1 + lambda_max {:.4e}; {} of {} active after {passes} passes",
             nitsche_gaps.iter().fold(0.0f64, |m, g| m.max(g.abs())),
             pressure_error[0],
             diagnostic[0],
@@ -370,7 +370,9 @@ fn tank_step(h: f64, dt: f64, (theta, penalty): (f64, f64)) {
         return;
     }
     for (name, d) in ["floor", "left wall", "right wall"].iter().zip(diagnostic) {
-        println!("N-3 diagnostic, cell {h} m, {name}: largest error without the corners {d:.4e}");
+        println!(
+            "pressure diagnostic, cell {h} m, {name}: largest error without the corners {d:.4e}"
+        );
     }
     // Today's two-cell multipliers held at the step's end: `G_c (2 u_m -
     // u_n) = 0`, `A u_m = b + G_c^T lambda`.
@@ -410,13 +412,13 @@ fn tank_step(h: f64, dt: f64, (theta, penalty): (f64, f64)) {
         .zip(pressure_error)
     {
         println!(
-            "N-3 water tank, cell {h} m, {name}: largest |Nitsche's pressure - exact| / (rho g H0) {e:.4e}"
+            "water tank, cell {h} m, {name}: largest |Nitsche's pressure - exact| / (rho g H0) {e:.4e}"
         );
     }
 }
 
 #[test]
-#[ignore = "a measurement (FAST_MODE_PLAN.md sec. 36.18): run with --ignored --nocapture"]
+#[ignore = "a measurement: run with --ignored --nocapture"]
 fn nitsche_walls_counts() {
     let dt = 1.0 / 120.0;
     let water = LiquidWater::at(293.15).expect("in range");
@@ -499,7 +501,7 @@ fn nitsche_walls_counts() {
 }
 
 #[test]
-#[ignore = "a measurement (FAST_MODE_PLAN.md sec. 36.18b, N-5): run with --ignored --nocapture"]
+#[ignore = "a measurement: run with --ignored --nocapture"]
 fn nitsche_penalty_and_theta_characterization() {
     let dt = 1.0 / 120.0;
     for (theta, factors) in [(1.0, vec![1.0, 10.0, 100.0]), (-1.0, vec![1.0, 10.0])] {

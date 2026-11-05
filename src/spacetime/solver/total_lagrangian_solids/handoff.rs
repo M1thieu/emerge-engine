@@ -24,21 +24,21 @@ use super::*;
 #[path = "probes/mode_free_probes.rs"]
 pub(super) mod mode_free_probes;
 
-/// FAST_MODE_PLAN.md sec. 36.2 (K-1, K-2): the walls' gaps before each step.
+/// The walls' gaps before each step.
 #[cfg(all(test, feature = "experimental"))]
 #[path = "probes/wall_gap_probes.rs"]
 mod wall_gap_probes;
 
-/// MIXED_FORMULATION_PLAN.md: the mean-dilatation cells on this path.
+/// The mean-dilatation cells on this path.
 #[cfg(all(test, feature = "experimental"))]
 #[path = "probes/theta_cells.rs"]
 pub(super) mod theta_cells;
 
-/// MODE_FREE_HANDOFF_PLAN.md M0 at a flight start (the frame's and the
+/// The bound at a flight start (the frame's and the
 /// cut's): the mode-free bound against the modal one.
 #[cfg(all(test, feature = "experimental"))]
 /// With `EMERGE_PROBE_MODE_FREE_CUT` the started flight's contact-point
-/// bounds are replaced by the mode-free trace form (sec. 7's cost of the
+/// bounds are replaced by the mode-free trace form (the cost of the
 /// looser bound, measured on the path; a non-default probe).
 pub(super) fn probe_start(
     state: &TotalLagrangianState,
@@ -130,10 +130,8 @@ pub(super) fn frame_report(state: &TotalLagrangianState, frame: u64) {
     }
 }
 
-/// Before each controlled step: the Theta cells built once
-/// (MIXED_FORMULATION_PLAN.md), and with the trace on the held contacts'
-/// total normal multiplier and the least point gap to a wall (FAST_MODE_PLAN.md
-/// sec. 31, C-1) and the walls' gaps (sec. 36.2, K-1, K-2).
+/// Before each controlled step: the Theta cells built once, and with the trace on the held contacts'
+/// total normal multiplier and the least point gap to a wall and the walls' gaps.
 #[cfg(all(test, feature = "experimental"))]
 pub(super) fn before_step(state: &mut TotalLagrangianState, planes: &[Plane]) {
     if tracing() {
@@ -156,7 +154,7 @@ pub(super) fn before_step(state: &mut TotalLagrangianState, planes: &[Plane]) {
             .fold(f64::INFINITY, f64::min);
         trace(|| {
             format!(
-                "C-1: before the step: {held} contacts held, normal multiplier sum {force:+.4e}, least point gap {gap:+.4e} m"
+                "before the step: {held} contacts held, normal multiplier sum {force:+.4e}, least point gap {gap:+.4e} m"
             )
         });
     }
@@ -219,7 +217,7 @@ impl Simulation {
             state.flight = started.ok();
             #[cfg(all(test, feature = "experimental"))]
             if let (Some(flight), Some(Some(modes))) = (&state.flight, &state.modes) {
-                super::g0::at_flight_start(flight, modes, state);
+                super::pressure_wave_energy::at_flight_start(flight, modes, state);
             }
         }
         let Some(mut flight) = state.flight.take() else {

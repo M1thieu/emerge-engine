@@ -1,4 +1,4 @@
-//! The turning flight with the law's own energy (FAST_MODE_PLAN.md sec. 26),
+//! The turning flight with the law's own energy,
 //! selected by `EMERGE_PROBE_FLIGHT=law`: the flight's Hamiltonian is the
 //! floating frame's kinetic energy plus the step's own stored energy,
 //! `sum_p V0_p W(C_p(q))`, `C_p = (I + G_p)^T (I + G_p)`, `G_p = sum_i q_i
@@ -7,7 +7,7 @@
 //! V0_p W(C_p) - 1/2 sum omega_i^2 q_i^2` of `U`. The basis is complete
 //! (`body_modes`: as many modes as the step's unknowns), so `H` is the
 //! step's energy of the rebuilt state; the clearance bound is rederived for
-//! it (`W >= 0`, sec. 26).
+//! it (`W >= 0`).
 //!
 //! Declared, not exact: the kinetic form takes the modes' mass Gram matrix
 //! as the identity (`|P - I|_F` at most 6.1e-14 measured), and one scheme
@@ -21,7 +21,7 @@ use crate::spacetime::total_lagrangian::Elastic;
 #[path = "exponential_flight_lemma.rs"]
 pub(super) mod lemma;
 
-// KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the kinetic form takes the modes' mass Gram matrix as the identity (`|P - I|_F` at most 6.1e-14 measured); its share of each hand-back's energy change is within the "left" part counted in sec. 26a (at most 9.5e-14 J/m) | source: FAST_MODE_PLAN.md sec. 26, 26a | replace when: the kinetic form carries `P` | state: measured | gap: none
+// KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the kinetic form takes the modes' mass Gram matrix as the identity (`|P - I|_F` at most 6.1e-14 measured); its share of each hand-back's energy change is within the "left" part of its hand-back count (at most 9.5e-14 J/m) | source: measured on this path | replace when: the kinetic form carries `P` | state: measured | gap: none
 // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: one scheme step a frame keeps the energy and the angular momentum but leaves the trajectory pre-asymptotic in the coupled fast terms | source: LI_WU_TRIAL_RESULT.md 2.1 | replace when: an `omega h`-uniform error bound or a step count from one is derived | state: measured on the trial | gap: none
 fn colon(a: DMat2, b: DMat2) -> f64 {
     a.x_axis.dot(b.x_axis) + a.y_axis.dot(b.y_axis)
@@ -38,7 +38,7 @@ pub(super) struct Law {
     gradients: Vec<Vec<DMat2>>,
     points: Vec<Vec<DVec2>>,
     sigma: Vec<f64>,
-    /// For the amplitude bound (FAST_MODE_PLAN.md sec. 27.2): per particle
+    /// For the amplitude bound: per particle
     /// `g_p = (sum_i |grad phi_i(X_p)|^2 / omega_i^2)^(1/2)`; `e_K = |Omega^-1
     /// A Omega^-1 - I|_F` and `beta = |Omega^-1 B Omega^-1|_F` with their
     /// computed entries' round-off added; the largest `(lambda, mu)`.
@@ -46,7 +46,7 @@ pub(super) struct Law {
     e_k: f64,
     beta: f64,
     moduli: (f64, f64),
-    /// The sharper lemma's constants, when it is measured (sec. 29).
+    /// The sharper lemma's constants, when it is measured.
     lemma: Option<lemma::Lemma>,
 }
 
@@ -252,7 +252,7 @@ impl Law {
     }
 }
 
-// KNOWN-LIMIT[DISCRETIZATION/NO-SOURCE]: the flight's fixed point is stopped at its noise floor with this first-order bound of the law gradient's round-off; its contraction is observed, not proven (the trial's `M2` does not hold the law's curvature), and the scheme's own `Delta H`, within its bound `B_H`, exceeds the energy evaluation's round-off bound on 104 of 390 flown attempts of the long clay run (largest 15 times, 3.7e-12 J/m) | source: FAST_MODE_PLAN.md sec. 26 addendum 2, 26a | replace when: a derived bound of the law's Hessian over the ball enters `M2` and the stop reaches the energy's own round-off | state: measured | gap: none
+// KNOWN-LIMIT[DISCRETIZATION/NO-SOURCE]: the flight's fixed point is stopped at its noise floor with this first-order bound of the law gradient's round-off; its contraction is observed, not proven (the trial's `M2` does not hold the law's curvature), and the scheme's own `Delta H`, within its bound `B_H`, exceeds the energy evaluation's round-off bound on 104 of 390 flown attempts of the long clay run (largest 15 times, 3.7e-12 J/m) | source: measured on this path | replace when: a derived bound of the law's Hessian over the ball enters `M2` and the stop reaches the energy's own round-off | state: measured | gap: none
 /// A first-order bound on the computed corotated `S(C)`'s round-off
 /// (`corotated_second_pk`: `S = 2 mu (I - U^-1) + lambda (1 - 1/J) adj(C)`,
 /// `U^-1 = ((tr C + J) I - C) / (t J)`), plus the change an error `e_c` in
@@ -344,8 +344,8 @@ pub(super) fn step_energy(state: &TotalLagrangianState, gravity: DVec2) -> (f64,
 }
 
 impl Exponential {
-    // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: this bound moves each contact point by a speed bound times the interval, about `omega_1 dt` (some 60) times looser over a frame than the quadratic flight's amplitude bound, so most frames are cut early and the rest is stepped (measured with the former fixed contact step, now removed: long clay run: 0 frames flown whole and 298 stepped without contact after frame 100; row P3: 7 of 30 frames flown whole against 25) | source: FAST_MODE_PLAN.md sec. 26a | replace when: an amplitude bound from the law's energy (a derived coercivity of the corotated energy against the modes' quadratic energy) | state: measured, not adopted | gap: the long run's higher hops are the fixed step's unresolved vibration in the air (sec. 27.1: the fixed step only while a contact is held brings the hop to 0.97)
-    /// The clearance bound with the law's energy (sec. 26): over `[t0, t1]`,
+    // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: this bound moves each contact point by a speed bound times the interval, about `omega_1 dt` (some 60) times looser over a frame than the quadratic flight's amplitude bound, so most frames are cut early and the rest is stepped (measured with the former fixed contact step, now removed: long clay run: 0 frames flown whole and 298 stepped without contact after frame 100; a 30-frame run: 7 of 30 frames flown whole against 25) | source: measured on this path | replace when: an amplitude bound from the law's energy (a derived coercivity of the corotated energy against the modes' quadratic energy) | state: measured, not adopted | gap: the long run's higher hops are the fixed step's unresolved vibration in the air (the fixed step only while a contact is held brings the hop to 0.97)
+    /// The clearance bound with the law's energy: over `[t0, t1]`,
     /// `t0` the flight's own time, `T <= H` (`W >= 0`), so `|p| <= sqrt(2
     /// H)`, `|Omega| <= sqrt(2 H / s)`, `|q'| <= V(Q) = sqrt(2 H) (1 + K(Q)
     /// / sqrt(s_min(Q)))` while `|q| < Q`; a `Q` with `|q(t0)| + (t1 - t0)
@@ -441,9 +441,8 @@ impl Exponential {
         lowest
     }
 
-    // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the bound is proven but admissible only before the first impact on the hopping clay block (56 of 18052 clearance evaluations): its step (iii) fails, the energy's worst-case strain bound by Cauchy-Schwarz (at least 6.4e-2 at c = 1) exceeding the coercivity's range (r < 4.4e-2, set by the gradient Gram bound beta = 1.47e-6 1/Pa); the speed bound then decides, so frames are still cut early | source: FAST_MODE_PLAN.md sec. 27.2, 27a | replace when: a sharper coercivity (the cubic term bounded per particle, not through beta) or a sharper strain bound than Cauchy-Schwarz over the whole energy | state: measured, not loosened | gap: none
-    /// The amplitude bound from the law's energy (FAST_MODE_PLAN.md sec.
-    /// 27.2): `W >= c(r) 1/2 sum omega_i^2 q_i^2` while every `|G_p| <= r`,
+    // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: the bound is proven but admissible only before the first impact on the hopping clay block (56 of 18052 clearance evaluations): its step (iii) fails, the energy's worst-case strain bound by Cauchy-Schwarz (at least 6.4e-2 at c = 1) exceeding the coercivity's range (r < 4.4e-2, set by the gradient Gram bound beta = 1.47e-6 1/Pa); the speed bound then decides, so frames are still cut early | source: measured on this path | replace when: a sharper coercivity (the cubic term bounded per particle, not through beta) or a sharper strain bound than Cauchy-Schwarz over the whole energy | state: measured, not loosened | gap: none
+    /// The amplitude bound from the law's energy: `W >= c(r) 1/2 sum omega_i^2 q_i^2` while every `|G_p| <= r`,
     /// `c(r) = 1 - e_K - 2 r k(r) beta`, `k(r) = sqrt(2) mu / (2 - sqrt(2) r) +
     /// lambda / sqrt(2)`; `W <= H` then bounds `sum omega_i^2 q_i^2` by `2 H /
     /// c(r)`, each `|G_p|` by `g_p` times its root, and each contact point's
@@ -479,7 +478,7 @@ impl Exponential {
             f64::from(crate::matter::kinematics::volume_ratio::MIN_J),
         );
         let reach = law.reach.iter().copied().fold(0.0, f64::max);
-        // `c(r)` where `r` is admissible (sec. 27.2 and its addendum), and the
+        // `c(r)` where `r` is admissible, and the
         // bound `max_p g_p (2 H / c(r))^(1/2)` on `|G|` it implies.
         let implied = |r: f64| -> Option<(f64, f64)> {
             if r >= root2 || 1.0 - root2 * r - 0.5 * r * r <= min_j {
@@ -489,7 +488,7 @@ impl Exponential {
             let c = (1.0 - law.e_k - 2.0 * r * k * law.beta) * (1.0 - gamma(8));
             (c > 0.0).then(|| (c, reach * (2.0 * h / c).sqrt() * (1.0 + gamma(4))))
         };
-        // Why a bound is not admissible, for the probes (sec. 27.3, A-8): the
+        // Why a bound is not admissible, for the probes: the
         // start's own strain outside the law's range, or the energy's strain
         // bound at `c = 1`, `max_p g_p (2 H)^(1/2)`, against the largest `r`
         // with `c(r) > 0`.
@@ -568,7 +567,7 @@ impl Exponential {
     }
 
     /// Whether `[t0, t1]` is clear by either of the law's two bounds (each a
-    /// proof: sec. 27.2 (iv)), counted for the probes (`proof_report`).
+    /// proof), counted for the probes (`proof_report`).
     pub(super) fn clear_with_law(
         &self,
         law: &Law,
@@ -613,7 +612,7 @@ impl Exponential {
     }
 }
 
-/// The clearance proofs' record (sec. 27.3, A-8), over every evaluation of
+/// The clearance proofs' record, over every evaluation of
 /// `clear_with_law` on this thread.
 #[derive(Clone, Copy, Debug)]
 struct Proofs {
@@ -652,7 +651,7 @@ thread_local! {
     };
 }
 
-/// One line: the clearance proofs counted on this thread (sec. 27.3, A-8).
+/// One line: the clearance proofs counted on this thread.
 pub(in super::super) fn proof_report() -> String {
     let p = PROOFS.with(|p| p.get());
     format!(

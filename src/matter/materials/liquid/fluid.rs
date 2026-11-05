@@ -45,7 +45,7 @@ pub(crate) fn artificial_bulk_viscosity(
     grid_cell_size: f32,
 ) -> f32 {
     // Both terms carry rho exactly once, as in Wang et al. arXiv:2404.17057
-    // eq. 4 and `tmp/GeoTaichi`'s `MaterialModel.py::artifical_viscosity` (the
+    // eq. 4 and `GeoTaichi`'s `MaterialModel.py::artifical_viscosity` (the
     // shared `von_neumann_richtmyer_q` below). With rho^2 in the quadratic
     // term and none in the linear one, q was ~8x too large at grid rho ~0.1
     // (max_speed 11 -> 130, J pinned at 2.0, 45 -> 12 fps); now q ~63 against
@@ -73,9 +73,9 @@ pub struct NewtonianFluidMaterial {
     pub eos_power: f32,
     /// Floor on the Tait EOS pressure: limits negative (tensile) pressure at
     /// a free surface, where a real fluid cavitates rather than sustaining
-    /// tension. `tmp/sparkl`'s `MonaghanSphEos::max_neg_pressure` clamps
+    /// tension. `sparkl`'s `MonaghanSphEos::max_neg_pressure` clamps
     /// `Ktait0*((rho/rho0)^gamma - 1)` at the same `-0.1`, and
-    /// `tmp/incremental_mpm`'s MLS-MPM fluid uses the same constant ("i
+    /// `incremental_mpm`'s MLS-MPM fluid uses the same constant ("i
     /// clamped it as a bit of a hack"). Bounds the pressure only, not the
     /// drift of `density`/`volume`.
     pub pressure_floor: f32,
@@ -400,7 +400,7 @@ impl MaterialModel for NewtonianFluidMaterial {
         // Artificial (shock) viscosity, a PDE term: von Neumann & Richtmyer
         // 1950 (LA-671) quadratic plus Landshoff linear, the standard
         // shock-capturing pair, gated to compression (`div(v) < 0`) so it
-        // vanishes in smooth flow. `tmp/GeoTaichi` has the same form
+        // vanishes in smooth flow. `GeoTaichi` has the same form
         // (`MaterialModel.py::artifical_viscosity`) and enables it in its
         // Newtonian dam-break example (`cL: 1.0, cQ: 2`). `p2g.wgsl`'s fluid
         // branch carries a port of this function's current form; no test pins

@@ -110,7 +110,7 @@ fn first_piola_stress_jvp(mat: &DruckerPragerMaterial, f: Mat2, df: Mat2) -> Mat
 // (Stomakhin et al. 2013's "fixed corotated" model), which is indefinite at large
 // enough volumetric expansion. The standard fix (Teran, Sifakis, Irving & Fedkiw 2005,
 // "Robust Quasistatic Finite Elements and Flesh Simulation", SIGGRAPH; reference
-// implementation `tmp/ziran2020/Lib/Ziran/Physics/ConstitutiveModel/
+// implementation `ziran2020/Lib/Ziran/Physics/ConstitutiveModel/
 // SvdBasedIsotropicHelper.h`) works in the SVD/principal-stretch frame, where the
 // Hessian block-diagonalizes into a 2x2 stretch-stretch block (`Aij`) and a 2x2 twist
 // block (eigenvalues `m01=(psi0-psi1)/(sigma0-sigma1)` and

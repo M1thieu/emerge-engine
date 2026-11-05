@@ -47,8 +47,7 @@
 //! first.
 //!
 //! Choosing a factor needs the other half: a scene violent enough for the
-//! bound to bind, which is the impact probe the core plan names next to
-//! this one. Until that exists, this table is half the evidence and
+//! bound to bind: an impact probe. Until that exists, this table is half the evidence and
 //! should not be read as permission to raise anything.
 //!
 //!   cargo run --release --example cfl_margin_probe

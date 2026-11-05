@@ -1,5 +1,4 @@
-//! The sharper clearance lemma, measured only (FAST_MODE_PLAN.md sec. 29;
-//! tmp/CLEARANCE_BOUND_LITERATURE.md, second pass, sec. 2), with
+//! The sharper clearance lemma, measured only, with
 //! `EMERGE_PROBE_CLEARANCE_LEMMA=1`: beside the law flight's two clearance
 //! proofs, its loop is computed and recorded at every evaluation, and its
 //! inequalities are checked on every rebuilt end state; nothing it computes
@@ -13,11 +12,11 @@
 //! identity, Musesti, arXiv 1605.06964) and `det G = (t^2 + w^2)/4 - a/2`;
 //! (Global) `sum V0 W >= c(tau) E_w`, `c(tau) = (1 - e_K)(1 - k0 tau) - 2 tau
 //! kw(tau) beta_w`; (Flight) `|t_p| <= g^t_p (2 H / c)^(1/2)`, `J_p >= 1 - tau -
-//! alpha_p^2 H / c`, closed by the bootstrap of sec. 27.2 (iii) on `tau`.
+//! alpha_p^2 H / c`, closed by the amplitude bound's bootstrap on `tau`.
 
 use super::*;
 
-// KNOWN-LIMIT[DISCRETIZATION/NO-SOURCE]: the lemma is this engine's derivation from the cited exact 2 x 2 identities, not a published theorem; its bootstrap holds for the flight equations' exact solution (the discrete end state checked inside the walls, as in sec. 26), and it is measured only | source: FAST_MODE_PLAN.md sec. 29; tmp/CLEARANCE_BOUND_LITERATURE.md second pass | replace when: the lemma is reviewed and a plan uses it to fly frames (sec. 29.4) | state: measured only | gap: none
+// KNOWN-LIMIT[DISCRETIZATION/NO-SOURCE]: the lemma is this engine's derivation from the cited exact 2 x 2 identities, not a published theorem; its bootstrap holds for the flight equations' exact solution (the discrete end state checked inside the walls), and it is measured only | source: this engine's derivation, measured on this path | replace when: the lemma is reviewed and something uses it to fly frames | state: measured only | gap: none
 /// Whether the lemma is measured (`EMERGE_PROBE_CLEARANCE_LEMMA`),
 /// announced once.
 pub(super) fn on() -> bool {
@@ -25,7 +24,7 @@ pub(super) fn on() -> bool {
     *ON.get_or_init(|| {
         let on = std::env::var_os("EMERGE_PROBE_CLEARANCE_LEMMA").is_some();
         if on {
-            println!("knob active: the clearance lemma measured (sec. 29), the flight unchanged");
+            println!("knob active: the clearance lemma measured, the flight unchanged");
         }
         on
     })
@@ -146,8 +145,7 @@ enum Closure {
     StartOutside,
     /// The monotone iteration left the lemma's range: no fixed point.
     IterationLeaving,
-    /// A fixed point `tau*` exists, but the candidate `2 tau* - tau0` (sec.
-    /// 27.2's fixed rule) is outside the range or fails the strict check.
+    /// A fixed point `tau*` exists, but the candidate `2 tau* - tau0` is outside the range or fails the strict check.
     Candidate,
     Volume,
 }
@@ -201,7 +199,7 @@ pub(in super::super) fn contact_held() {
 }
 
 impl Exponential {
-    /// One evaluation of the lemma's loop over `[t0, t1]` (sec. 29.1),
+    /// One evaluation of the lemma's loop over `[t0, t1]`,
     /// recorded; `today` is the evaluation's own answer.
     pub(super) fn measure_lemma(
         &self,
@@ -294,7 +292,7 @@ impl Exponential {
     }
 }
 
-/// The lemma's inequalities on a rebuilt end state (sec. 29.1, L-2): (P) at
+/// The lemma's inequalities on a rebuilt end state: (P) at
 /// every particle with `tau = |t_p|`, (Global) with `tau = max_p |t_p|`; each
 /// against a round-off margin (`density_error` plus `8 u` of the right side's
 /// terms), never adjusted.
@@ -371,7 +369,7 @@ fn deciles(mut v: Vec<f64>) -> String {
     )
 }
 
-/// The lemma's record on this thread (sec. 29.3, L-2 to L-5), several lines.
+/// The lemma's record on this thread, several lines.
 pub(in super::super::super) fn report() -> String {
     let all = EVALUATIONS.with(|e| e.borrow().clone());
     let after: Vec<&Evaluation> = all.iter().filter(|e| e.after_contact).collect();
@@ -382,13 +380,13 @@ pub(in super::super::super) fn report() -> String {
     let (beta_w, frobenius, rows, e_k, beta) = CONSTANTS.with(|c| c.get());
     let (p, g) = (POINTWISE.with(|c| c.get()), GLOBAL.with(|c| c.get()));
     format!(
-        "L-3 evaluations {} ({} after the first contact); the lemma's loop closed {} ({} after), start outside {}, iteration leaving the range {} (no fixed point), a fixed point but the candidate failing {} ({} after), volume admissibility failed {}; tau* where found: {}\n\
-         L-4 clear by the lemma while neither of today's proofs is: {} ({} after the first contact); closed and clear {}\n\
-         L-5 beta_w {:.4e} 1/Pa (Frobenius {:.4e}, row sums {:.4e}); 27a's beta {:.4e}; e_K {:.3e}\n\
-         L-5 G_old = max g_p (2H)^(1/2): {}; after the first contact: {}\n\
-         L-5 G_t = max g^t_p (2H)^(1/2): {}; after the first contact: {}\n\
-         L-5 rho = max g^t / max g: {}; tau0: {}\n\
-         L-2 (P) checked {}, below zero {}, beyond the margin {}, least slack / margin {:.3e}; (Global) checked {}, below zero {}, beyond the margin {}, least slack / margin {:.3e}",
+        "lemma evaluations {} ({} after the first contact); the lemma's loop closed {} ({} after), start outside {}, iteration leaving the range {} (no fixed point), a fixed point but the candidate failing {} ({} after), volume admissibility failed {}; tau* where found: {}\n\
+         lemma: clear by the lemma while neither of today's proofs is: {} ({} after the first contact); closed and clear {}\n\
+         lemma: beta_w {:.4e} 1/Pa (Frobenius {:.4e}, row sums {:.4e}); the amplitude bound's beta {:.4e}; e_K {:.3e}\n\
+         lemma: G_old = max g_p (2H)^(1/2): {}; after the first contact: {}\n\
+         lemma: G_t = max g^t_p (2H)^(1/2): {}; after the first contact: {}\n\
+         lemma: rho = max g^t / max g: {}; tau0: {}\n\
+         lemma: (P) checked {}, below zero {}, beyond the margin {}, least slack / margin {:.3e}; (Global) checked {}, below zero {}, beyond the margin {}, least slack / margin {:.3e}",
         all.len(),
         after.len(),
         count(&every, &closed),

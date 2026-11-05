@@ -1,9 +1,9 @@
-//! C2 proper's P0 (C2_PROPER_PLAN.md sec. 7) on the bar's own grid: the
+//! The singular dynamic mass on the bar's own grid: the
 //! singular dynamic mass `M_bar = M H (H^T M H)^-1 H^T M` (Pozzolini, Renard,
 //! Salaun 2013, `B^T C^-1 B` with `H^h` the span of the non-strip unknowns
 //! plus the linear fields with a strip part), read only: the inf-sup rank
 //! test, the six moments, `K` on `Ker B`, the strip's share of `M_bar - M`,
-//! and the C2 diagnostic's Newton matrix's definiteness. A probe.
+//! and a diagnostic Newton matrix's definiteness. A probe.
 
 use super::MacLayout;
 
@@ -79,7 +79,7 @@ fn extremes(a: Vec<f64>, n: usize) -> (f64, f64) {
         })
 }
 
-/// P0 at `cells` (the bar of `bar_impact_run`: width 2 cells, Poisson's ratio
+/// The measures at `cells` (the bar of `bar_impact_run`: width 2 cells, Poisson's ratio
 /// 0, 3 x 3 Gauss points per half cell, per unit density, lengths in cells).
 fn p0(cells: usize) {
     let width = 2usize;
@@ -133,10 +133,10 @@ fn p0(cells: usize) {
     );
 }
 
-/// P0's measurements on any body's grid (C2_PROPER_PLAN.md sec. 7):
+/// The measures on any body's grid:
 /// `contacts` the contact points with their outward-to-inward normals,
 /// `lame(p)` a particle's `(mu, lambda)`, `diagnostics` the `(Courant
-/// label, dt)` at which the C2 diagnostic's Newton matrix is checked.
+/// label, dt)` at which the diagnostic Newton matrix is checked.
 pub(crate) fn p0_core(
     label: &str,
     grid: &Grid,
@@ -343,7 +343,7 @@ pub(crate) fn p0_core(
         }
     }
     let (k_low, k_high) = extremes(zk, kernel);
-    // The C2 diagnostic's Newton matrix, `(2/dt^2) M_masked + K`, the
+    // The diagnostic Newton matrix, `(2/dt^2) M_masked + K`, the
     // strip's rows and columns of `M` zeroed, at two Courant numbers.
     let diagnostic: Vec<(f64, f64, f64)> = diagnostics
         .iter()
@@ -362,7 +362,7 @@ pub(crate) fn p0_core(
         .collect();
 
     println!(
-        "C2 P0, {label}: {n} unknowns, strip {strip}, contact rows {}, linear fields reproduced to {reproduction:.1e}, added to H {} of 6 ({:?}); dim H {nh}",
+        "singular mass, {label}: {n} unknowns, strip {strip}, contact rows {}, linear fields reproduced to {reproduction:.1e}, added to H {} of 6 ({:?}); dim H {nh}",
         rows.len(),
         added.len(),
         added
@@ -389,7 +389,7 @@ pub(crate) fn p0_core(
     );
     for (nu, lo, hi) in diagnostic {
         println!(
-            "      the C2 diagnostic's (2/dt^2) M_masked + K at Courant {nu}: eigenvalues {lo:.4e} to {hi:.4e} (ratio {:.2e})",
+            "      the diagnostic's (2/dt^2) M_masked + K at Courant {nu}: eigenvalues {lo:.4e} to {hi:.4e} (ratio {:.2e})",
             lo / hi
         );
     }
@@ -403,7 +403,7 @@ pub(crate) fn p0_core(
 /// `EMERGE_PROBE_BAR_CELLS` (default `16,32,64`). A probe.
 #[test]
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
-fn probe_c2_proper_p0() {
+fn probe_singular_mass_on_the_bar() {
     let cells = std::env::var("EMERGE_PROBE_BAR_CELLS").unwrap_or_else(|_| "16,32,64".into());
     for c in cells.split(',').filter_map(|s| s.trim().parse().ok()) {
         p0(c);

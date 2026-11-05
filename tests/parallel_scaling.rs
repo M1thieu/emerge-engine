@@ -1,5 +1,4 @@
-//! The impact step on 1, 2, 4 and 8 threads (`tmp/papers/dl_realtime/
-//! PARALLEL_SCALING_PLAN.md`): run D's impact frames and a stepped Norton
+//! The impact step on 1, 2, 4 and 8 threads: the clay drop's impact frames and a stepped Norton
 //! frame, each frame's wall, its `Timing` split and its counts per thread
 //! count. A probe: measurement, nothing held.
 
@@ -12,7 +11,7 @@ use glam::{IVec2, Vec2};
 
 const FRAME: f64 = 1.0 / 60.0;
 
-/// Run D's scene (`impact_local`'s `drop`): E2's clay block, tolerance
+/// The clay drop's scene (`impact_local`'s `drop`): E2's clay block, tolerance
 /// 1e-2, the sub-frame handoff on.
 fn run_d() -> Simulation {
     let clay = emerge::materials::physical_props::Elastic {
@@ -216,6 +215,6 @@ fn scene(label: &str, build: fn() -> Simulation, untimed: usize, timed: usize) {
 #[test]
 #[ignore = "real-time profile: a quiet machine only"]
 fn profile_parallel_scaling() {
-    scene("run D", run_d, 8, 2);
+    scene("the clay drop", run_d, 8, 2);
     scene("Norton", norton, 9, 1);
 }

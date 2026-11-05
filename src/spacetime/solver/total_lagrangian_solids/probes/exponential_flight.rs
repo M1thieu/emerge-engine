@@ -1,6 +1,5 @@
 //! A trial, test builds only: the lone body's flight by an exponential
-//! discrete-gradient step on the plane floating-frame equations
-//! (`tmp/papers/dl_realtime/LI_WU_TRIAL_PLAN.md`), selected by
+//! discrete-gradient step on the plane floating-frame equations, selected by
 //! `EMERGE_PROBE_FLIGHT=exponential` or a probe's `set_knob`. Off, nothing
 //! of the path changes.
 //!
@@ -14,10 +13,10 @@
 //! exact in `H` for any `h` (their Theorem 2.3), with Gonzalez's discrete
 //! gradient (1996, Prop. 3.6) on `(q, p_theta, p_q)` in the energy
 //! coordinates `zeta = (omega q, -p_q)`, so `p_theta` is kept exactly
-//! (plan, D2). Per mode the update is
-//! `zeta1 = e^(i omega h) zeta0 + (e^(i omega h) - 1) gbar` (plan, 7.1),
+//! . Per mode the update is
+//! `zeta1 = e^(i omega h) zeta0 + (e^(i omega h) - 1) gbar`,
 //! solved by a fixed point whose contraction bound, stop rule, energy bound
-//! and clearance bound are the plan's section 7, all computed here and
+//! and clearance bound are all computed here and
 //! recorded per step (`Record`). Scope (declared): undamped corotated
 //! bodies; any other keeps today's flight.
 
@@ -42,8 +41,7 @@ pub(super) struct Knob {
     pub(super) on: bool,
     pub(super) truncated: bool,
     pub(super) steps: usize,
-    /// The law's own energy in the Hamiltonian (`law`, FAST_MODE_PLAN.md
-    /// sec. 26): `EMERGE_PROBE_FLIGHT=law`.
+    /// The law's own energy in the Hamiltonian (`law`): `EMERGE_PROBE_FLIGHT=law`.
     pub(super) law: bool,
 }
 
@@ -97,7 +95,7 @@ pub(super) enum Outcome {
     AngularMomentum,
 }
 
-/// One step of the scheme, for the probes (plan, section 2).
+/// One step of the scheme, for the probes.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Record {
     pub(super) t0: f64,
@@ -120,10 +118,10 @@ pub(super) struct Record {
     pub(super) flops: f64,
     pub(super) wall: f64,
     /// For the largest observed ratio: the two deltas it compares, and the
-    /// iteration's noise floor `2 eps_F / (1 - rho_pred)` (plan, 7.3).
+    /// iteration's noise floor `2 eps_F / (1 - rho_pred)`.
     pub(super) ratio_deltas: (f64, f64),
     pub(super) noise_floor: f64,
-    /// With the law's energy (sec. 26), on a flown attempt's last step: the
+    /// With the law's energy, on a flown attempt's last step: the
     /// step's energy change from the attempt's start to its rebuilt end,
     /// J/m, and the round-off bound of the two evaluations (part (a)); on
     /// a flight's first step, the start's projection remainder (part (d));
@@ -135,7 +133,7 @@ pub(super) struct Record {
     pub(super) gram_defect: f64,
 }
 
-/// The body's invariants (plan, 7.2; ROUTE_A_PAPER.md), over its elastic
+/// The body's invariants , over its elastic
 /// modes of positive frequency.
 #[derive(Clone, Debug)]
 struct Invariants {
@@ -150,7 +148,7 @@ struct Invariants {
     /// `G`, row-major, and a bound on `||G||_2`: `|x^T G y| = |sum m u x v|
     /// <= sqrt(x^T P x) sqrt(y^T P y)` with `P` the modes' particle Gram
     /// matrix (Cauchy-Schwarz), so `||G||_2 <= lambda_max(P) <= 1 + ||P -
-    /// I||_F`, plus `P`'s own rounding (derived; plan 7.2).
+    /// I||_F`, plus `P`'s own rounding (derived).
     g: Vec<f64>,
     g_norm: f64,
     i0: f64,
@@ -173,7 +171,7 @@ struct Eval {
     law: Option<law::Term>,
 }
 
-/// Counts of the operations, for the flops (plan, 2.3): matrix-vector
+/// Counts of the operations, for the flops : matrix-vector
 /// products with `G`, evaluations, rotations.
 #[derive(Clone, Copy, Debug, Default)]
 struct Count {
@@ -305,7 +303,7 @@ impl Invariants {
         }
     }
 
-    /// `M2` over `B(0, R)` (plan, 7.2) for `p_theta`, and `s_min` (`None`
+    /// `M2` over `B(0, R)` for `p_theta`, and `s_min` (`None`
     /// when not positive: unproven).
     fn m2(&self, radius: f64, p_theta: f64) -> Option<(f64, f64)> {
         if self.truncated {
@@ -361,12 +359,12 @@ pub(super) struct Exponential {
     extra: f64,
     /// `p_theta`, the flight's angular momentum.
     angular: f64,
-    /// Per elastic mode, `zeta` in the free flow's frame (plan, section 1).
+    /// Per elastic mode, `zeta` in the free flow's frame.
     w: Vec<DVec2>,
     inv: Invariants,
     /// Per contact point: its reference arm, today's vibration bound
     /// (the truncated model's own) and the Cauchy-Schwarz coefficient
-    /// `(sum_i |phi_i|^2 / omega_i^2)^(1/2)` (plan, 7.5).
+    /// `(sum_i |phi_i|^2 / omega_i^2)^(1/2)`.
     arms: Vec<(DVec2, f64, f64)>,
     /// Per mode (all of them), `q'` in the last rebuilt state, and the
     /// modes' leak (today's `keeps_angular_momentum` tolerance).
@@ -375,7 +373,7 @@ pub(super) struct Exponential {
     /// `H_int` at `t`.
     h_int: f64,
     /// With the law's energy: the start's projection remainder, J/m, until
-    /// the first attempt records it (sec. 26, part (d)).
+    /// the first attempt records it.
     start_remainder: Option<f64>,
 }
 
@@ -441,7 +439,7 @@ impl Exponential {
         let omega: Vec<f64> = elastic.iter().map(|&i| modes.omega[i]).collect();
         // `zeta = (omega q, -p_q)`: the truncated model's `p_q` is today's
         // rate (the spin removed), the full model's the projection of the
-        // body-frame velocity, nothing removed (plan, 7.1).
+        // body-frame velocity, nothing removed.
         let w: Vec<DVec2> = elastic
             .iter()
             .map(|&i| {
@@ -596,7 +594,7 @@ impl Exponential {
 
     /// Whether every contact point stays clear over `[t0, t1]`, `t0` the
     /// flight's own time: the truncated model with today's bound, the full
-    /// one with the plan's 7.5.
+    /// one with the clearance bound.
     fn clear(&self, gravity: DVec2, planes: &[Plane], (t0, t1): (f64, f64)) -> bool {
         let inv = &self.inv;
         if let Some(law) = &inv.law {
@@ -660,7 +658,7 @@ impl Exponential {
         let sigma = eh.iter().map(|e| 0.5 * e.length()).fold(0.0, f64::max) * (1.0 + gamma(4));
         let e0 = inv.eval(&zeta0, p_theta, false, &mut count);
         let norm0 = length(&zeta0);
-        // The discrete gradient at `(zeta0, z)` (plan, 7.1, 7.3).
+        // The discrete gradient at `(zeta0, z)`.
         let gradient = |z: &[DVec2], m2: f64, count: &mut Count| {
             let mid: Vec<DVec2> = (0..n).map(|i| 0.5 * (zeta0[i] + z[i])).collect();
             let at_mid = inv.eval(&mid, p_theta, true, count);
@@ -683,8 +681,7 @@ impl Exponential {
                 + 3.0 * UNIT * (e1.u.abs() + e0.u.abs());
             let mut g = at_mid.grad.clone();
             let mut dropped = 0.0;
-            // With the law's term `M2` does not bound its curvature (sec.
-            // 26): the quotient is formed whenever `r` exceeds its own
+            // With the law's term `M2` does not bound its curvature: the quotient is formed whenever `r` exceeds its own
             // round-off, and dropped (`|r|` booked) otherwise.
             let formed = if inv.law.is_some() {
                 squared > 0.0 && r.abs() > r_error
@@ -707,7 +704,7 @@ impl Exponential {
         let update =
             |g: &[DVec2]| -> Vec<DVec2> { (0..n).map(|i| free[i] + times(eh[i], g[i])).collect() };
         // The first iterate from the free flow, `delta_1`, then the ball's
-        // `M2` and `rho_pred` (plan, 7.2).
+        // `M2` and `rho_pred`.
         let m2_start = inv.m2(norm0, p_theta).map_or(f64::INFINITY, |m| m.0);
         let (g_first, g_theta_first, defect_first) = gradient(&free, m2_start, &mut count);
         let next = update(&g_first);
@@ -728,7 +725,7 @@ impl Exponential {
             });
             return Err(Outcome::Unproven);
         }
-        // `eps_F`: one evaluation's round-off in `|.|_E` (plan, 7.3): the
+        // `eps_F`: one evaluation's round-off in `|.|_E` : the
         // free rotation's and the increment's per mode.
         let eps_f = {
             let mut sum = 0.0;
@@ -740,7 +737,7 @@ impl Exponential {
             }
             // With the law's term, its gradient's own round-off (absolute
             // near the reference: `law::Law::at`), per mode through the
-            // update `(e^(i omega h) - 1) gbar` (sec. 26, addendum 2).
+            // update `(e^(i omega h) - 1) gbar`.
             let law_noise = inv.law.as_ref().map_or(0.0, |law| {
                 let q: Vec<f64> = (0..n)
                     .map(|i| 0.5 * (zeta0[i].x + free[i].x) / inv.omega[i])
@@ -786,7 +783,7 @@ impl Exponential {
             if last_delta > 0.0 && delta / last_delta > rho_obs {
                 rho_obs = delta / last_delta;
                 ratio_deltas = (last_delta, delta);
-                // The law's curvature is not in `M2` (sec. 26): the stop rule
+                // The law's curvature is not in `M2`: the stop rule
                 // and `K_max` from the observed ratio when it is larger.
                 if inv.law.is_some() && rho_obs > rho && delta > 2.0 * eps_f / (1.0 - rho) {
                     if rho_obs > 0.5 {
@@ -806,7 +803,7 @@ impl Exponential {
             last_delta = delta;
             iterations += 1;
         }
-        // The flight's new state, in the free frame (plan, section 1); the
+        // The flight's new state, in the free frame ; the
         // truncated model's `gbar` is exactly zero, its state unchanged.
         let w_new: Vec<DVec2> = if inv.truncated {
             self.w.clone()
@@ -824,7 +821,7 @@ impl Exponential {
         let k0: f64 = 0.5 * zeta0.iter().map(|z| z.length_squared()).sum::<f64>();
         let k1: f64 = 0.5 * zeta1.iter().map(|z| z.length_squared()).sum::<f64>();
         let delta_h = (k1 - k0) + inv.difference((&zeta0, &e0), (&zeta1, &e1)).0;
-        // `B_H` (plan, 7.4).
+        // `B_H`.
         let step_delta = (0..n)
             .map(|i| (zeta1[i] - previous[i]).length_squared())
             .sum::<f64>()

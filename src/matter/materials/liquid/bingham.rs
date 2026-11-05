@@ -54,7 +54,7 @@ pub struct BinghamFluidMaterial {
     /// condition to `sigma_dev` (Roquet & Saramito, J. Non-Newtonian Fluid
     /// Mech. 155, 2008, Eqs. 1-2, doi:10.1016/j.jnnfm.2007.12.008), with no
     /// tensile-pressure cutoff. Unlike `NewtonianFluidMaterial`'s `-0.1`, it
-    /// has no `tmp/sparkl` or `tmp/incremental_mpm` precedent. Replace it
+    /// has no `sparkl` or `incremental_mpm` precedent. Replace it
     /// once tensile data for a specific material gives one.
     pub pressure_floor: f32,
     pub min_density: f32,
@@ -206,7 +206,7 @@ impl BinghamFluidMaterial {
         // saturates at tau_0/gamma_dot_c. Returning zero stress there would
         // drop the yield stress exactly where it holds the material up, so a
         // slow or resting body would behave as an inviscid liquid.
-        // `tmp/GeoTaichi/.../Bingham.py` regularizes the same model with a
+        // `GeoTaichi/.../Bingham.py` regularizes the same model with a
         // 1e-8 cutoff (four orders below this 1e-4 default), gating on the
         // stress invariant.
         //
@@ -274,7 +274,7 @@ impl BinghamFluidMaterial {
     /// at rest it has none and cannot hold a slope, a pile or a ridge. That
     /// is a property of the model, not of this implementation -- the same
     /// limitation is visible in the reference implementation vendored at
-    /// `tmp/GeoTaichi`. Holding a shape requires storing elastic shear
+    /// `GeoTaichi`. Holding a shape requires storing elastic shear
     /// energy, which is exactly what the elastic branch adds.
     ///
     /// The plastic multiplier comes from requiring the returned stress to

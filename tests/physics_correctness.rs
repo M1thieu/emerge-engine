@@ -3032,7 +3032,7 @@ fn fluid_geostatic_prestress_isothermal_cavitating_vs_newtonian_ab() {
 }
 
 /// TEMPORARY structural-boundary investigation: the literature-derived 2x2
-/// matrix from `tmp/structural_bounce_research_synthesis.md`, measured through
+/// matrix, measured through
 /// the accepted-substep impulse ledger rather than visual motion. All four runs
 /// have identical particles, material, wall position, timestep and analytic
 /// geostatic initialization; only the diagnostic wall branch differs.

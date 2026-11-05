@@ -1,5 +1,4 @@
-//! MIXED_FORMULATION_PLAN.md sec. 6 (test builds, `EMERGE_PROBE_THETA=cell`):
-//! the TL solids path's mean-dilatation cells. Each state point's reference
+//! The TL solids path's mean-dilatation cells. Each state point's reference
 //! cell of the background grid (`grid.cell` square cells, indexed by the
 //! cells that hold points), handed once to `hooks::set_cells`, which turns
 //! on `Elastic::mixed_stress` in the step (Gonzalez 2000 eq. 32, sec. 4.2,
@@ -19,9 +18,7 @@ pub(crate) fn on() -> bool {
     *ON.get_or_init(|| {
         let on = std::env::var("EMERGE_PROBE_THETA").as_deref() == Ok("cell");
         if on {
-            println!(
-                "knob active: Theta per cell on the TL solids path (MIXED_FORMULATION_PLAN.md)"
-            );
+            println!("knob active: Theta per cell on the TL solids path");
         }
         on
     })
@@ -60,7 +57,7 @@ pub(crate) fn ensure(state: &TotalLagrangianState) {
     });
 }
 
-/// Per frame (MIXED_FORMULATION_PLAN.md sec. 9): the particles' least and
+/// Per frame: the particles' least and
 /// largest `J` and the least `W_dev = W - K/2 (J - 1)^2` over them (the
 /// subtraction split's validity near `J = 1`), a negative one flagged.
 pub(crate) fn report(state: &TotalLagrangianState, frame: u64) {
@@ -156,7 +153,7 @@ pub(crate) fn report_displacement(state: &TotalLagrangianState, frame: u64) {
     );
 }
 
-/// MIXED_FORMULATION_PLAN.md criterion 3: the inf-sup constant of the pair
+/// The inf-sup constant of the pair
 /// (the quadratic B-spline displacement, one constant pressure per cell)
 /// on the block's own grid, at the block refinement `EMERGE_PROBE_REFINE`
 /// (8r x 4r cells). `beta^2 = lambda_min` of `Mp^-1/2 B A^-1 B^T Mp^-1/2`:

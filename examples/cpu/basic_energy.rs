@@ -33,7 +33,7 @@ const HEIGHT: usize = 140;
 const CLOUD_POTENTIAL: f32 = 0.0;
 const GROUND_POTENTIAL: f32 = 1.0;
 // The model's eta (Niemeyer-Pietronero-Wiesmann), the value checked against the
-// reference implementation (github.com/diluuuu10/triggered-discharge, cloned in tmp/).
+// reference implementation (github.com/diluuuu10/triggered-discharge).
 const ETA: f32 = 2.5;
 const RELAX_ITERATIONS_PER_STEP: usize = 8;
 // Stepped-leader speed (Rakov & Uman; the stepped-leader literature measures

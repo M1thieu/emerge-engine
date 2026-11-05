@@ -3,7 +3,7 @@
 //! Phys. Rev. Lett. 52, 1033, planar discharges), the model behind lightning,
 //! electrochemical deposition, viscous fingering and mineral dendrites.
 //! Checked against a reference implementation
-//! (github.com/diluuuu10/triggered-discharge, cloned in `tmp/`).
+//! (github.com/diluuuu10/triggered-discharge).
 //!
 //! Growth rule: every empty grid cell 4-adjacent to the channel is a
 //! candidate, chosen with probability proportional to `(local field

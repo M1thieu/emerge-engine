@@ -522,8 +522,8 @@ fn bench_sand_sheared(c: &mut Criterion) {
 // Phase 1 GPU sleep/wake (flag-based, no compaction). Compares step_frame() cost for a
 // large settled sand pile with sleep_threshold=0.0 (off, baseline -- every particle does
 // full P2G/G2P/plasticity/force-field work every substep) vs a real threshold (most of
-// the pile asleep, skipping that work). This is the actual measurement the plan's
-// verification step requires before claiming a win -- same "measure before claiming a
+// the pile asleep, skipping that work). This is the actual measurement a win
+// needs before it is claimed -- same "measure before claiming a
 // win, revert if it doesn't deliver" rule used for the CPU P2G/G2P parallelization
 // attempts earlier in this project (two reverted, one kept).
 #[cfg(feature = "gpu")]

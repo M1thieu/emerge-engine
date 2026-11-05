@@ -466,7 +466,7 @@ impl ImplicitProblem {
     /// frozen node sharing a particle with a moving neighbour, which would
     /// leak through `r_next`, the preconditioner and `beta` into `d` from the
     /// second iteration on. Projecting every iteration is standard Dirichlet
-    /// practice (ziran2020's preconditioned CG, `tmp/ref_ziran_implicit_
+    /// practice (ziran2020's preconditioned CG, `ref_ziran_implicit_
     /// mpm.md`). The leak was real (`hd_frozen_norm` up to ~465) but not the
     /// cause of the stall.
     fn steihaug_cg(&self, v: &[Vec2], g: &[Vec2], radius: f32, tol: f32) -> Vec<Vec2> {

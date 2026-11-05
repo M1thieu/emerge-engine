@@ -613,7 +613,7 @@ pub(crate) fn take_parts() -> [f64; 10] {
     std::mem::take(&mut *PARTS.lock().expect("parts"))
 }
 
-/// FAST_MODE_PLAN.md sec. 36.2 (K-2): over the kept and tried steps since
+/// Over the kept and tried steps since
 /// the last take, how many held conditions' allowances were bound by the
 /// relative term, the round-off and the resolution, and the largest
 /// relative term, m.
@@ -629,13 +629,12 @@ pub(crate) fn take_allowance_terms() -> [f64; 4] {
     std::mem::take(&mut *ALLOWANCE_TERMS.lock().expect("allowance terms"))
 }
 
-/// One held contact of one step in the probes' contact trace
-/// (`tmp/papers/dl_realtime/CHATTER_TRACE_PLANS.md`, M1): its key, its
+/// One held contact of one step in the probes' contact trace: its key, its
 /// multiplier at the step's end, its weighted normal velocity `G v` at the
 /// step's start and end (positive separating), the gap allowance it was held
 /// to (`contact_allowance`) and that allowance's resolution term
 /// (`gap_resolution`), and its push on each point it spreads to, the force
-/// the step applies over its length (M2).
+/// the step applies over its length.
 #[derive(Clone, Debug)]
 pub(crate) struct ContactRow {
     pub(crate) key: super::ContactKey,
@@ -773,7 +772,7 @@ pub(super) fn contact_rows_end(
         .collect()
 }
 
-/// PER_BODY_TOLERANCE_PLAN.md: each particle's body and each body's own
+/// Each particle's body and each body's own
 /// tolerance energy `E0_b`, set at the path's start by the solids layer
 /// when `EMERGE_PROBE_TOL_PER_BODY` is on; the controller's error then
 /// keeps every body within `tol sqrt(E0_b)` (`step_control`'s `norm`).
@@ -791,7 +790,7 @@ pub(crate) fn body_scales() -> Option<BodyScales> {
     BODY_SCALES.with(|b| b.borrow().clone())
 }
 
-/// MIXED_FORMULATION_PLAN.md criterion 6': a grid axis whose every face the
+/// A grid axis whose every face the
 /// contact step's grid holds at zero velocity (`Held`), so a bar's motion is
 /// 1D (laterally confined, rollers on its long sides); `usize::MAX` off. A
 /// process-wide value: the grid may be built on a worker thread.
@@ -817,7 +816,7 @@ pub(super) fn tangent_check() -> bool {
     *SET.get_or_init(|| std::env::var_os("EMERGE_PROBE_TANGENT_CHECK").is_some())
 }
 
-/// FAST_MODE_PLAN.md sec. 63.3: the preconditioner builds' micro-count, summed
+/// The preconditioner builds' micro-count, summed
 /// since the last `take_band_builds`: builds, `n`, `width`, and seconds in the
 /// ordering, the assembly and the factorization.
 static BAND_BUILDS: std::sync::Mutex<[f64; 6]> = std::sync::Mutex::new([0.0; 6]);
@@ -839,7 +838,7 @@ pub(crate) fn take_band_builds() -> [f64; 6] {
     std::mem::take(&mut *BAND_BUILDS.lock().expect("band builds lock"))
 }
 
-/// FAST_MODE_PLAN.md sec. 63.4: the points' reach lists, expanded (one entry
+/// The points' reach lists, expanded (one entry
 /// per face folded in) and merged by unknown: count, expanded sum, merged sum.
 static REACH_LENGTHS: std::sync::Mutex<[u64; 3]> = std::sync::Mutex::new([0; 3]);
 

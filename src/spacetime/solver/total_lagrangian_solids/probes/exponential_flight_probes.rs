@@ -1,5 +1,4 @@
-//! The exponential flight's trial measured (`LI_WU_TRIAL_PLAN.md`, section
-//! 2 and criteria 1-8). Probes: measurement, nothing held.
+//! The exponential flight's trial measured. Probes: measurement, nothing held.
 
 use super::exponential_flight::{Exponential, Knob, Outcome, Record, set_knob};
 use super::impact_local::{FINE, FRAME_S, FRAMES, asymmetry, clay, drop, sample};
@@ -84,7 +83,7 @@ pub(super) fn summary(label: &str, log: &[Record]) {
     let mean =
         |f: fn(&Record) -> f64| flown.iter().map(|r| f(r)).sum::<f64>() / flown.len().max(1) as f64;
     println!(
-        "{label} criterion 3: rho_obs > rho_pred on {above}; rho_pred largest {:.3e} mean {:.3e}; rho_obs largest {:.3e}; M2 largest {:.3e}; iterations mean {:.2} largest {}, K_max largest {}",
+        "{label} contraction: rho_obs > rho_pred on {above}; rho_pred largest {:.3e} mean {:.3e}; rho_obs largest {:.3e}; M2 largest {:.3e}; iterations mean {:.2} largest {}, K_max largest {}",
         max(|r| r.rho_pred),
         mean(|r| r.rho_pred),
         max(|r| r.rho_obs),
@@ -126,7 +125,7 @@ pub(super) fn summary(label: &str, log: &[Record]) {
         first = Some((h0, r.start));
     }
     println!("{label} H_int over each flight: largest accumulated change {drift:.3e} of its start");
-    // FAST_MODE_PLAN.md sec. 26 (E-1): the step's energy change over each
+    // The step's energy change over each
     // flown attempt against the round-off bound of its two evaluations.
     if log.iter().any(|r| r.law) {
         let attempts: Vec<&Record> = log
@@ -145,7 +144,7 @@ pub(super) fn summary(label: &str, log: &[Record]) {
         ratios.sort_by(f64::total_cmp);
         let remainders: Vec<f64> = log.iter().filter_map(|r| r.start_remainder).collect();
         println!(
-            "{label} E-1: flown attempts {}, within the round-off bound {within} ({} not); sum |dE| {total:.4e} J/m, largest |dE| {:.4e} J/m; |dE| / bound median {:.3e}, largest {:.3e}; start remainders {} (largest |.| {:.3e} J/m, sum |.| {:.3e} J/m); |P - I|_F largest {:.3e}",
+            "{label} flight energy: flown attempts {}, within the round-off bound {within} ({} not); sum |dE| {total:.4e} J/m, largest |dE| {:.4e} J/m; |dE| / bound median {:.3e}, largest {:.3e}; start remainders {} (largest |.| {:.3e} J/m, sum |.| {:.3e} J/m); |P - I|_F largest {:.3e}",
             attempts.len(),
             attempts.len() - within,
             attempts
@@ -159,7 +158,10 @@ pub(super) fn summary(label: &str, log: &[Record]) {
             remainders.iter().map(|e| e.abs()).sum::<f64>(),
             log.iter().map(|r| r.gram_defect).fold(0.0, f64::max)
         );
-        println!("{label} A-8: {}", super::exponential_flight::proof_report());
+        println!(
+            "{label} clearance proofs: {}",
+            super::exponential_flight::proof_report()
+        );
         if std::env::var_os("EMERGE_PROBE_CLEARANCE_LEMMA").is_some() {
             for line in super::exponential_flight::lemma_report().lines() {
                 println!("{label} {line}");
@@ -181,7 +183,7 @@ pub(super) fn summary(label: &str, log: &[Record]) {
             let delta_h: f64 = same.iter().map(|s| s.delta_h).sum();
             let remainder: f64 = same.iter().filter_map(|s| s.start_remainder).sum();
             println!(
-                "{label} E-1 beyond the bound at {:.6} to {:.6} s: dE {:+.4e} J/m, bound {:.4e} J/m; scheme dH {:+.4e}, start remainder {:+.4e}, left {:+.4e} J/m",
+                "{label} flight energy beyond the bound at {:.6} to {:.6} s: dE {:+.4e} J/m, bound {:.4e} J/m; scheme dH {:+.4e}, start remainder {:+.4e}, left {:+.4e} J/m",
                 r.t0,
                 r.t1,
                 r.step_energy_change,
@@ -200,7 +202,7 @@ fn snapshot(sim: &Simulation) -> (Vec<DVec2>, Vec<DVec2>, Vec<DMat2>) {
     (s.x.clone(), s.v.clone(), s.f.clone())
 }
 
-/// Criterion 6: run D (the sub-frame handoff, tol 1e-2) with the trial off
+/// The clay drop (the sub-frame handoff, tol 1e-2) with the trial off
 /// and with its truncated model on, every frame's state compared bit for
 /// bit; then from forced zero-spin starts (every velocity set to zero) the
 /// truncated flight against today's `Flight`, 30 frames each.
@@ -251,12 +253,12 @@ fn probe_exponential_identical_digits() {
         }
         let flown = today.iter().filter(|r| r.2).count();
         println!(
-            "run D (tolerance {tolerance:e}), trial off against the truncated trial on: {} frames, {flown} flown whole, flown time {:.4} s; first frame differing: {first:?}; trial steps recorded {}",
+            "the clay drop (tolerance {tolerance:e}), trial off against the truncated trial on: {} frames, {flown} flown whole, flown time {:.4} s; first frame differing: {first:?}; trial steps recorded {}",
             today.len(),
             today.iter().map(|r| r.3).sum::<f64>(),
             log.len()
         );
-        summary("truncated run D", &log);
+        summary("truncated the clay drop", &log);
         // Forced zero-spin starts.
         let state = sim.total_lagrangian.as_ref().expect("on");
         let Some(Some(modes)) = state.modes.clone() else {
@@ -442,7 +444,7 @@ fn probe_exponential_spun_block() {
             .map(|n| distance(state, &v.0[n], &fine.0[n]))
             .fold(0.0, f64::max);
         println!("spin {spin} order: 1 step a frame, |V - V_fine| largest {one:.4e}");
-        // Diagnostics beyond the plan's runs: a finer reference (omega h at
+        // Further diagnostics: a finer reference (omega h at
         // most 736 / 8192 = 0.09 a step) for the order, and B and V from A's
         // frame-0 state (a common start).
         let resolved = run(FRAME_S, modal, 1, knob(false, 8192));
@@ -517,8 +519,8 @@ fn probe_exponential_spun_block() {
     });
 }
 
-/// Criteria 1, 2, 3, 5 and 7 on run D (`EMERGE_PROBE_TOLERANCE`, 1e-2 by
-/// default; 1e-1 is criterion 8's E2), the per-frame lines in
+/// The trial's measures on the clay drop (`EMERGE_PROBE_TOLERANCE`, 1e-2 by
+/// default; 1e-1 is E2's), the per-frame lines in
 /// `probe_floor_candidates`'s format for the comparison against reference
 /// A's log, then the records' summary.
 #[test]

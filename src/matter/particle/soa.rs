@@ -49,7 +49,7 @@ pub struct Particles {
     /// Signed Pradhana volumetric-plastic-strain correction accumulator
     /// (Pradhana, co-author of Klar, Gast, Pradhana, Fu, Teran, Jiang & Museth
     /// 2016 "A Drucker-Prager Elastoplasticity Theory for Sand Simulation";
-    /// mechanism as in Blatny & Gaume 2025, `tmp/matter/src/simulation/
+    /// mechanism as in Blatny & Gaume 2025, `matter/src/simulation/
     /// plasticity.cpp`'s `eps_pl_vol_pradhana`/`use_pradhana`). Tracks how much
     /// volumetric correction `DruckerPragerMaterial::project`'s tension-cutoff
     /// branch (the full-expansion return mapping, not the shear-yield cone

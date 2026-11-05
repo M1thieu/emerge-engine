@@ -348,12 +348,12 @@ pub(crate) fn initialize_particles(
     particles
 }
 
-/// FAST_MODE_PLAN.md sec. 51.1, a test-only knob (`EMERGE_PROBE_KNOT_GAUSS`):
+/// A test-only knob (`EMERGE_PROBE_KNOT_GAUSS`):
 /// a box body's particles at two Gauss points per piece of its interval cut
 /// at the quadratic B-splines' knots (`k + 1/2` in grid units, the total
 /// Lagrangian basis having its nodes at the integers), each carrying the
 /// region's mass per cell area times its weight area. The weak form is then
-/// integrated exactly where the body cuts the basis (sec. 49g: the lattice's
+/// integrated exactly where the body cuts the basis (the lattice's
 /// quarter points leave a first-cell error at free surfaces and on an axis
 /// that does not shrink with the cell). `None`: the lattice.
 #[cfg(all(test, feature = "experimental"))]
@@ -369,7 +369,7 @@ fn knot_gauss_points(
         return None;
     }
     static SAID: std::sync::Once = std::sync::Once::new();
-    SAID.call_once(|| println!("knob active: knot-span Gauss points at spawn (sec. 51.1)"));
+    SAID.call_once(|| println!("knob active: knot-span Gauss points at spawn"));
     Some(knot_gauss_layout((min, max), mass_per_area))
 }
 
@@ -411,7 +411,7 @@ fn knot_gauss_layout((min, max): (Vec2, Vec2), mass_per_area: f32) -> Vec<(Vec2,
 mod knot_gauss_tests {
     use super::*;
 
-    /// K-1 (FAST_MODE_PLAN.md sec. 51.1): the layout's mass and area are the
+    /// The layout's mass and area are the
     /// box's, for a box cut by the knots and one starting on a knot; every
     /// point lies inside it.
     #[test]

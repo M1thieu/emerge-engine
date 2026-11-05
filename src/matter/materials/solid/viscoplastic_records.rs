@@ -34,8 +34,7 @@ impl ViscoplasticRecord {
     /// indentation over 4e-4 to 80 1/s (eq. 7, p. 212), read as a Norton law
     /// with `rate_0 = 1/s` (p. 213: "elastic and viscous elements in
     /// series"); `E = 30 +- 5 MPa`, `nu = 0.30` initially (pp. 204-205).
-    /// Read through the reading agent's report (`VISCOPLAST_SOURCES_REPORT`
-    /// rows 22, sec. 4 and 6, the Russian text); to be checked on the page
+    /// Read from a summary; to be checked on the page
     /// before a presented result rests on it.
     ///
     /// Declared gaps, each with its removal criterion in that report: no

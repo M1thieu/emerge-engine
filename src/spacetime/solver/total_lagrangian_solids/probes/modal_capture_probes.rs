@@ -1,5 +1,4 @@
-//! How much of reference A's vibration a reduced basis holds
-//! (`tmp/papers/dl_realtime/STAGE0_MODAL_CAPTURE_PLAN.md`): A's elastic
+//! How much of the fixed-step reference's vibration a reduced basis holds: A's elastic
 //! state at frames 8 and 9 projected on (a) the lowest free elastic modes
 //! and (b) a massless Craig-Bampton basis (Monjaraz Tec, Gross, Krack 2021,
 //! eqs. 20-23, linear at the reference). A probe: measurement, nothing held.

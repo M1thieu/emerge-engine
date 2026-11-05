@@ -93,7 +93,7 @@ const DX_M: f32 = 0.005;
 /// default advances 0.054 s of clay per second of wall clock, 18 times
 /// slower than life. Two thirds of that is the acoustic bound this clay's
 /// own stiffness sets (31 m/s of wave speed across 5 mm cells); the rest is
-/// engine cost the core plan measures separately. A settlement is worth
+/// engine cost, measured separately. A settlement is worth
 /// watching slowly anyway, and the slider trades the ratio against the frame
 /// rate without touching a single material constant.
 const DT_S_DEFAULT: f32 = 0.001;

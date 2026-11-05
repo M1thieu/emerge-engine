@@ -1,5 +1,4 @@
-//! The bar's numerical dispersion on its own grid (BAR_REFERENCE_PLAN.md
-//! sec. 8.1 (a); HIGH_ORDER_IMPACT_REPORT.md sec. 2.3): the consistent mass
+//! The bar's numerical dispersion on its own grid: the consistent mass
 //! and the stiffness at rest that `bar_impact_run`'s grid carries, their
 //! free-free longitudinal modes against the exact `omega_n = n pi c0 / L`,
 //! and the midpoint's frequency on each. A probe: measurement, nothing held.

@@ -6,7 +6,7 @@ mod gui_common;
 /// GPU material sandbox -- paint continuum materials with the mouse.
 ///
 /// Unlike a falling-sand/cellular-automaton toy (one particle per grid cell,
-/// swap-if-heavier rule tables, no stress or strain -- see `tmp/powder-toy` for that
+/// swap-if-heavier rule tables, no stress or strain -- see `powder-toy` for that
 /// architecture), every brush here is an MLS-MPM particle with a deformation gradient
 /// and a constitutive law. Sand piles because of Drucker-Prager friction, not a
 /// `Weight` lookup; jelly squishes and springs back because of NeoHookean elasticity,

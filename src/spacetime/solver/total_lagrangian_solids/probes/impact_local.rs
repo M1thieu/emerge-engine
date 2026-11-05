@@ -30,7 +30,7 @@ fn clay_record() -> ElasticProps {
 }
 
 pub(super) fn clay() -> ElasticProps {
-    super::g0::series(clay_record())
+    super::pressure_wave_energy::series(clay_record())
 }
 
 pub(super) fn drop(frame_s: f64, path: TotalLagrangianConfig) -> Simulation {
@@ -71,7 +71,7 @@ pub(super) fn drop(frame_s: f64, path: TotalLagrangianConfig) -> Simulation {
             .mass_from(&clay(), &config),
     );
     if let Some(start) = start {
-        // ROW18_COVERAGE_PLAN.md sec. 1; velocities in cells per second. The
+        // Velocities in cells per second. The
         // tilt turns the spawn's outline with its particles.
         let turn = Vec2::from_angle(sign * 15f32.to_radians());
         if start == "tilted" {
@@ -95,7 +95,7 @@ pub(super) fn drop(frame_s: f64, path: TotalLagrangianConfig) -> Simulation {
     sim
 }
 
-/// STATE_SPACE_COVERAGE_PLAN.md sec. 7's knobs: `EMERGE_PROBE_SHIFT_X`
+/// The scene's symmetry knobs: `EMERGE_PROBE_SHIFT_X`
 /// (cells along the floor), `EMERGE_PROBE_DROP_MIRROR`, `EMERGE_PROBE_SCALE`
 /// (`alpha`, lengths and times), `EMERGE_PROBE_NO_GRAVITY`. Says so once.
 #[derive(Clone, Copy)]
@@ -141,7 +141,7 @@ fn spin() -> f32 {
     }
 }
 
-/// `EMERGE_PROBE_DROP_START=thrown|spun|tilted|pressed` (ROW18_COVERAGE_PLAN.md):
+/// `EMERGE_PROBE_DROP_START=thrown|spun|tilted|pressed`:
 /// the block's start; unset, the drop from rest. Says so once.
 fn drop_start() -> Option<String> {
     static ON: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
@@ -155,8 +155,7 @@ fn drop_start() -> Option<String> {
     .clone()
 }
 
-/// `EMERGE_PROBE_REFINE=r` and `EMERGE_PROBE_SPACING=s`
-/// (BLOCK_REFINEMENT_PLAN.md): the same physical scene on cells `r` times
+/// `EMERGE_PROBE_REFINE=r` and `EMERGE_PROBE_SPACING=s`: the same physical scene on cells `r` times
 /// finer (the block `8r x 4r` cells, its spawn `12r` cells above the floor),
 /// particles at `s` cells; `(1, 0.5)` unset. Says so once, from inside.
 pub(super) fn refinement() -> (usize, f32) {
@@ -297,7 +296,7 @@ fn run(mut sim: Simulation, per: usize) -> (Vec<Sample>, f64) {
                     + f.heat.abs()
                     + f.start_energy.abs());
             worst = worst.max(f.balance.abs() / (allowed + round_off));
-            // `EMERGE_PROBE_LEDGER_FRAMES` (PUSO_CANDIDATE_PLAN.md sec. 13).
+            // `EMERGE_PROBE_LEDGER_FRAMES`.
             if std::env::var_os("EMERGE_PROBE_LEDGER_FRAMES").is_some() {
                 println!(
                     "ledger frame: balance {:+.6e}, bound so far {:.6e}, ratio {:.4}",
@@ -314,7 +313,7 @@ fn run(mut sim: Simulation, per: usize) -> (Vec<Sample>, f64) {
             s.floors += f.at_floor;
         }
         s.wall = clock.elapsed().as_secs_f64();
-        // `EMERGE_PROBE_STATE_DIGEST` (ROW16 sec. 10): the f64 state's sums at
+        // `EMERGE_PROBE_STATE_DIGEST`: the f64 state's sums at
         // full precision, so a perturbation's reach shows below the printed
         // observables' digits.
         if digest {
@@ -575,7 +574,7 @@ fn probe_flight_refusals() {
     });
 }
 
-/// Run D alone (the sub-frame handoff), each frame printed in the format of
+/// The clay drop alone (the sub-frame handoff), each frame printed in the format of
 /// `probe_impact_local_stepping`, to set against that probe's logged A. A
 /// probe.
 #[test]
@@ -608,7 +607,7 @@ fn probe_handoff_alone() {
     });
 }
 
-/// The one-ulp discriminator (`ROW16_GMRES_SWEEP_PLAN.md` sec. 5), before
+/// The one-ulp discriminator, before
 /// the first step: `EMERGE_PROBE_ULP=v` sets every particle's start y
 /// velocity to one ulp of zero downward (the f32 subnormal), `x` raises one
 /// particle's start y by one f32 ulp; it says so from inside.
@@ -624,8 +623,7 @@ pub(super) fn ulp_perturb(sim: &mut Simulation) {
             }
         }
         // `vp:<particle>`: that particle's vertical velocity moved by one
-        // ulp (a start with a nonzero velocity: ROW18_COVERAGE_PLAN.md, the
-        // ensemble rule's kind (ii)).
+        // ulp (a start with a nonzero velocity).
         s if s.starts_with("vp:") => {
             let p: usize = s[3..].parse().unwrap_or(0);
             let v = &mut particles.v[p].y;
@@ -678,11 +676,10 @@ pub(super) fn ulp_perturb(sim: &mut Simulation) {
     println!("knob active: ulp perturbation {kind}");
 }
 
-/// Run D under the floor-collapse candidates' knobs (`FLOOR_COLLAPSE_PLAN.md`;
-/// `EMERGE_PROBE_PAIR_PIECES`, `EMERGE_PROBE_SWITCH_BY_CONTACTS`), labelled
+/// The clay drop under the floor-collapse candidates' knobs, labelled
 /// by `EMERGE_PROBE_CANDIDATE`: per frame the controlled steps, rejected
 /// tries, floor visits and wall time with the observables, for the
-/// comparison against reference A's log. A probe.
+/// comparison against the fixed-step reference's log. A probe.
 #[test]
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
 fn probe_floor_candidates() {
@@ -693,7 +690,7 @@ fn probe_floor_candidates() {
             .and_then(|v| v.parse().ok())
             .unwrap_or(1e-2);
         let mut path = TotalLagrangianConfig::new(tolerance).with_subframe_handoff();
-        // `EMERGE_PROBE_GMRES_TOL` (ROW16_GMRES_SWEEP_PLAN.md).
+        // `EMERGE_PROBE_GMRES_TOL`.
         if let Some(tol) = std::env::var("EMERGE_PROBE_GMRES_TOL")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -704,14 +701,18 @@ fn probe_floor_candidates() {
             "knob active: gmres_tolerance {:e}",
             path.settings.gmres_tolerance
         );
-        // `EMERGE_PROBE_REFERENCE_A`: reference A's construction instead
+        // `EMERGE_PROBE_FIXED_REFERENCE`: the fixed-step reference's construction instead
         // (fixed steps of `1/60/FINE` frames, infinite tolerance, no handoff).
         // On cells `r` times finer A keeps its Courant number: `r FINE` frames.
-        let reference = std::env::var_os("EMERGE_PROBE_REFERENCE_A").is_some();
-        let fine = (FINE as f64 * refinement().0 as f64 * super::g0::wave_ratio(&clay_record()))
-            .ceil() as usize;
+        let reference = std::env::var_os("EMERGE_PROBE_FIXED_REFERENCE").is_some();
+        let fine = (FINE as f64
+            * refinement().0 as f64
+            * super::pressure_wave_energy::wave_ratio(&clay_record()))
+        .ceil() as usize;
         let mut sim = if reference {
-            println!("knob active: reference A's construction, {fine} frames per 1/60 s");
+            println!(
+                "knob active: the fixed-step reference's construction, {fine} frames per 1/60 s"
+            );
             drop(
                 FRAME_S / fine as f64,
                 TotalLagrangianConfig::new(f64::INFINITY),
@@ -746,7 +747,7 @@ fn probe_floor_candidates() {
     });
 }
 
-/// S3 (`tmp/papers/dl_realtime/S3_DENSE_SOLVE_PLAN.md`): run D's frame 8,
+/// A dense solve on the clay drop's frame 8,
 /// its GMRES time and Jacobian products
 /// per Newton iteration over every solve, against a dense LU with partial
 /// pivoting (textbook Gaussian elimination, timing only, never used by the
@@ -754,9 +755,9 @@ fn probe_floor_candidates() {
 /// probe: measurement, nothing held.
 #[test]
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
-fn probe_s3_dense_solve() {
+fn probe_dense_solve() {
     use crate::spacetime::total_lagrangian::hooks;
-    super::cap::capped("probe_s3_dense_solve", 3600, || {
+    super::cap::capped("probe_dense_solve", 3600, || {
         let mut sim = drop(
             FRAME_S,
             TotalLagrangianConfig::new(1e-2).with_subframe_handoff(),
@@ -773,7 +774,7 @@ fn probe_s3_dense_solve() {
         let n = grid.active.iter().filter(|&&a| a).count();
         let newton = parts[9].max(1.0);
         println!(
-            "S3 frame 8: steps {} rejected {}; solves {:.0}, Newton iterations {newton:.0}, Jacobian products {:.0}; per Newton iteration: GMRES {:.4} ms (products and preconditioner included), products {:.1}, the products' time {:.4} ms; frame wall {:.3} s; active unknowns {n}",
+            "dense solve, frame 8: steps {} rejected {}; solves {:.0}, Newton iterations {newton:.0}, Jacobian products {:.0}; per Newton iteration: GMRES {:.4} ms (products and preconditioner included), products {:.1}, the products' time {:.4} ms; frame wall {:.3} s; active unknowns {n}",
             f.steps,
             f.rejected,
             parts[7],
@@ -844,7 +845,7 @@ fn probe_s3_dense_solve() {
         for (m, reps) in [(n, 21), (612, 7), (2244, 3)] {
             let (factor, solve) = lu_time(m, reps);
             println!(
-                "S3 dense LU at n = {m}: factor {:.4} ms, two triangular solves {:.4} ms (median of {reps})",
+                "dense LU at n = {m}: factor {:.4} ms, two triangular solves {:.4} ms (median of {reps})",
                 1e3 * factor,
                 1e3 * solve
             );
@@ -852,14 +853,14 @@ fn probe_s3_dense_solve() {
     });
 }
 
-/// C2 proper's P0 on the block (C2_PROPER_PLAN.md sec. 7, before P1): the
+/// The singular dynamic mass on the block: the
 /// clay drop's grid after its first frame, the bottom side's outline points
 /// as the contact rows (normal `+y`), each particle's `(mu, bulk - mu)`, the
-/// C2 diagnostic's Newton matrix at Courant 0.25 and 0.0475 by the P-wave
+/// diagnostic Newton matrix at Courant 0.25 and 0.0475 by the P-wave
 /// speed. A probe.
 #[test]
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
-fn probe_c2_proper_p0_block() {
+fn probe_singular_mass_on_the_block() {
     let mut sim = drop(FRAME_S, TotalLagrangianConfig::new(1e-2));
     sim.step();
     let state = sim.total_lagrangian.as_ref().expect("on");
@@ -880,7 +881,7 @@ fn probe_c2_proper_p0_block() {
     let solid = state.solids[p];
     let c = ((solid.bulk + solid.mu) * state.v0[p] / state.mass[p]).sqrt();
     let dt = |nu: f64| (nu, nu * grid.cell / c);
-    crate::spacetime::grid::mac::c2_proper_probes::p0_core(
+    crate::spacetime::grid::mac::singular_mass_probes::p0_core(
         &format!("the clay block, h {} m, c {c:.2} m/s", grid.cell),
         grid,
         (&state.reference, &state.mass, &state.v0),

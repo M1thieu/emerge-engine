@@ -1,6 +1,6 @@
 //! The explicit path (`Simulation::step` without `total_lagrangian`, the
 //! deprecated MLS-MPM solver) on `impact_local`'s clay drop: the same
-//! material, block and frames, for EXPLICIT_BASELINE_PLAN.md. A probe:
+//! material, block and frames. A probe:
 //! measurement only, the explicit solver unchanged.
 
 use crate::materials::physical_props::Elastic as ElasticProps;

@@ -176,7 +176,7 @@ pub(crate) fn contact_grid(
     (mass, v0): (&[f64], &[f64]),
     settings: &ConservingSettings,
 ) -> Grid {
-    // MIXED_FORMULATION_PLAN.md criterion 6' (test builds): one axis held.
+    // One axis held.
     #[cfg(all(test, feature = "experimental"))]
     if let Some(axis) = super::hooks::held_axis() {
         return Grid::new(

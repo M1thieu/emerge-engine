@@ -253,7 +253,7 @@ impl Relaxation {
         // A part's stresses at both ends and at the midpoint, and its
         // increment, are the same for every branch on that part: formed once
         // per part, the same expressions on the same inputs, so the sum is
-        // bitwise the per-branch one (FAST_MODE_PLAN.md sec. 63.7).
+        // bitwise the per-branch one.
         let (lambda, mu) = moduli;
         let on = |part: usize| {
             self.branches[..self.count]
@@ -519,7 +519,7 @@ mod tests {
     }
 
     /// The step stress as each branch formed its part's stresses itself (the
-    /// form before FAST_MODE_PLAN.md sec. 63.7): the oracle the shared form
+    /// earlier form): the oracle the shared form
     /// must match bit for bit.
     fn step_stress_per_branch(
         r: &Relaxation,
@@ -551,7 +551,7 @@ mod tests {
             .fold(DMat2::ZERO, |sum, s| sum + s)
     }
 
-    /// FAST_MODE_PLAN.md sec. 63.7, E-1: the part-shared step stress is bit
+    /// The part-shared step stress is bit
     /// for bit the per-branch one, over strained branches (both parts, the
     /// shear part alone, a proportional record, Crandall's), random `C_n`, `C_n+1`
     /// (steps from 1e-12 to 1e-1, the quotient's cut at 0 included) and step

@@ -646,7 +646,7 @@ impl Simulation {
             let step = take(&mut state, &config.settings);
             remaining -= step.dt;
             #[cfg(all(test, feature = "experimental"))]
-            g0::after_step(&state, step.dt);
+            pressure_wave_energy::after_step(&state, step.dt);
             if cut && step.rejected == 0 {
                 state.step_length = state.step_length.max(proposed);
             }
@@ -787,7 +787,7 @@ impl Simulation {
         #[cfg(all(test, feature = "experimental"))]
         handoff::frame_report(&state, self.frame_index);
         #[cfg(all(test, feature = "experimental"))]
-        g0::frame_end(&state, self.frame_index);
+        pressure_wave_energy::frame_end(&state, self.frame_index);
         self.total_lagrangian = Some(state);
         self.frame_index = self.frame_index.saturating_add(1);
     }
@@ -836,7 +836,7 @@ impl Simulation {
             state.flight = started.ok();
             #[cfg(all(test, feature = "experimental"))]
             if let (Some(flight), Some(Some(modes))) = (&state.flight, &state.modes) {
-                g0::at_flight_start(flight, modes, state);
+                pressure_wave_energy::at_flight_start(flight, modes, state);
             }
         }
         let Some(mut flight) = state.flight.take() else {
@@ -989,17 +989,17 @@ mod exponential_flight_probes;
 #[path = "total_lagrangian_solids/probes/factor_count_probes.rs"]
 mod factor_count_probes;
 #[cfg(all(test, feature = "experimental"))]
-#[path = "total_lagrangian_solids/probes/g0.rs"]
-mod g0;
-#[cfg(all(test, feature = "experimental"))]
 #[path = "total_lagrangian_solids/probes/impact_local.rs"]
 mod impact_local;
 #[cfg(all(test, feature = "experimental"))]
 #[path = "total_lagrangian_solids/probes/multi_body_probes.rs"]
 mod multi_body_probes;
 #[cfg(all(test, feature = "experimental"))]
-#[path = "total_lagrangian_solids/probes/rt_ladder_probes.rs"]
-mod rt_ladder_probes;
+#[path = "total_lagrangian_solids/probes/pressure_wave_energy.rs"]
+mod pressure_wave_energy;
+#[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/realtime_ladder_probes.rs"]
+mod realtime_ladder_probes;
 #[cfg(all(test, feature = "experimental"))]
 #[path = "total_lagrangian_solids/probes/step_sweep.rs"]
 mod step_sweep;

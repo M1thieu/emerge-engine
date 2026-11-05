@@ -230,8 +230,8 @@ pub(crate) fn corotated_elastic_stress_jvp(f: Mat2, df: Mat2, lambda: f32, mu: f
 ///
 /// Teran et al. 2005's SPD construction proves `dP:dF >= 0` for First-Piola
 /// stress with a material-space perturbation. This engine's force pairs
-/// Kirchhoff stress with the spatial kernel gradient (as `tmp/ziran2020` and
-/// `tmp/GeoTaichi` do), and `tau = P*F^T` as a function of `L` inherits no such
+/// Kirchhoff stress with the spatial kernel gradient (as `ziran2020` and
+/// `GeoTaichi` do), and `tau = P*F^T` as a function of `L` inherits no such
 /// guarantee: a Piola-projected operator converted by the product rule still
 /// let the residual grow across CG iterations, which a PSD system cannot do.
 ///

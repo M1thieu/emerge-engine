@@ -208,7 +208,7 @@ impl Grid {
         let mut pressure = dct2_inverse(&p_hat, nx, ny);
 
         // Free-surface Dirichlet condition, as in Bridson's apic2d
-        // (`tmp/apic2d/fluidsim.cpp`, whose `liquid_phi` gives the free
+        // (`apic2d/fluidsim.cpp`, whose `liquid_phi` gives the free
         // surface `p = 0` and solid walls a zero-flux condition). `local_mass`
         // marks the fluid cells (from `self.dirty`, inside this padded box): a
         // fluid cell next to an in-bounds low- or zero-mass neighbour is free

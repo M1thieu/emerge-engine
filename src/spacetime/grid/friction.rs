@@ -6,7 +6,7 @@ use super::{FxU32BuildHasher, Grid, flat_index};
 
 /// Material-Induced Boundary Friction (MIBF) accumulator -- see
 /// `MaterialModel::current_friction_coefficient`'s doc for the real
-/// citation (Blatny & Gaume 2025, `tmp/ref_matter.md` sec.19). Mirrors
+/// citation (Blatny & Gaume 2025). Mirrors
 /// `contact::ContactCell`'s own already-proven shape: a sparse side
 /// map keyed the same way as the main `cells`, only ever allocated at
 /// nodes a friction-reporting particle actually touches, with its own

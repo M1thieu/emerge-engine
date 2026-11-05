@@ -10,7 +10,7 @@
 //! Barbic's thesis (CMU-CS-07-145, 2007, sec. 2.6). The grid stays on the
 //! reference, so every displacement and velocity the step makes lies in
 //! the basis, and the modal coordinates are exact projections: `q_i =
-//! sum_p m_p (x_p - X_p) . phi_i(X_p)`, `q_i' = sum_p m_p v_p .
+//! sum_p m_p (x_p - X_p) . phi_i(X_p)`, `q_i' = sum_p m_p v_p.
 //! phi_i(X_p)`.
 
 use std::f64::consts::{PI, TAU};

@@ -33,8 +33,8 @@
 //! in the same variables: `eps_bar_dot^p = rate_0 (sigma_eq / K)^(1/m)`,
 //! `sigma_eq = sqrt(3/2) |dev tau|`, `eps_bar^p = sqrt(2/3) gamma` (LS05
 //! eq. 37-41; the law as in Nguyen, Amores, Sanz and Montans, Comput. Mech.
-//! 67 (2021), eq. 123-125, with no yield stress, read through the agent's
-//! report, `VISCOPLAST_SOURCES_REPORT` row 9). Its backward-Euler return
+//! 67 (2021), eq. 123-125, with no yield stress, read from a summary, not on
+//! the page). Its backward-Euler return
 //! (eq. 71) is the one scalar equation `r(d) = sigma_eq,tr - 3G d - K (d /
 //! (rate_0 dt))^m = 0` in `d = Delta eps_bar^p`, solved by a bracketed
 //! Newton (`norton_return`), and its step's dissipation is the step's own
@@ -274,8 +274,7 @@ impl HenckyJ2 {
         self.logs_with_stretch(c, 1.0, state)
     }
 
-    /// The same with an out-of-plane `C_33` (an axisymmetric hoop entry,
-    /// FAST_MODE_PLAN.md sec. 49e; plane strain is `C_33 = 1`): `e3 = 1/2
+    /// The same with an out-of-plane `C_33` (an axisymmetric hoop entry; plane strain is `C_33 = 1`): `e3 = 1/2
     /// ln(C_33 Gp_33)`, the third eigenvalue of the block-diagonal `C Gp`.
     fn logs_with_stretch(&self, c: DMat2, c33: f64, state: &PlasticMetric) -> ([f64; 3], f64, f64) {
         let (half, r) = mean_and_radius(c * state.gp);

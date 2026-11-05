@@ -510,8 +510,7 @@ pub struct Renderer {
     /// (`SurfaceReconstructionSource::material_mass_enabled`) -- unlike
     /// every other surface buffer above, NOT grown unconditionally by
     /// `ensure_surface_capacity`, since it's 16x the size of a single
-    /// per-cell field and most callers never use it (real cost accounting
-    /// in the plan this shipped from).
+    /// per-cell field and most callers never use it (16x a per-cell field).
     surface_material_mass_buf: wgpu::Buffer,
     /// Yu & Turk neighbourhood moments, 6 scalars per PHYSICS-grid cell (not
     /// per surface cell) -- see `surface_moments_atomic`'s own shader doc.

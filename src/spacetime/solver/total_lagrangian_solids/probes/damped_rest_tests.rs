@@ -153,7 +153,7 @@ fn check_ledger(name: &str, frames: &[(TotalLagrangianFrame, Vec<DVec2>)]) {
     }
 }
 
-/// Gates 3 and 5 (`DAMPED_REST_GATES`): the 1 cm block settled, kick 0,
+/// The 1 cm block settled, kick 0,
 /// rested against stepped over 30 frames. Criteria fixed before measuring:
 /// every frame after the two the rest needs is rested (from the settled
 /// state), no refusal, no
@@ -295,7 +295,7 @@ fn a_kicked_damped_block_rests_against_the_frame_rate_step() {
     );
 }
 
-/// Gate 2: E1's Plasticine block (8 by 4 cells of 1 cm on the floor) at
+/// E1's Plasticine block (8 by 4 cells of 1 cm on the floor) at
 /// rest is beyond the record's limit under its own weight: never rested,
 /// each refusal counted.
 #[test]

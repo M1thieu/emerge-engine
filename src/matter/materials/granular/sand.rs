@@ -361,7 +361,7 @@ pub struct DruckerPragerMaterial {
     /// Teran, Jiang & Museth 2017 (SIGGRAPH/ACM TOG 36:4, "Multi-species
     /// simulation of porous sand and water mixtures"; the flag takes the first
     /// author's name, Andre Pradhana Tampubolon), re-derived against Blatny &
-    /// Gaume 2025's explicit adaptation (`tmp/matter/src/simulation/
+    /// Gaume 2025's explicit adaptation (`matter/src/simulation/
     /// plasticity.cpp`), since the original targets an implicit solve.
     /// `false` (default) = off.
     ///

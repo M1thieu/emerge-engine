@@ -1,5 +1,4 @@
-//! FAST_MODE_PLAN.md sec. 36.14, the counts before Part II's code (K-6,
-//! K-7, K-8): Hild and Renard's stabilized multipliers on one-cell patches
+//! The counts before the code: Hild and Renard's stabilized multipliers on one-cell patches
 //! (Numer. Math. 115 (2010), eq. 12), measured on the step's own operator
 //! (`Grid::approximate_jacobian`: the midpoint's `2 M / dt^2` and the
 //! solid's linear elasticity at `F = I`) before any engine change. The
@@ -169,7 +168,7 @@ fn rank(v: &[f64]) -> usize {
     v.iter().filter(|&&s| s > 1e-12 * v[v.len() - 1]).count()
 }
 
-/// K-6 and K-8 on one scene at one step, patches of `2 trace_cell`: the
+/// The stability constant and the Schur complement on one scene at one step, patches of `2 trace_cell`: the
 /// stabilization's ratio `max_v sum_c gamma_c L_c p_c(v)^2 / a(v, v)` at
 /// `gamma_c = h` (`gamma0` = 1 / Pa), `gamma0` set by the ratio 1/2, and
 /// the multipliers' Schur complement without and with it.
@@ -200,7 +199,7 @@ fn spectra(
         products(&gaps, &z_p),
         products(&pressures, &z_p),
     );
-    // K-6: with `D = diag(h L_c)`, the largest eigenvalue of `D^1/2 P
+    // The stability constant: with `D = diag(h L_c)`, the largest eigenvalue of `D^1/2 P
     // A^-1 P^T D^1/2`, Pa.
     let d: Vec<f64> = all.iter().map(|c| h * c.length).collect();
     let scaled: Vec<Vec<f64>> = (0..m)
@@ -209,9 +208,9 @@ fn spectra(
     let ratio = *sorted(scaled).last().expect("conditions");
     let gamma0 = 0.5 / ratio;
     let modulus = lame + 2.0 * mu;
-    // K-8 without: `G A^-1 G^T`.
+    // The Schur complement without: `G A^-1 G^T`.
     let plain = sorted(gg.clone());
-    // K-8 with, `gamma_c = gamma0 h`: the saddle system of the stabilized
+    // The Schur complement with, `gamma_c = gamma0 h`: the saddle system of the stabilized
     // Lagrangian linearised, `A_gamma = A - P^T D_gamma P` (`D_gamma =
     // diag(gamma_c L_c)`), `B = G - Gamma P`; its Schur complement `B
     // A_gamma^-1 B^T + diag(gamma_c / L_c)` by Woodbury through `A^-1`.
@@ -250,7 +249,7 @@ fn spectra(
     }
 }
 
-/// K-6 and K-8 printed (`spectra`), today's patch length (`outline_trace`
+/// The stability constant and the Schur complement printed (`spectra`), today's patch length (`outline_trace`
 /// at the cell, `EMERGE_PROBE_PATCH_CELLS` to change it).
 fn count(
     label: &str,
@@ -268,11 +267,11 @@ fn count(
     } = spectra(body, (layout, h, walls), solid, (dt, h));
     let m = plain.len();
     println!(
-        "K-6 {label} dt {dt:.3e} s: {m} conditions, ratio at gamma0 = 1/Pa {ratio:.4e} Pa, over the P-wave modulus {:.4e}; gamma0 {gamma0:.4e} 1/Pa",
+        "stability constant, {label} dt {dt:.3e} s: {m} conditions, ratio at gamma0 = 1/Pa {ratio:.4e} Pa, over the P-wave modulus {:.4e}; gamma0 {gamma0:.4e} 1/Pa",
         ratio / modulus
     );
     println!(
-        "K-8 {label} dt {dt:.3e} s: without, Schur eigenvalues {:.4e} to {:.4e} 1/Pa, rank {} of {m}, condition {:.4e}; with, {:.4e} to {:.4e}, rank {} of {m}, condition {:.4e}",
+        "Schur complement, {label} dt {dt:.3e} s: without, Schur eigenvalues {:.4e} to {:.4e} 1/Pa, rank {} of {m}, condition {:.4e}; with, {:.4e} to {:.4e}, rank {} of {m}, condition {:.4e}",
         plain[0],
         plain[m - 1],
         rank(&plain),
@@ -284,7 +283,7 @@ fn count(
     );
 }
 
-/// K-7: G2's exact hydrostatic start (WATER_GATES_PLAN G2: `F = diag(1,
+/// The water tank's exact hydrostatic start (`F = diag(1,
 /// a(Y))`, `a = 1 - rho g (H0 - Y) / K`, `y(Y) = Y - rho g (H0 Y - Y^2 / 2)
 /// / K`) projected on the basis by the consistent mass (`grid_velocity`),
 /// the contact pressure `p = -N0 . P(F) N0` read at the outline points from
@@ -376,7 +375,7 @@ fn trace_on_exact_start(h: f64) {
         };
         if c.members == all[0].members {
             println!(
-                "K-7 cell {h} m, the first floor patch: from the outline points {basis:.9e} Pa, exact {truth:.9e} Pa, the boundary row's particles {particles:.9e} Pa"
+                "hydrostatic start, cell {h} m, the first floor patch: from the outline points {basis:.9e} Pa, exact {truth:.9e} Pa, the boundary row's particles {particles:.9e} Pa"
             );
         }
         // A NaN is kept, not dropped by `max`.
@@ -393,13 +392,13 @@ fn trace_on_exact_start(h: f64) {
     }
     for (name, (basis, particles)) in ["floor", "left wall", "right wall"].iter().zip(worst) {
         println!(
-            "K-7 cell {h} m, {name}: largest |p_c - exact| / (rho g H0) from the outline points {basis:.4e}, from the boundary row's particles {particles:.4e}"
+            "hydrostatic start, cell {h} m, {name}: largest |p_c - exact| / (rho g H0) from the outline points {basis:.4e}, from the boundary row's particles {particles:.4e}"
         );
     }
 }
 
 #[test]
-#[ignore = "a measurement (FAST_MODE_PLAN.md sec. 36.14): run with --ignored --nocapture"]
+#[ignore = "a measurement: run with --ignored --nocapture"]
 fn stabilized_multipliers_counts() {
     let water = LiquidWater::at(293.15).expect("in range");
     let plasticine = ViscoelasticRecord::plasticine_crandall_1970_fresh().relaxed;
@@ -465,14 +464,14 @@ fn stabilized_multipliers_counts() {
     }
 }
 
-/// FAST_MODE_PLAN.md sec. 36.17a (R-a), criteria written before this
+/// Criteria written before this
 /// probe: on the walls' inf-sup geometry (a block of 6 by 4 cells of 2 cm
 /// on a floor, cells 2, 1 and 0.5 cm, offsets 0 and 0.3 cell), `q0 =
 /// lambda_min(S, H = h) / lambda_min(S, H = 2h)` and `q` the same with the
 /// stabilization at H = h, at the RT contact piece and at 1e-4 s; the bar
 /// is the walls' test's own, the finest above half the coarsest.
 #[test]
-#[ignore = "a measurement (FAST_MODE_PLAN.md sec. 36.17a): run with --ignored --nocapture"]
+#[ignore = "a measurement: run with --ignored --nocapture"]
 fn stabilized_one_cell_patches_keep_the_walls_inf_sup() {
     let water = LiquidWater::at(293.15).expect("in range");
     let plasticine = ViscoelasticRecord::plasticine_crandall_1970_fresh().relaxed;
@@ -517,7 +516,7 @@ fn stabilized_one_cell_patches_keep_the_walls_inf_sup() {
                     let two = spectra(body, (&layout, h, &walls), solid, (dt, h));
                     let (q0, q) = (one.plain[0] / two.plain[0], one.with[0] / two.plain[0]);
                     println!(
-                        "R-a {name}, offset {offset} cell, dt {dt:.3e} s, cell {h} m: {} conditions at H = h, gamma0 {:.4e} 1/Pa, lambda_min at H = 2h {:.4e}, at H = h without {:.4e}, with {:.4e} 1/Pa (rank {} of {}); q0 {q0:.4e}, q {q:.4e}",
+                        "{name}, offset {offset} cell, dt {dt:.3e} s, cell {h} m: {} conditions at H = h, gamma0 {:.4e} 1/Pa, lambda_min at H = 2h {:.4e}, at H = h without {:.4e}, with {:.4e} 1/Pa (rank {} of {}); q0 {q0:.4e}, q {q:.4e}",
                         one.plain.len(),
                         one.gamma0,
                         two.plain[0],
@@ -530,7 +529,7 @@ fn stabilized_one_cell_patches_keep_the_walls_inf_sup() {
                 }
                 let bar = |first: f64, last: f64| last > 0.5 * first;
                 println!(
-                    "R-a {name}, offset {offset} cell, dt {dt:.3e} s: control q0 {} the bar ({:.4e} to {:.4e}); stabilized q {} it ({:.4e} to {:.4e}); full rank at every cell: {}",
+                    "{name}, offset {offset} cell, dt {dt:.3e} s: control q0 {} the bar ({:.4e} to {:.4e}); stabilized q {} it ({:.4e} to {:.4e}); full rank at every cell: {}",
                     if bar(rows[0].0, rows[2].0) {
                         "PASSES"
                     } else {

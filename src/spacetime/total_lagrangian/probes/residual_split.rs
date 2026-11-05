@@ -1,4 +1,4 @@
-//! FAST_MODE_PLAN.md sec. 63.6: the internal force's micro-count
+//! The internal force's micro-count
 //! (`EMERGE_PROBE_RESIDUAL_SPLIT`, test-only). One evaluation in `EVERY` is
 //! repeated serially, part by part, on the same state: the reads of the
 //! deformation gradient, the law's step stress (its base law and its
@@ -22,7 +22,7 @@ pub(crate) fn on() -> bool {
     *SET.get_or_init(|| {
         let on = std::env::var_os("EMERGE_PROBE_RESIDUAL_SPLIT").is_some();
         if on {
-            println!("knob active: the internal force's micro-count, one evaluation in {EVERY} (sec. 63.6)");
+            println!("knob active: the internal force's micro-count, one evaluation in {EVERY}");
         }
         on
     })

@@ -1,5 +1,4 @@
-//! A test-only measurement before any build
-//! plan: does this engine's basis (quadratic B-splines, nodes at `i h`,
+//! A test-only measurement: does this engine's basis (quadratic B-splines, nodes at `i h`,
 //! 2 x 2 points per cell at the quarter points) carry the axisymmetric
 //! weak form, the axis included? A static probe, knob
 //! `EMERGE_PROBE_AXISYMMETRIC`, default off.

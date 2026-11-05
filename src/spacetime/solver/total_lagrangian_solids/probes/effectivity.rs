@@ -3,7 +3,7 @@
 //! sampled pair of tries, the estimate of the whole step against its error
 //! from a 64-substep reference, and the doubling's estimate of the halves
 //! against theirs. Nothing here chooses a step: the user decides from these
-//! numbers whether the estimate may (`ESTIMATOR_DESIGN.md` sec. 5).
+//! numbers whether the estimate may.
 
 use super::*;
 use crate::SimConfig;

@@ -344,7 +344,7 @@ fn probe_flown_frames_against_the_step() {
 /// `tests/settled_slab.rs` (1 cm cells, 30 frames): their least, median and
 /// largest, and the iterations sampled. Whether an inner solve in f32 is
 /// possible: Carson and Higham's simple LU-IR needs `kappa_inf` up to about
-/// 1e8 (agent report, `tmp/SCALE_DEMANDS.md`, not read here). A probe.
+/// 1e8 (from a summary, not read here). A probe.
 #[test]
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
 fn probe_tangent_condition_numbers() {

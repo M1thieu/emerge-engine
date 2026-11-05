@@ -354,7 +354,7 @@ pub struct SimConfig {
     /// delay it (5: ~16 frames; 10: ~34; 20: ~29 at much higher cost) without
     /// removing it. A fix needs a variable-density formulation with the free
     /// surface handled structurally (e.g. apic2d's solid-fraction weights,
-    /// `tmp/apic2d/apic2d/fluidsim.cpp`).
+    /// `apic2d/apic2d/fluidsim.cpp`).
     ///
     /// Not only the wall case: a falling droplet with no wall anywhere also
     /// drives J to the clamp, at frame 1 at full gravity and at frame 6-7 at

@@ -1,6 +1,4 @@
-//! Phase 0 gate for the Hybrid Grains homogenization plan (see the
-//! project's own `purring-swinging-cookie.md` plan, "Complete Hybrid
-//! Grains: real DEM-to-continuum homogenization for poured-pile sand"):
+//! A gate for real DEM-to-continuum homogenization of poured-pile sand:
 //! does `GrainPopulation::effective_friction_angle_deg` (a real,
 //! Bagi/Christoffersen contact-force-to-stress mapping, added this
 //! session -- see `src/spacetime/grains/population.rs`) recover a friction
@@ -14,9 +12,8 @@
 //! the result: `|mean_contact_phi - 23.87| <= 5.0 degrees` across >=5
 //! independent seeds (same discipline as the 20-seed convergence check --
 //! a single seed is not a trustworthy basis for a stochastic granular
-//! measurement). If this fails, Phase 1 (wiring the measured phi back into
-//! continuum materials) does NOT proceed -- see the plan's own "What this
-//! does NOT claim to fix" / gate language.
+//! measurement). If this fails, wiring the measured phi back into
+//! continuum materials does NOT proceed.
 //!
 //! Same real column-build/pinned-floor recipe as
 //! `grain_coarse_graining_check.rs` (duplicated locally, matching
@@ -252,7 +249,7 @@ fn run_to_geometric_and_contact_phi_active_window_seeded(
 /// The real Phase-0 gate. PASS criterion fixed before running: see this
 /// file's own top doc.
 #[test]
-#[ignore = "Phase 0 gate for the Hybrid Grains homogenization plan -- run explicitly with \
+#[ignore = "A gate for hybrid grains homogenization -- run explicitly with \
             --release --ignored --nocapture (slow: 5 real runs at 400k steps each)"]
 fn contact_derived_phi_matches_real_geometric_repose_angle_gate() {
     const ROLLING_FRICTION: f32 = 2.00;
@@ -343,7 +340,7 @@ fn contact_derived_phi_matches_real_geometric_repose_angle_gate() {
 /// of the rolling_friction calibration, which is the OTHER live
 /// hypothesis, not tested here).
 #[test]
-#[ignore = "Phase 0 gate (hypothesis 2) for the Hybrid Grains homogenization plan -- run \
+#[ignore = "A gate (hypothesis 2) for hybrid grains homogenization -- run \
             explicitly with --release --ignored --nocapture (slow: 5 real runs at 400k steps each)"]
 fn contact_derived_phi_during_active_settling_matches_geometric_repose_angle_gate() {
     const ROLLING_FRICTION: f32 = 2.00;

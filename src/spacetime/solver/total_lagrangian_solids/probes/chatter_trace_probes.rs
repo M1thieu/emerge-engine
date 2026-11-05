@@ -1,19 +1,18 @@
-//! The chatter's pushes classified by their signature (`tmp/papers/
-//! dl_realtime/CHATTER_TRACE_PLANS.md`, M1), from the contact trace of a
+//! The chatter's pushes classified by their signature, from the contact trace of a
 //! frame's kept steps (`hooks::ContactRow`). A probe: measurement, nothing
 //! held.
 
 use crate::spacetime::total_lagrangian::hooks::TracedStep;
 
-/// Counts M1's signatures over the kept steps of one frame and prints them.
+/// Counts the pushes' signatures over the kept steps of one frame and prints them.
 /// A held contact-step has a positive multiplier. (a) Puso's flip: approaching
 /// at the start, `G v^n < 0`, and `|G v^{n+1} + G v^n| <= 2 a / dt`, `a` the
-/// gap allowance it was held to (the plan names `gap_resolution`, the
-/// allowance's resolution term: counted against both). (b) A flip released
+/// gap allowance it was held to (`gap_resolution`, the allowance's resolution
+/// term, is counted too). (b) A flip released
 /// separating: (a), its key not held at the next kept step, `G v^{n+1} > 0`.
 /// A push is a run of kept steps holding at least one contact; the contact
 /// phase runs from the first such step to the last.
-pub(super) fn report_m1(label: &str, steps: &[TracedStep]) {
+pub(super) fn report_signatures(label: &str, steps: &[TracedStep]) {
     let held = |k: usize| -> Vec<_> {
         steps[k]
             .1
@@ -27,7 +26,10 @@ pub(super) fn report_m1(label: &str, steps: &[TracedStep]) {
         holding.iter().position(|&h| h),
         holding.iter().rposition(|&h| h),
     ) else {
-        println!("{label} M1: no held contact in {} kept steps", steps.len());
+        println!(
+            "{label} signatures: no held contact in {} kept steps",
+            steps.len()
+        );
         return;
     };
     let mut flips = [0u32; 2];
@@ -89,14 +91,14 @@ pub(super) fn report_m1(label: &str, steps: &[TracedStep]) {
         .count();
     let elapsed: f64 = steps[first..=last].iter().map(|s| s.0).sum();
     println!(
-        "{label} M1: contact phase {elapsed:.6e} s over kept steps {first}..={last} of {}; pushes {}; held contact-steps {contact_steps}: (a) flips by the allowance {}, by the resolution term {}; (b) flips released separating {releases}; contact-steps held on at the next step {held_on}",
+        "{label} signatures: contact phase {elapsed:.6e} s over kept steps {first}..={last} of {}; pushes {}; held contact-steps {contact_steps}: (a) flips by the allowance {}, by the resolution term {}; (b) flips released separating {releases}; contact-steps held on at the next step {held_on}",
         steps.len(),
         pushes.len(),
         flips[0],
         flips[1],
     );
     println!(
-        "{label} M1: pushes that are one (a) then (b): {one_then_release} of {}; a run of (a) ended by (b): {run_then_release}; push lengths in steps: {:?}",
+        "{label} signatures: pushes that are one (a) then (b): {one_then_release} of {}; a run of (a) ended by (b): {run_then_release}; push lengths in steps: {:?}",
         pushes.len(),
         pushes.iter().map(|p| p.0).collect::<Vec<_>>()
     );
@@ -120,7 +122,7 @@ pub(super) fn report_m1(label: &str, steps: &[TracedStep]) {
         v.get(v.len() / 2).copied().unwrap_or(f64::NAN)
     };
     println!(
-        "{label} M1: pushes {}, median push run {:.3e} s; free runs {}, median free run {:.3e} s",
+        "{label} signatures: pushes {}, median push run {:.3e} s; free runs {}, median free run {:.3e} s",
         runs[1].len(),
         median(&runs[1]),
         runs[0].len(),
@@ -131,7 +133,7 @@ pub(super) fn report_m1(label: &str, steps: &[TracedStep]) {
     for (k, (dt, rows)) in steps.iter().enumerate().take(last + 1).skip(first) {
         for r in rows.iter().filter(|r| r.multiplier > 0.0) {
             println!(
-                "{label} M1 row: step {k} dt {dt:.3e} key {:?} lambda {:.3e} Gv start {:+.4e} end {:+.4e} sum {:+.3e} 2a/dt {:.3e} 2res/dt {:.3e}",
+                "{label} signatures row: step {k} dt {dt:.3e} key {:?} lambda {:.3e} Gv start {:+.4e} end {:+.4e} sum {:+.3e} 2a/dt {:.3e} 2res/dt {:.3e}",
                 r.key,
                 r.multiplier,
                 r.start,
@@ -144,15 +146,14 @@ pub(super) fn report_m1(label: &str, steps: &[TracedStep]) {
     }
 }
 
-/// M2: the vibration a force history alone gives. Reference A (fixed steps
+/// The vibration a force history alone gives. The fixed-step reference (fixed steps
 /// of `1/60/315` s, infinite tolerance) runs to frame 7's end; its modal
 /// state there (`modal_flight::split`) is then driven, kept step by kept
 /// step through frames 8 and 9, by the contact pushes A applies, each mode
 /// an undamped oscillator under a force constant over the step. With `z =
 /// omega q - i q'` (`vibration::z`), `q'' + omega^2 q = f` reads `z' = i
 /// omega z - i f`, so `z_1 = f / omega + e^(i omega h) (z_0 - f / omega)`
-/// (derived here; the plan wrote the same increment for the opposite sign
-/// convention of `z`). Adaptations, declared: the forces are expressed in
+/// (derived here). Adaptations, declared: the forces are expressed in
 /// the body frame of frame 7's end (no rotation over the two frames), the
 /// modes are linear about the reference (A is corotated), and the outline
 /// points take their mode values as the particles do (`Modes::at`).
@@ -164,8 +165,8 @@ fn probe_force_history_vibration() {
     use super::super::vibration::{RIGID, modes};
     use super::*;
     super::super::cap::capped("probe_force_history_vibration", 4 * 3600, || {
-        // The linearisation's measured size: run D's flown frames' modal
-        // energy change, J/m (the plan's yardstick, recorded alongside).
+        // The linearisation's measured size: the clay drop's flown frames' modal
+        // energy change, J/m (recorded alongside).
         let mut d = drop(
             FRAME_S,
             TotalLagrangianConfig::new(1e-2).with_subframe_handoff(),
@@ -178,7 +179,7 @@ fn probe_force_history_vibration() {
                 flown_change = flown_change.max(f.modal_energy_change.abs());
             }
             println!(
-                "M2 run D frame {n}: modal {} flown {:.3e} s, modal energy change {:+.3e} J/m, contacts {}",
+                "force-driven vibration, the clay drop frame {n}: modal {} flown {:.3e} s, modal energy change {:+.3e} J/m, contacts {}",
                 f.modal, f.flown, f.modal_energy_change, f.contacts
             );
         }
@@ -204,7 +205,7 @@ fn probe_force_history_vibration() {
                 a.step();
                 contact |= a.total_lagrangian_frame().expect("on").contacts > 0;
             }
-            println!("M2 A frame {frame}: contact {contact}");
+            println!("force-driven vibration, frame {frame}: contact {contact}");
         }
         let basis = &modes(a.total_lagrangian.as_ref().expect("on"));
         let (start, start_vibration, start_vy, mass) = measure(&a, basis);
@@ -213,7 +214,9 @@ fn probe_force_history_vibration() {
         let mut impulse = DVec2::ZERO;
         let mut elapsed = 0.0;
         let gravity = a.total_lagrangian_gravity();
-        println!("M2 frame 7 end: vibration {start_vibration:.6e} J/m, vy {start_vy:+.6e} m/s");
+        println!(
+            "force-driven vibration, frame 7 end: vibration {start_vibration:.6e} J/m, vy {start_vy:+.6e} m/s"
+        );
         for frame in 8..10 {
             hooks::watch_contact_rows(true);
             for _ in 0..FINE {
@@ -248,7 +251,7 @@ fn probe_force_history_vibration() {
             let rebound = start_vy + impulse.y / mass + gravity.y * elapsed;
             let off = (predicted / vibration - 1.0).abs();
             println!(
-                "M2 frame {frame} end: kept steps {}, A's vibration {vibration:.6e} J/m, predicted {predicted:.6e} J/m, |pred / A - 1| {off:.4e}; A's vy {vy:+.6e} m/s, from the impulse {rebound:+.6e} m/s; flown frames' largest modal energy change {flown_change:.3e} J/m, {:.4e} of A's vibration",
+                "force-driven vibration, frame {frame} end: kept steps {}, A's vibration {vibration:.6e} J/m, predicted {predicted:.6e} J/m, |pred / A - 1| {off:.4e}; A's vy {vy:+.6e} m/s, from the impulse {rebound:+.6e} m/s; flown frames' largest modal energy change {flown_change:.3e} J/m, {:.4e} of A's vibration",
                 steps.len(),
                 flown_change / vibration.max(f64::MIN_POSITIVE)
             );

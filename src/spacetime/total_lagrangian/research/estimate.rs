@@ -25,7 +25,7 @@
 //!    its order (derived: its plastic increment over half a step).
 //!
 //! Removal criterion for adaptations 1-4: the effectivity measured on the
-//! gates' scenes (`ESTIMATOR_DESIGN.md` sec. 5), or a source for E6 on
+//! gates' scenes, or a source for E6 on
 //! nonlinear solids with contact.
 
 use super::*;

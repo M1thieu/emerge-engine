@@ -196,7 +196,7 @@ fn ngf_lajeunesse_runout_diagnostic() {
     );
 }
 
-/// Resolution-independence check (Phase 3 of the NGF plan): the same
+/// Resolution-independence check: the same
 /// real physical scene, at 2x grid resolution -- a fix must not
 /// be a resolution-specific fluke, same discipline already used for
 /// the earlier angle-of-repose fix (`sand_preshaped_pile_at_30deg_
@@ -225,8 +225,7 @@ fn ngf_lajeunesse_runout_resolution_independence() {
 /// found the pile fully flattened wall-to-wall with near-zero height at
 /// 400 steps -- this checks whether the *Lajeunesse* geometry (which
 /// gives the pile far more lateral room before it can hit a wall) does
-/// the same thing over a longer window, per the plan's own "run far
-/// longer than settling takes" requirement (never actually applied to
+/// the same thing over a longer window, far longer than settling takes (never actually applied to
 /// this real-SI scene until now -- the diagnostic/resolution-
 /// independence tests above only ever ran 200 steps).
 #[test]

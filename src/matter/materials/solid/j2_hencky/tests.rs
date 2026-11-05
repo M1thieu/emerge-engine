@@ -395,7 +395,7 @@ fn norton_run(law: &HenckyJ2, rate: f64, dt: f64, steps: usize, hold: f64) -> Ve
         .collect()
 }
 
-/// Gate T4: at a constant log rate, steady flow is the backward-Euler
+/// At a constant log rate, steady flow is the backward-Euler
 /// fixed point `d = rate_eq dt`, whose stress is `K (rate_eq /
 /// rate_0)^m` exactly for ANY `dt`: to 1e-10 at dt 1e-6, 1e-3 and 1 s
 /// (criterion fixed before measuring).
@@ -425,7 +425,7 @@ fn hypergeometric(m: f64, z: f64) -> f64 {
     sum
 }
 
-/// Gates T2 and T5 (criteria fixed before measuring): the transient from
+/// Criteria fixed before measuring: the transient from
 /// rest to `0.9` of the steady stress against its closed form, `t =
 /// sigma / (3G r) 2F1(1, m; 1 + m; (sigma / sigma_ss)^(1/m))` (`r` the
 /// equivalent rate; derived: `dsigma/dt = 3G r (1 - (sigma /
@@ -481,7 +481,7 @@ fn norton_transient_and_relaxation_follow_their_closed_forms() {
     }
 }
 
-/// Gate T8: `m -> 0`. `K (d / (rate_0 dt))^m = K (1 + m ln(d / (rate_0
+/// `m -> 0`. `K (d / (rate_0 dt))^m = K (1 + m ln(d / (rate_0
 /// dt)) + O(m^2))`, so Norton's root differs from the rate-independent
 /// return with `sigma_eq` yield `K` by `K m |ln(d / (rate_0 dt))| / 3G`
 /// to first order (`r` moves by `K m ln(.)`, `|dr/dd| >= 3G`). The bound
@@ -529,7 +529,7 @@ fn energy_with_stretch(law: &HenckyJ2, c: DMat2, c33: f64, state: &PlasticMetric
     law.shear * dev2 + 0.5 * law.bulk * tr * tr + 0.5 * law.hardening * state.alpha.powi(2)
 }
 
-/// The out-of-plane stretch (FAST_MODE_PLAN.md sec. 49e): the step's energy
+/// The out-of-plane stretch: the step's energy
 /// change is the energy difference with `C_33` moving, and `S_33 = 2
 /// dW/dC_33` (central differences) in a plastically deformed state.
 #[test]
@@ -556,7 +556,7 @@ fn out_of_plane_stretch_keeps_the_energy_and_its_gradient() {
     assert!((numeric - s33).abs() <= 1e-6 * size, "{numeric} vs {s33}");
 }
 
-/// FAST_MODE_PLAN.md sec. 49e.1, F-1: RP-1 in homogeneous uniaxial
+/// RP-1 in homogeneous uniaxial
 /// compression (`sigma_rr = sigma_thetatheta = 0`, the out-of-plane entry
 /// the hoop) at constant true strain rate, against its measured law
 /// `sigma = k eps^m epsdot^n` (Hernandez et al. 2023, Table 3: E 1.70 MPa,
@@ -568,7 +568,7 @@ fn out_of_plane_stretch_keeps_the_energy_and_its_gradient() {
 /// (true strain 0.15 to 0.40) within the `k` uncertainty (6.4 %) of the
 /// law; the elastic slope within 1 % of E.
 #[test]
-fn f1_rp1_uniaxial_compression_follows_its_measured_power_law() {
+fn rp1_uniaxial_compression_follows_its_measured_power_law() {
     let (young, k, m, n): (f64, f64, f64, f64) = (1.70e6, 0.173e6, 0.119, 0.037);
     let eps_0 = (k / young).powf(1.0 / (1.0 - m));
     let steps = 4000;
@@ -632,7 +632,7 @@ fn f1_rp1_uniaxial_compression_follows_its_measured_power_law() {
                 }
             }
             println!(
-                "F-1 nu {nu} rate {rate:e}/s: elastic slope / E {slope:.6}; sigma / law at {}; worst on 0.15-0.40 {worst:.4}; alpha {:.4}",
+                "uniaxial compression, nu {nu} rate {rate:e}/s: elastic slope / E {slope:.6}; sigma / law at {}; worst on 0.15-0.40 {worst:.4}; alpha {:.4}",
                 samples.join(", "),
                 state.alpha
             );
@@ -642,14 +642,14 @@ fn f1_rp1_uniaxial_compression_follows_its_measured_power_law() {
     }
 }
 
-/// FAST_MODE_PLAN.md sec. 49e.2, F-2 (a count, no pass or fail): the same
+/// A count, no pass or fail: the same
 /// RP-1 law in oscillatory simple shear at NIST's LAOS point (Tao et al.
 /// 2019, sec. 3.3: 0.25 Hz, strain amplitude 4400 %, `sigma_max` 48.4 kPa
 /// in shear at 25 C), three cycles; the largest Cauchy shear stress per
 /// cycle and its ratio to 48.4 kPa. The pre-registered prediction was a
 /// ratio within a factor 2; the estimate on the page gave about 3.5.
 #[test]
-fn f2_rp1_oscillatory_shear_against_the_nist_dynamic_yield() {
+fn rp1_oscillatory_shear_against_the_nist_dynamic_yield() {
     let (young, k, m, n): (f64, f64, f64, f64) = (1.70e6, 0.173e6, 0.119, 0.037);
     let eps_0 = (k / young).powf(1.0 / (1.0 - m));
     let (frequency, amplitude, nist) = (0.25, 44.0, 48.4e3);
@@ -691,7 +691,7 @@ fn f2_rp1_oscillatory_shear_against_the_nist_dynamic_yield() {
             peaks.push(peak);
         }
         println!(
-            "F-2 nu {nu}: largest |sigma_xy| per cycle {:.4e} {:.4e} {:.4e} Pa; ratio to NIST 48.4 kPa {:.3} {:.3} {:.3}; alpha {:.2}",
+            "oscillatory shear, nu {nu}: largest |sigma_xy| per cycle {:.4e} {:.4e} {:.4e} Pa; ratio to NIST 48.4 kPa {:.3} {:.3} {:.3}; alpha {:.2}",
             peaks[0],
             peaks[1],
             peaks[2],

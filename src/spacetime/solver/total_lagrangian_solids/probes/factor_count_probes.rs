@@ -1,8 +1,7 @@
-//! The band factor's builds counted, nothing changed (`tmp/papers/
-//! dl_realtime/FACTOR_REUSE_PLAN.md`, criterion 1): run D's impact frame
+//! The band factor's builds counted, nothing changed: the clay drop's impact frame
 //! and the Norton block's first contact, every build with its cause from
-//! the control trace's factor line. The same frame also carries M1's
-//! contact trace (`CHATTER_TRACE_PLANS.md`, `chatter_trace_probes`), one
+//! the control trace's factor line. The same frame also carries the pushes'
+//! contact trace, one
 //! run for both. A probe: measurement, nothing held.
 
 use super::impact_local::{FRAME_S, drop};
@@ -68,7 +67,7 @@ fn count(label: &str, mut sim: Simulation, before: usize) {
     hooks::watch_factors(false);
     let traced = hooks::take_contact_rows();
     hooks::watch_contact_rows(false);
-    chatter_trace_probes::report_m1(label, &traced);
+    chatter_trace_probes::report_signatures(label, &traced);
     let f = sim.total_lagrangian_frame().expect("on");
     println!(
         "{label} frame {before}: factor builds recorded {}, Timing::factorizations {}; steps {} rejected {} newton {} gmres {} wall {:.3} s",
@@ -87,7 +86,7 @@ fn count(label: &str, mut sim: Simulation, before: usize) {
 fn probe_factor_builds_counted() {
     super::cap::capped("probe_factor_builds_counted", 3600, || {
         count(
-            "run D",
+            "the clay drop",
             drop(
                 FRAME_S,
                 TotalLagrangianConfig::new(1e-2).with_subframe_handoff(),
@@ -98,8 +97,7 @@ fn probe_factor_builds_counted() {
     });
 }
 
-/// The Norton block (`tmp/papers/dl_realtime/S1_FIXED_CONTACT_STEP_PLAN.md`
-/// sec. 10), information: the reference N_A (fixed steps of at most `h /
+/// The Norton block, information: the reference N_A (fixed steps of at most `h /
 /// (4 c)`, `c` the record's P wave, infinite tolerance, no handoff) and the
 /// baseline N_B (handoff, tol 1e-2), selected by
 /// `EMERGE_PROBE_NORTON_RUN` = `A` or `B`; per 1/60 s frame the
@@ -125,7 +123,7 @@ fn probe_s1_norton() {
                 TotalLagrangianConfig::new(f64::INFINITY),
             )
         } else {
-            // `F` (ROW15_FORECAST_PLAN.md): the baseline with the contacts
+            // `F`: the baseline with the contacts
             // held from the step their free-flight gap closes.
             let mut path = TotalLagrangianConfig::new(1e-2).with_subframe_handoff();
             path.settings.forecast_activation = run == "F";
@@ -155,7 +153,7 @@ fn probe_s1_norton() {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(12);
-        // MODE_FREE_HANDOFF_PLAN.md M1: each frame end's mode-free lower gap
+        // Each frame end's mode-free lower gap
         // bounds over the next frame, checked against the gaps measured at
         // that frame's end.
         let mut m1_previous: Option<(Vec<f64>, Vec<f64>)> = None;
@@ -214,7 +212,7 @@ fn probe_s1_norton() {
                         .zip(bounds)
                         .map(|(g, b)| g - b)
                         .fold(f64::INFINITY, f64::min);
-                    // M1' (sec. 10): the same check with the solve's term.
+                    // The same check with the solve's term.
                     let least_with = measured
                         .iter()
                         .zip(bounds)
@@ -223,12 +221,12 @@ fn probe_s1_norton() {
                         .fold(f64::INFINITY, f64::min);
                     let term = terms.iter().copied().fold(0.0, f64::max);
                     println!(
-                        "M1' check frame {frame}: least (measured gap - (bound - D_p)) {least_with:+.4e} m, largest D_p {term:.4e} m, measured deficit over D_p {:.3e}{}",
+                        "gap check with the solve's term, frame {frame}: least (measured gap - (bound - D_p)) {least_with:+.4e} m, largest D_p {term:.4e} m, measured deficit over D_p {:.3e}{}",
                         (-least).max(0.0) / term,
                         if least_with < 0.0 { " VIOLATED" } else { "" }
                     );
                     println!(
-                        "M1 check frame {frame}: least (measured gap - last frame end's bound) {least:+.4e} m, least measured gap {:+.4e} m{}",
+                        "gap check, frame {frame}: least (measured gap - last frame end's bound) {least:+.4e} m, least measured gap {:+.4e} m{}",
                         measured.iter().copied().fold(f64::INFINITY, f64::min),
                         if least < 0.0 { " VIOLATED" } else { "" }
                     );
@@ -236,7 +234,7 @@ fn probe_s1_norton() {
                 let body = free(state);
                 let t = state.time;
                 // The path's own frame length (`config.dt`, f32), not `FRAME_S`: the
-                // first M1 run used `FRAME_S` and measured the 8.7e-10 s between them.
+                // first run used `FRAME_S` and measured the 8.7e-10 s between them.
                 let next = (t, t + f64::from(sim.config.dt));
                 let bounds = lower_gaps(state, &body, (&planes, gravity), next);
                 let until = clear_until(state, &body, (&planes, gravity), next);
@@ -251,11 +249,11 @@ fn probe_s1_norton() {
                     solve_term(state, gravity, (next.1 - next.0, tolerance));
                 let with: Vec<f64> = bounds.iter().zip(&terms).map(|(b, d)| b - d).collect();
                 println!(
-                    "M1' frame {frame}: R_a {allowed:.4e}, lambda_min(M) {lambda_min:.4e}, least bound with D_p {:+.4e} m",
+                    "gap bound with the solve's term, frame {frame}: R_a {allowed:.4e}, lambda_min(M) {lambda_min:.4e}, least bound with D_p {:+.4e} m",
                     with.iter().copied().fold(f64::INFINITY, f64::min)
                 );
                 println!(
-                    "M1 frame {frame} end t {t:.6}: least lower gap bound over the next frame {:+.4e} m, clear until {until:.6}",
+                    "gap bound, frame {frame} end t {t:.6}: least lower gap bound over the next frame {:+.4e} m, clear until {until:.6}",
                     bounds.iter().copied().fold(f64::INFINITY, f64::min)
                 );
                 m1_previous = Some((bounds, terms));
@@ -271,7 +269,7 @@ fn probe_s1_norton() {
     });
 }
 
-/// T1 (`tmp/papers/dl_realtime/T1_MASSLESS_BOUNDARY_PLAN.md`): the inert set
+/// The inert set
 /// of DEP eq. 97 carried to the block's four sides, computed on a throwaway
 /// grid of the same scene before the run: per wall axis, the normal
 /// component's coefficients whose support meets the body only within one
@@ -280,9 +278,9 @@ fn probe_s1_norton() {
 /// sides are its outline's reference extents, the knot span the cell-wide
 /// layer inside them). Returns the faces `(lattice, i, j)` for
 /// `hooks::set_massless` and prints the removed lumped mass per component
-/// against the plan's derivation (sec. 6.1: `dx / (3 H)` = 8.3 % of the y
+/// against its derivation (`dx / (3 H)` = 8.3 % of the y
 /// mass, `dx / (3 W)` = 4.2 % of the x mass for E2's block).
-fn t1_inert_faces(state: &TotalLagrangianState) -> Vec<(usize, usize, usize)> {
+fn inert_boundary_faces(state: &TotalLagrangianState) -> Vec<(usize, usize, usize)> {
     let grid = &state.cache.as_ref().expect("built by the first frame").grid;
     let cell = grid.cell;
     let (lo, hi) = state.outlines[0].iter().fold(
@@ -332,7 +330,7 @@ fn t1_inert_faces(state: &TotalLagrangianState) -> Vec<(usize, usize, usize)> {
             }
         }
         println!(
-            "T1 inert set, {name} component: {} coefficients, removed lumped mass {:.4} of the component's (derived in the continuum: {derived:.4})",
+            "inert set, {name} component: {} coefficients, removed lumped mass {:.4} of the component's (derived in the continuum: {derived:.4})",
             (0..grid.len)
                 .filter(|&k| inert[k] && grid.axis_of[k] == a)
                 .count(),
@@ -342,27 +340,27 @@ fn t1_inert_faces(state: &TotalLagrangianState) -> Vec<(usize, usize, usize)> {
     faces
 }
 
-/// T1 on run D (`T1_MASSLESS_BOUNDARY_PLAN.md` sec. 5-6): `EMERGE_PROBE_T1_RUN`
-/// = `base` (no inert set: today's counts in the same probe), `T1` (the
-/// inert set, run D's path) or `Aprime` (the inert set at reference A's
+/// The inert set on the clay drop: `EMERGE_PROBE_INERT_RUN`
+/// = `base` (no inert set: today's counts in the same probe), `inert` (the
+/// inert set, the clay drop's path) or `fixed` (the inert set at the fixed-step reference's
 /// fixed steps). Per frame the steps, rejected tries, contact, wall, vy,
 /// vibration (in the standard-mass modes: the massless mass is singular)
-/// and the ledger's worst over its bound; on frame 8 (run D's paths) M1's
+/// and the ledger's worst over its bound; on frame 8 (the clay drop's paths) the pushes'
 /// chatter counts, pushes and free runs with their durations. A probe.
 #[test]
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
-fn probe_t1_massless() {
+fn probe_inert_boundary_faces() {
     use super::impact_local::{FINE, sample};
     use super::vibration::modes;
-    super::cap::capped("probe_t1_massless", 4 * 3600, || {
-        let run = std::env::var("EMERGE_PROBE_T1_RUN").unwrap_or_else(|_| "T1".into());
+    super::cap::capped("probe_inert_boundary_faces", 4 * 3600, || {
+        let run = std::env::var("EMERGE_PROBE_INERT_RUN").unwrap_or_else(|_| "inert".into());
         let handoff = TotalLagrangianConfig::new(1e-2).with_subframe_handoff();
         let mut throwaway = drop(FRAME_S, handoff);
         throwaway.step();
         let basis = modes(throwaway.total_lagrangian.as_ref().expect("on"));
-        let faces = t1_inert_faces(throwaway.total_lagrangian.as_ref().expect("on"));
+        let faces = inert_boundary_faces(throwaway.total_lagrangian.as_ref().expect("on"));
         hooks::set_massless((run != "base").then(|| faces.clone()));
-        let (mut sim, per) = if run == "Aprime" {
+        let (mut sim, per) = if run == "fixed" {
             (
                 drop(
                     FRAME_S / FINE as f64,
@@ -400,11 +398,11 @@ fn probe_t1_massless() {
             if trace {
                 let traced = hooks::take_contact_rows();
                 hooks::watch_contact_rows(false);
-                chatter_trace_probes::report_m1(&format!("T1 {run}"), &traced);
+                chatter_trace_probes::report_signatures(&format!("inert set {run}"), &traced);
             }
             let (height, vy, vibration, energy) = sample(&sim, &basis);
             println!(
-                "T1 {run} frame {frame}: steps {steps} rejected {rejected} contact {contact} wall {:.3} s; height {height:.6e} m, vy {vy:+.7e} m/s, vibration {vibration:.5e} J/m, energy {energy:+.6e} J/m; ledger worst so far {worst:.3} of its bound",
+                "inert set {run} frame {frame}: steps {steps} rejected {rejected} contact {contact} wall {:.3} s; height {height:.6e} m, vy {vy:+.7e} m/s, vibration {vibration:.5e} J/m, energy {energy:+.6e} J/m; ledger worst so far {worst:.3} of its bound",
                 clock.elapsed().as_secs_f64()
             );
         }

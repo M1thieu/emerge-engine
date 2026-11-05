@@ -21,7 +21,7 @@
 //   2. `curvature_iterate_main`: one thread per surface cell, the standard
 //      closed-form mean curvature of an implicit function,
 //      κ = (Dxx·Dy² − 2·Dx·Dy·Dxy + Dyy·Dx²) / (Dx²+Dy²)^1.5, stepped via
-//      `D_new = D + dt·κ` (render_plan's own cited equation,
+//      `D_new = D + dt·κ` (the cited equation,
 //      `∂D/∂t = ∇·(∇D/|∇D|)` -- that divergence IS the closed-form κ above,
 //      no extra |∇D| factor). `MAX_KAPPA` clamps this equation's known
 //      numerical failure mode in near-flat regions (gradient → 0 makes κ's
@@ -89,7 +89,7 @@
 // to a bounded range before use, the same fix production systems use
 // (clamp F's singular values). This is a different, MPM-specific
 // technique from Yu & Turk 2013's neighbor-PCA anisotropic kernels (the
-// classic SPH approach, cited in render_plan's doc) -- that needs a
+// classic SPH approach) -- that needs a
 // neighbor search this splat pass doesn't have; this reuses state MPM
 // particles already carry for free instead.
 

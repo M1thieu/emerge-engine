@@ -50,8 +50,7 @@ fn ensure(
         return None;
     }
     state.exponential = Exponential::start(state, modes, t0, (knob.truncated, knob.law));
-    // With the law's energy, the start's projection remainder (sec. 26,
-    // part (d)): the step's energy of the state rebuilt from the flight's
+    // With the law's energy, the start's projection remainder: the step's energy of the state rebuilt from the flight's
     // own coordinates at its start, against the stepped state's.
     if let Some(mut flight) = state.exponential.take() {
         if flight.inv.law.is_some()
@@ -112,9 +111,9 @@ fn advance(
         .then(|| law::step_energy(state, gravity));
     flight.rebuild(&modes, gravity, state);
     state.modes = Some(Some(modes));
-    // With the law's energy (sec. 26, E-1): the step's energy change over
+    // With the law's energy: the step's energy change over
     // the attempt and the round-off bound of its two evaluations.
-    // FAST_MODE_PLAN.md sec. 29 (L-2): the lemma's inequalities on the
+    // The lemma's inequalities on the
     // rebuilt state, measured only.
     law::lemma::check_state(&flight, state);
     if let Some((e0, b0)) = before {
@@ -202,7 +201,7 @@ impl Simulation {
         if !knob.on {
             return None;
         }
-        // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: on the former real-time baseline (fixed contact step, now removed) this flight removes the angular-check refusals and the long-run chatter of the hopping clay, but each hand-back keeps the linear basis's residual (the law's energy of the rebuilt state against the modes' quadratic energy, -7.5e-2 to +6.7e-2 J/m per segment), a net gain of 0.17 J/m over 420 frames: higher hops, fewer contacts (long run kept 0.46) | source: FAST_MODE_PLAN.md sec. 25a | replace when: the flight's energy is the law's own, so a hand-back keeps the step's energy | state: measured, not adopted | gap: none
+        // KNOWN-LIMIT[DISCRETIZATION/TECH-LIMIT]: on the former real-time baseline (fixed contact step, now removed) this flight removes the angular-check refusals and the long-run chatter of the hopping clay, but each hand-back keeps the linear basis's residual (the law's energy of the rebuilt state against the modes' quadratic energy, -7.5e-2 to +6.7e-2 J/m per segment), a net gain of 0.17 J/m over 420 frames: higher hops, fewer contacts (long run kept 0.46) | source: measured on this path | replace when: the flight's energy is the law's own, so a hand-back keeps the step's energy | state: measured, not adopted | gap: none
         if !ensure(state, (t0, gravity), knob)? {
             let held = state.cache.as_ref().is_some_and(|c| !c.contacts.is_empty());
             if held {

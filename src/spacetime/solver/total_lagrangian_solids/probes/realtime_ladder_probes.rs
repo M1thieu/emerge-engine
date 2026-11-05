@@ -1,8 +1,6 @@
-//! The real-time lever ladder's harness (tmp/papers/dl_realtime/
-//! RT_LEVER_MEASUREMENT_PLAN.md, measurement worktree only, never committed
-//! to dev): tests/replay_ledger.rs's clay block and replay writer, copied
-//! unchanged except for the rung (`EMERGE_RT_CONFIG`: A0 stepped, A1 modal
-//! flight, A2 sub-frame handoff) and the header's build label
+//! The real-time ladder's harness: tests/replay_ledger.rs's clay block and replay writer, copied
+//! unchanged except for the rung (`EMERGE_RT_CONFIG`: `stepped`, `modal` flight,
+//! `handoff` sub-frame) and the header's build label
 //! (`EMERGE_REPLAY_BUILD`). In-crate because its knobs exist only in the
 //! library's test build.
 
@@ -23,7 +21,7 @@ fn block(
     made: &dyn Fn(&SimConfig) -> Box<dyn MaterialModel>,
     props: &Elastic,
 ) -> Simulation {
-    // RT_RESOLUTION_SWEEP_PLAN.md: n cells through the block's 4 cm, h = 4/n
+    // N cells through the block's 4 cm, h = 4/n
     // cm, the physical scene unchanged; n = 4 is today's block bit for bit.
     let n = cells_across();
     let cell_m = match n {
@@ -36,7 +34,7 @@ fn block(
     let lift = lift * n as f32 / 4.0;
     let mut config = SimConfig::earth(10 * n as usize, cell_m, 1.0 / 60.0);
     let path = TotalLagrangianConfig::new(tolerance);
-    // FAST_MODE_PLAN.md sec. 31 (C-2): the engine's modal rest asked for on
+    // The engine's modal rest asked for on
     // the rung (`EMERGE_RT_MODAL_REST`), nothing else changed.
     let mut path = if std::env::var_os("EMERGE_RT_MODAL_REST").is_some() {
         println!("knob active: modal rest");
@@ -44,17 +42,17 @@ fn block(
     } else {
         path
     };
-    // FAST_MODE_PLAN.md sec. 47: Acary's forecast activation (RR-7151, eqs.
+    // Acary's forecast activation (RR-7151, eqs.
     // 16e and 18, gamma 1) asked for (`EMERGE_RT_FORECAST`).
     if std::env::var_os("EMERGE_RT_FORECAST").is_some() {
         println!("knob active: forecast activation (gamma 1)");
         path.settings.forecast_activation = true;
     }
     config.total_lagrangian = Some(match rung {
-        "A0" => path,
-        "A1" => path.with_modal_flight(),
-        "A2" => path.with_subframe_handoff(),
-        other => panic!("EMERGE_RT_CONFIG {other}: A0, A1 or A2"),
+        "stepped" => path,
+        "modal" => path.with_modal_flight(),
+        "handoff" => path.with_subframe_handoff(),
+        other => panic!("EMERGE_RT_CONFIG {other}: stepped, modal or handoff"),
     });
     let mut sim = Simulation::empty(config);
     let id = sim.register_material(made(&config)).0;
@@ -174,7 +172,7 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
         walls.push(1e3 * f.wall);
         out.push(frame_json(&sim, frame_s * k as f64, allowed));
         breakdown.push(breakdown_json(&f));
-        // FAST_MODE_PLAN.md sec. 50.4: the controller's tries by class and
+        // The controller's tries by class and
         // outcome, per frame (`EMERGE_PROBE_TRIES`).
         if tries_knob() {
             let t = crate::spacetime::total_lagrangian::hooks::take_tries();
@@ -225,13 +223,12 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
     if rest {
         rest_report();
     }
-    // FAST_MODE_PLAN.md sec. 25 (T-7): the turning flight's own accounting.
+    // The turning flight's own accounting.
     if super::exponential_flight::knob().on {
         let state = sim.total_lagrangian.as_ref().expect("the path is on");
         super::exponential_flight_probes::summary(name, &state.exponential_log);
     }
-    // The fast-mode plan's cost breakdown (RT_LEVER_MEASUREMENT_PLAN.md's
-    // harness; test-only): a sidecar file, so the replay itself is unchanged.
+    // The cost breakdown: a sidecar file, so the replay itself is unchanged.
     if let Some(dir) = std::env::var_os("EMERGE_REPLAY_DIR") {
         let path = std::path::Path::new(&dir).join(format!("{name}_breakdown.json"));
         std::fs::write(
@@ -293,9 +290,7 @@ fn tries_knob() -> bool {
         let on = std::env::var_os("EMERGE_PROBE_TRIES").is_some();
         if on {
             crate::spacetime::total_lagrangian::hooks::take_tries();
-            println!(
-                "knob active: the controller's tries by class and outcome per frame (sec. 50.4)"
-            );
+            println!("knob active: the controller's tries by class and outcome per frame");
         }
         on
     })
@@ -363,24 +358,24 @@ fn cells_across() -> i32 {
 
 #[test]
 #[ignore = "real-time ladder harness: run with --ignored --nocapture and EMERGE_REPLAY_DIR, EMERGE_RT_CONFIG set"]
-fn rt_ladder() {
+fn realtime_ladder() {
     ladder();
 }
 
-/// FAST_MODE_PLAN.md sec. 34: the same block resting from `F = I` (no
+/// The same block resting from `F = I` (no
 /// lift), the ladder's rungs, cells, materials and tolerance; per frame
 /// the centroid's sag and the volume-mean `sigma_yy` against the exact
 /// static answer (`rest_sample`), and over frames 31-60 their means and
 /// spreads.
 #[test]
 #[ignore = "rest harness: run with --ignored --nocapture and EMERGE_REPLAY_DIR, EMERGE_RT_CONFIG set"]
-fn rt_rest() {
+fn realtime_rest() {
     REST.with(|r| r.set(true));
     ladder();
 }
 
 thread_local! {
-    /// The rest scene (`rt_rest`) and its samples `(sag, sigma_yy)` over the
+    /// The rest scene (`realtime_rest`) and its samples `(sag, sigma_yy)` over the
     /// exact ones, frame by frame.
     static REST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static SAMPLES: std::cell::RefCell<Vec<(f64, f64)>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -392,10 +387,10 @@ fn lift() -> f32 {
     if REST.with(|r| r.get()) { 0.0 } else { 10.0 }
 }
 
-/// FAST_MODE_PLAN.md sec. 34: after frame `k`, the centroid's sag (from its
+/// After frame `k`, the centroid's sag (from its
 /// start in the rest scene, from the floor plus half the thickness
 /// otherwise) and the volume-mean Cauchy `sigma_yy` (`F S F^T / J`, `S` the
-/// solid's own `second_pk`), each over the exact static answer (C4's,
+/// solid's own `second_pk`), each over the exact static answer (the rest check's,
 /// derived there): `s = rho g H^2 / (3 E'')`, `E'' = 4 mu (lambda + mu) /
 /// (lambda + 2 mu)`, mean `sigma_yy = -rho g H / 2`, from the run's own
 /// moduli, density, gravity and thickness.
@@ -421,7 +416,7 @@ fn rest_sample(sim: &Simulation, k: usize) {
         .filter(|plane| plane.axis == 1 && plane.inward > 0.0)
         .map(|plane| plane.at)
         .fold(f64::NEG_INFINITY, f64::max);
-    // The rest scene's sag is from the start's own centroid (C4's measure):
+    // The rest scene's sag is from the start's own centroid:
     // the reference configuration is the start.
     let reference = if REST.with(|r| r.get()) {
         (0..n)
@@ -485,7 +480,7 @@ fn ladder() {
         nu: 0.3,
         rho_kg_m3: 1700.0,
     };
-    // FAST_MODE_PLAN.md sec. 30: the rung's step tolerance (`EMERGE_RT_TOLERANCE`,
+    // The rung's step tolerance (`EMERGE_RT_TOLERANCE`,
     // default 1e-1, the ladder's own) for the damped reference.
     let tolerance = std::env::var("EMERGE_RT_TOLERANCE")
         .ok()
@@ -500,11 +495,11 @@ fn ladder() {
         honoured: "kept local error about 2.31 times the tolerance (median; 95th 3.26, largest 4.72): probe_estimator_effectivity, 2026-10-20",
     };
     let name = match rung.as_str() {
-        "A0" => "clay_drop_e2",
-        "A1" => "clay_drop_e2_modal",
+        "stepped" => "clay_drop_e2",
+        "modal" => "clay_drop_e2_modal",
         _ => "clay_drop_e2_handoff",
     };
-    // FAST_MODE_PLAN.md sec. 22: the long run (`EMERGE_RT_FRAMES`, default
+    // The long run (`EMERGE_RT_FRAMES`, default
     // 40) and the dissipative clay (`EMERGE_RT_MATERIAL=norton`: the
     // plasticine record of tests/norton.rs at E 30 MPa, its stand-in
     // density) in the same cell.
@@ -542,7 +537,7 @@ fn ladder() {
         );
         return;
     }
-    // FAST_MODE_PLAN.md sec. 30: Crandall et al.'s Plasticine, the record whole
+    // Crandall et al.'s Plasticine, the record whole
     // (`ViscoelasticRecord::plasticine_crandall_1970_fresh`: its relaxed
     // moduli, Poisson's ratio, density and relaxation spectrum), the same
     // drop.
@@ -591,8 +586,8 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// FAST_MODE_PLAN.md sec. 33 (a, b): each free elastic mode's kinetic
-/// energy in the body frame after frame `k` (`q_i' = sum_p m_p v_p .
+/// Each free elastic mode's kinetic
+/// energy in the body frame after frame `k` (`q_i' = sum_p m_p v_p.
 /// phi_i(X_p)`, the rigid translation and the spin `L / I` removed as
 /// `Flight::start` does, `q_i'^2 / 2`, J/m), and once, each mode's
 /// frequency with the loss factor the solid's relaxation spectrum gives

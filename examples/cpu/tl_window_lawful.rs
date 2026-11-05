@@ -1,14 +1,13 @@
 //! The precise path (`SimConfig::total_lagrangian`) live in a window, in the
 //! one configuration that passes every contact-law test at two cells through
-//! the block (FAST_MODE_PLAN.md secs. 52.4, 53): Acary's forecast activation
+//! the block: Acary's forecast activation
 //! with the error controller throughout, tolerance 1e-2, the sub-frame
 //! handoff with modal flight. An 8 x 4 cm block of Harbutt's Plasticine
 //! (Crandall et al. 1970, fresh: relaxed E 20.2 MPa, nu 0.434, 1906 kg/m3,
 //! three measured Zener mechanisms) dropped 10 cm on the floor, one
 //! `Simulation::step` per 1/60 s frame.
 //!
-//! Measured on this configuration (`rt_conv/runs/forecast_ctrl_1e-2`, 420
-//! frames): the first touch is resolved (its deepest contact point 0.06 mm
+//! Measured on this configuration (420 frames): the first touch is resolved (its deepest contact point 0.06 mm
 //! below the floor), the block rests on the floor (within 0.001 mm), the
 //! energy ledger closes (1.1e-8 J/m), the rebound converges in the tolerance.
 //! Its declared limits: the rebound is the two-cell mesh's (0.058, against
@@ -59,7 +58,7 @@ const ACROSS: i32 = 2;
 const THICKNESS_M: f32 = 0.04;
 const DROP_M: f32 = 0.10;
 const FRAME_S: f32 = 1.0 / 60.0;
-/// The step tolerance (sec. 52.4: converged between 1e-2 and 1e-3).
+/// The step tolerance (measured: converged between 1e-2 and 1e-3).
 const TOLERANCE: f64 = 1e-2;
 /// The renderer's grey palette entry: the only neutral one.
 const NEUTRAL_ID: u32 = 14;

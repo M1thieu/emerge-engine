@@ -1103,7 +1103,7 @@ pub(crate) fn solve(
         match lin {
             Some(lin) => {
                 let product = internal_product(lin, d);
-                // F4-C1: the exact product against central differences of
+                // The exact product against central differences of
                 // the force on the same iterate.
                 #[cfg(all(test, feature = "experimental"))]
                 if hooks::tangent_check() {

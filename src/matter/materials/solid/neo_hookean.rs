@@ -2,8 +2,7 @@
 //! strain: what the precise path's rubber-like solid is, its stored energy,
 //! its stresses and their derivatives, in `f64`.
 //!
-//! Sources (read through the reading agent's report,
-//! `NEOHOOKEAN_SOURCES_REPORT`, each with its page and equation there): the
+//! Sources (read from a summary, each with its page and equation there): the
 //! energy `W = mu/2 (I1 - 3) - mu ln J + lambda/2 (ln J)^2` (Ghiba, Martin,
 //! Apetrii and Neff 2025, arXiv 2509.00126, sec. 2.13, the "original
 //! Simo-Pister energy"; Azevedo et al. 2020, arXiv 2009.06408, eq. B.1;
@@ -95,7 +94,7 @@ pub(crate) fn neo_hookean_energy_increment(c0: DMat2, c1: DMat2, lambda: f64, mu
 }
 
 /// The second Piola-Kirchhoff stress with an out-of-plane stretch, the
-/// axisymmetric hoop entry `C_33` (FAST_MODE_PLAN.md sec. 49d): the same
+/// axisymmetric hoop entry `C_33`: the same
 /// `S = mu (I - C^-1) + lambda ln J C^-1` (Azevedo eq. B.2) on a
 /// block-diagonal `C`, the in-plane block and `C_33`, with `ln J = 1/2
 /// ln(det C_2 C_33)`. Returns the in-plane block and `S_33`; `C_33 = 1` is
@@ -298,8 +297,7 @@ mod tests {
     /// The first comparison with a real experiment: Treloar's planar tension
     /// (pure shear) of vulcanised rubber, nominal stress `P` against stretch,
     /// as tabulated by Ricker and Wriggers 2023 (supplementary file 11, CC BY;
-    /// MPa, the original stretches), read through the reading agent's report
-    /// (`TRELOAR_DATA_REPORT`). Planar tension holds the width (the
+    /// MPa, the original stretches), read from a summary. Planar tension holds the width (the
     /// out-of-plane axis, `F_33 = 1`), stretches by `a` and leaves the
     /// thickness free: `F = diag(a, b)` with `P_22 = 0`, i.e. `mu (b^2 - 1) +
     /// lambda ln(ab) = 0` (derived from `S`), solved by Newton for `b`; then

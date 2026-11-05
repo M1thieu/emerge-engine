@@ -11,7 +11,7 @@
 //! Dirichlet boundaries top/bottom (fixed potential each -- e.g. cloud=0,
 //! ground=1), Neumann (zero-gradient, copy-nearest) on the left/right sides
 //! -- an open lateral domain, as in the reference implementation checked
-//! against (github.com/diluuuu10/triggered-discharge, cloned in `tmp/`,
+//! against (github.com/diluuuu10/triggered-discharge,
 //! Jacobi relaxation of the potential).
 
 use glam::Vec2;

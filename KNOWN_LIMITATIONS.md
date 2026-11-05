@@ -12,7 +12,7 @@ either." Every entry must cite sources that themselves say, or show through
 a multi-year line of publications, that the specific question is still open.
 
 **The gap registry** (at the end) tracks work the engine knows it has not
-done yet: deferred on purpose, left out of the current plan, not audited, or
+done yet: deferred on purpose, left out for now, not audited, or
 found in passing and not fixed. Those gaps are ours to fix, not the field's
 to solve. They are listed here, each with its source, so that none of them
 silently disappears and each can be picked up later with better research.
@@ -248,7 +248,7 @@ its own to explain or calm that particular runaway.
 
 ## Gap registry
 
-### Deferred by the core implementation plan
+### Deferred on purpose
 
 - **Pressure projection** (`Grid::project_fluid_incompressibility`, off by
   default). Four mechanisms were measured. The divergence it corrects is
@@ -334,7 +334,7 @@ its own to explain or calm that particular runaway.
   to 20 from 128 to 1024 cells a side, against 45 to 322), and every
   step order independent, so it can run in parallel.
 
-  **Step A1, the compressible projection (Stomakhin et al. 2014, eqs. 14
+  **The compressible projection (Stomakhin et al. 2014, eqs. 14
   to 18), passes its gates** after one amendment the user approved. Run 1
   found a real bug, fixed: the compressible term was also given to the
   cells inside the walls, which let the liquid flow into them (34
@@ -903,7 +903,7 @@ granular fluidity's pressure factor is inverted) and #52 (heat diffusion
 loses sub-kelvin increments in f32), and leaves one question: the Cosserat
 field's stability bound does not reduce to seconds in the units it states.
 
-### Found during the core audit, outside the current plan
+### Found during the core audit
 
 - Positions and velocities are in cells while physical inputs use
   `dx_meters`, and `grid_cell_size` is always 1.0; several docs warn about
@@ -937,7 +937,7 @@ field's stability bound does not reduce to seconds in the units it states.
   resets the preconsolidation pressure, so mean alpha ends positive at every
   depth (shallow 0.132, deep 0.259). The ordering the test expects held only
   while the cap return over-hardened compaction. It should be rechecked once
-  bodies spawn in equilibrium (the spawn contract in the core plan).
+  bodies spawn in equilibrium (the spawn contract).
 - The Cam-Clay soil model carries four disclosed approximations, all in
   `src/matter/materials/solid/nacc.rs`:
   - Its elastic response uses a constant bulk modulus. Real Cam-Clay

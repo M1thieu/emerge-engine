@@ -26,7 +26,7 @@ pub struct RodMaterial {
     pub axial_damping: f32,
     /// Rayleigh bending dissipation coefficient, N·m·s. Standard
     /// generalized-force construction (Rayleigh 1873) -- disclosed as this
-    /// plan's own composition of two separately-citable classical-mechanics
+    /// engine's own composition of two separately-citable classical-mechanics
     /// results (Kelvin-Voigt + Rayleigh dissipation); Bergou et al. 2008
     /// itself does not define damping at all.
     pub bending_damping: f32,

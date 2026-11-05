@@ -78,8 +78,7 @@ pub fn tolerance_energy<'a>(
             0.0
         }
     });
-    // `EMERGE_PROBE_TOL_ENERGY_PER_BODY` (MULTI_BODY_PLAN.md, the dilution
-    // test, measure-only): the smallest body's work instead of their sum, so
+    // `EMERGE_PROBE_TOL_ENERGY_PER_BODY`: the smallest body's work instead of their sum, so
     // a scene of identical bodies started at rest gets one body's scale.
     #[cfg(all(test, feature = "experimental"))]
     if std::env::var_os("EMERGE_PROBE_TOL_ENERGY_PER_BODY").is_some() {
@@ -211,7 +210,7 @@ fn keep_factors(start: &mut State, tries: [&State; 2]) {
     }
 }
 
-/// The floor-collapse candidates' knobs (`FLOOR_COLLAPSE_PLAN.md`), test
+/// The floor-collapse candidates' knobs, test
 /// builds only: the pieces the pair compares the whole step with
 /// (`EMERGE_PROBE_PAIR_PIECES`, 2 by default) and whether differing contact
 /// counts between the whole step and its pieces class a pair as switching
@@ -260,7 +259,7 @@ fn tries_in_sequence() -> bool {
         || super::solve::push_check()
 }
 
-/// The real-time ladder's "no C" (RT_LEVER_MEASUREMENT_PLAN.md):
+/// The real-time ladder's "no C":
 /// `EMERGE_PROBE_TRIES_IN_SEQUENCE` set runs a step's tries one after the
 /// other at any thread count. Test builds only.
 #[cfg(all(test, feature = "experimental"))]
@@ -336,13 +335,12 @@ pub fn controlled_step(
     // different parities of the held points' velocity alternation (route C
     // holds the mean, `u'(n+1) = -u'(n)` at an active point), and that
     // difference is counted as error: it is the held contact's own error
-    // (measured: a norm that leaves it out also hides the impact's error,
-    // FAST_MODE_PLAN.md sec. 72.6).
+    // (measured: a norm that leaves it out also hides the impact's error).
     let rate = |d: &State, p: usize| d.v[p];
     // With per-body scales (`hooks::body_scales`, test builds only, several
     // bodies): the norm the target is compared with becomes `sqrt(E0) max_b
     // err_b / sqrt(E0_b)`, so `norm <= tol sqrt(E0)` holds iff every body's
-    // `err_b <= tol sqrt(E0_b)` (PER_BODY_TOLERANCE_PLAN.md sec. 2); a lone
+    // `err_b <= tol sqrt(E0_b)`; a lone
     // body takes the unchanged sum.
     #[cfg(all(test, feature = "experimental"))]
     let per_body = hooks::body_scales().filter(|b| b.1.len() > 1);
@@ -754,8 +752,7 @@ pub fn controlled_step(
                         weight += m;
                     }
                     let w = weight.max(f64::MIN_POSITIVE);
-                    // The parity check (NORM_AT_IMPULSE_PLAN.md, criterion
-                    // 5): an enduring contact (held in every piece of both
+                    // The parity check: an enduring contact (held in every piece of both
                     // tries), the near-wall mean normal END velocities of
                     // the whole try and the pieces of opposite signs, and
                     // the share of the end-velocity kinetic difference the
@@ -972,8 +969,7 @@ pub fn controlled_step(
         };
         let next = (ratio.min(control.growth) * dt).clamp(floor, control.largest);
         let at_floor = error > target && dt <= floor;
-        // `EMERGE_PROBE_CONTROL_SWITCH`, a measurement: the parity check
-        // (NORM_AT_IMPULSE_PLAN.md, criterion 5) in this branch: an
+        // `EMERGE_PROBE_CONTROL_SWITCH`, a measurement: the parity check in this branch: an
         // enduring contact (held in every piece of every try), the near-wall
         // quarter's mean normal END velocities of the whole try and the
         // kept pieces of opposite signs, and the share of the kept pieces'

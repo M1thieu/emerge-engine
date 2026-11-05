@@ -103,7 +103,7 @@ fn run(mut sim: Simulation, frames: usize) -> Dropped {
     out
 }
 
-/// Gate T7 (criteria fixed before measuring): the record's block dropped,
+/// Criteria fixed before measuring: the record's block dropped,
 /// the energy balance within the solves' bound every frame, the heat the
 /// plastic work alone (no friction, no dashpot), and both made. Reported:
 /// the rebound, the return's iterations and the particle-steps beyond the

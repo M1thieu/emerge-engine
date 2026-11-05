@@ -34,7 +34,7 @@
 //! weights' dependence on position (`axis_weights_derivative`, matches
 //! finite difference), but this module's backward pass evaluates each step's
 //! weights at the recorded forward position and does not backprop through
-//! them. ChainQueen (`G2P_backward` in `tmp/ChainQueen/src/backward.cu`
+//! them. ChainQueen (`G2P_backward` in `ChainQueen/src/backward.cu`
 //! sums `dw()` terms into the position gradient) and DiffTaichi
 //! (`diffmpm.py`'s autodiff backward, no `stop_grad` on `p2g`/`g2p`) both
 //! differentiate through the weights. The omission is a shortcut for a

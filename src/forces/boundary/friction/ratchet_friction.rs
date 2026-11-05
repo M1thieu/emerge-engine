@@ -24,7 +24,7 @@ use crate::forces::boundary::{
 /// is attached to the floor and oriented by `easy_direction`, which the caller
 /// sets. It applies to whatever slides on the floor.
 ///
-/// SoftZoo, the published MPM soft-robot locomotion benchmark (`tmp/softzoo`),
+/// SoftZoo, the published MPM soft-robot locomotion benchmark (`softzoo`),
 /// uses only constant, symmetric Coulomb ground contact
 /// (`engine/static/flat_surface.py`).
 ///

@@ -60,7 +60,7 @@ fn bar_impact_run(courant: Option<f64>, cells: usize) -> String {
         || mode != crate::spacetime::total_lagrangian::ContactMode::Position;
     let cell_m = length / cells as f64;
     // Per unit density, cells and seconds; `lambda = 0`, so `bulk = mu`.
-    // MIXED_FORMULATION_PLAN.md criterion 6': `EMERGE_PROBE_BAR_CONFINED`
+    // `EMERGE_PROBE_BAR_CONFINED`
     // holds every horizontal coefficient (rollers on the long sides: 1D
     // motion, uniaxial strain), so `EMERGE_PROBE_BAR_NU` (Poisson's ratio,
     // 0 by default) has the exact 1D solution with the P-wave modulus
@@ -156,8 +156,7 @@ fn bar_impact_run(courant: Option<f64>, cells: usize) -> String {
     // The normal component's coefficients on the face `y = 4`: support
     // `[2.5, 5.5]`, of which the bar holds only the knot span `[4.5, 5.5]`.
     let row = (bottom - 0.5) as usize;
-    // `EMERGE_PROBE_BAR_MASSLESS_ROWS=n` (BAR_REFERENCE_PLAN.md sec. 8.2, a
-    // diagnostic that removes mass): the normal component's `n` bottom rows
+    // `EMERGE_PROBE_BAR_MASSLESS_ROWS=n`: the normal component's `n` bottom rows
     // massless, with any contact mode; the removed share of the normal
     // mass printed from the plain B-splines before the first step.
     let rows = std::env::var("EMERGE_PROBE_BAR_MASSLESS_ROWS")
@@ -259,7 +258,7 @@ fn bar_impact_run(courant: Option<f64>, cells: usize) -> String {
     let (mut work, mut least_work, mut updates) = (0.0f64, 0.0f64, 0.0f64);
     let (mut newton, mut gmres, mut passes, mut most_passes, mut unconverged, mut cost) =
         (0u64, 0u64, 0u64, 0u32, 0u32, 0.0f64);
-    // Why a step is unconverged (BAR_REFERENCE_PLAN.md sec. 8.5's caveat):
+    // Why a step is unconverged:
     // stagnated, or at Newton's iteration cap, and the worst final residual
     // over the tolerance.
     let (mut stagnated, mut capped, mut worst_residual) = (0u32, 0u32, 0.0f64);

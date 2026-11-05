@@ -1,5 +1,4 @@
-//! The mode-free clearance bound against the modal one at each flight start
-//! (MODE_FREE_HANDOFF_PLAN.md, M0): per contact point, `(2 E tr C_p)^(1/2)`
+//! The mode-free clearance bound against the modal one at each flight start: per contact point, `(2 E tr C_p)^(1/2)`
 //! with `C_p` the point's 2 x 2 static compliance on the elastic subspace
 //! and `E` the vibration energy, against the flight's `sum_i |phi_i(p)|
 //! |z_i| / omega_i`; and the cut each gives. A probe, switched by
@@ -332,8 +331,7 @@ pub(crate) fn free_of(state: &TotalLagrangianState, particles: &[usize], points:
 /// Per contact point, the mode-free lower bound on its least gap to every
 /// wall over `[t0, t1]`: `Flight::clear`'s terms (the centre's parabola, the
 /// arm turned at the measured spin, the turning term) with the modal
-/// vibration bound replaced by the trace form (MODE_FREE_HANDOFF_PLAN.md
-/// sec. 3); the fit taken at the state's time.
+/// vibration bound replaced by the trace form; the fit taken at the state's time.
 pub(crate) fn lower_gaps(
     state: &TotalLagrangianState,
     free: &Free,
@@ -403,7 +401,7 @@ pub(crate) fn clear_until(
     low
 }
 
-/// M0 at one flight start: prints both bounds' extremes per point, the
+/// One flight start: prints both bounds' extremes per point, the
 /// Cauchy-Schwarz check with the modal energy, and the cuts.
 pub(super) fn compare(
     state: &TotalLagrangianState,
@@ -465,7 +463,7 @@ pub(super) fn compare(
         reach(&flight.with_arm_bounds(&free_largest), walls, (t0, t1)),
     ];
     println!(
-        "M0 flight start t {t0:.6} to {t1:.6}: {n} unknowns, {} contact points, memory {}, rigid fit |K R| {rigid_residual:.1e}; energy modal {modal_energy:.6e}, from the state {free_energy:.6e} (kinetic {kinetic:.3e}, stored {stored:.3e}); C-S check (2 E_modal tr C)^(1/2) / B_modal - 1, least {check:+.3e}; mode-free / modal per point: trace form {lo:.3} to {hi:.3}, largest-eigenvalue form {lo_l:.3} to {hi_l:.3}; cut modal {:.6}, trace form {:.6}, largest-eigenvalue form {:.6} (flight given up {:.3e} s, {:.3e} s)",
+        "flight start t {t0:.6} to {t1:.6}: {n} unknowns, {} contact points, memory {}, rigid fit |K R| {rigid_residual:.1e}; energy modal {modal_energy:.6e}, from the state {free_energy:.6e} (kinetic {kinetic:.3e}, stored {stored:.3e}); C-S check (2 E_modal tr C)^(1/2) / B_modal - 1, least {check:+.3e}; mode-free / modal per point: trace form {lo:.3} to {hi:.3}, largest-eigenvalue form {lo_l:.3} to {hi_l:.3}; cut modal {:.6}, trace form {:.6}, largest-eigenvalue form {:.6} (flight given up {:.3e} s, {:.3e} s)",
         points.len(),
         flight.has_memory(),
         cut[0],
@@ -480,7 +478,7 @@ fn mat_vec(a: &[f64], x: &[f64], n: usize) -> Vec<f64> {
     (0..n).map(|i| dot(&a[i * n..(i + 1) * n], x)).collect()
 }
 
-/// M1' (MODE_FREE_HANDOFF_PLAN.md sec. 10): per contact point, the stepped
+/// Per contact point, the stepped
 /// trajectory's deviation term over one step of `dt`, `D_p = (dt^2/2)
 /// (tr(E_p M^-1 E_p^T))^(1/2) (n / lambda_min(M))^(1/2) R_a`, with `R_a =
 /// max(tol x scale, floor)` as `solve.rs` forms them: `scale` from the
@@ -586,7 +584,7 @@ pub(crate) fn solve_term_of(
     (terms, allowed, lambda_min)
 }
 
-/// M2 (MODE_FREE_HANDOFF_PLAN.md sec. 12): the lower bound on the
+/// The lower bound on the
 /// separation of bodies `a` and `b` along the unit `n` over `[t0, t1]`:
 /// the centres' relative motion (linear: a uniform gravity cancels) at the
 /// worse end, less each body's support of its turned reference arms, their

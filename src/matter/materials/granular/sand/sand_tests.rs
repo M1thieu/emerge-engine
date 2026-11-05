@@ -462,7 +462,7 @@ mod current_friction_coefficient_tests {
 ///
 /// The current design acts on the projection: every tension-cutoff firing
 /// sets `log_volume_strain` to `ln(prev_det)` with no memory (the
-/// projection itself matches `tmp/sparkl`'s textbook DP), so
+/// projection itself matches `sparkl`'s textbook DP), so
 /// `eps_pl_vol_pradhana` is a bounded flag: the first firing since the
 /// particle was last non-yielding applies the correction and sets it; later
 /// firings are no-ops (`ProjectedBranch::DebtBlocked`) until a non-yielding
