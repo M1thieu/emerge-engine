@@ -40,7 +40,7 @@ use crate::matter::materials::solid::corotated::stress::{
 };
 
 #[cfg(all(test, feature = "experimental"))]
-#[path = "branch_update_probes.rs"]
+#[path = "probes/branch_update_probes.rs"]
 mod branch_update;
 
 /// One branch on the step: its spring and dashpot, and its internal strain

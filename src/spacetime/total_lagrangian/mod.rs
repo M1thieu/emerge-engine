@@ -57,44 +57,55 @@ use rayon::prelude::*;
 
 /// The axisymmetric path's axis on the grid (FAST_MODE_PLAN.md sec. 51.4).
 #[cfg(all(test, feature = "experimental"))]
+#[path = "research/axisymmetric.rs"]
 pub(crate) mod axisymmetric;
 #[cfg(all(test, feature = "experimental"))]
+#[path = "probes/axisymmetric_probes.rs"]
 mod axisymmetric_probes;
 mod band;
 mod basis;
 mod contact;
 #[cfg(all(test, feature = "experimental"))]
+#[path = "probes/diagnostics.rs"]
 mod diagnostics;
 #[cfg(all(test, feature = "experimental"))]
+#[path = "research/dirichlet.rs"]
 mod dirichlet;
 mod elastic;
 /// A one-solve local error estimate, measured beside the controller's
 /// doubling, never deciding a step.
 #[cfg(all(test, feature = "experimental"))]
+#[path = "research/estimate.rs"]
 pub(crate) mod estimate;
 #[cfg(all(test, feature = "experimental"))]
+#[path = "research/galerkin2.rs"]
 mod galerkin2;
 /// Probe hooks, off unless a probe turns them on: a per-thread trace of
 /// every solve's Newton iterations, and a Newton homotopy (`R(u) - (1 -
 /// lambda) R(0)` from `u = 0`, lambda from 0 to 1) that tells whether the
 /// step's system has an admissible solution the solve failed to reach.
 #[cfg(all(test, feature = "experimental"))]
+#[path = "probes/hooks.rs"]
 pub(crate) mod hooks;
 mod krylov;
 mod modes;
 mod multipliers;
 #[cfg(all(test, feature = "experimental"))]
+#[path = "probes/nitsche_probes.rs"]
 mod nitsche_probes;
 mod relaxation;
 /// The internal force's micro-count (FAST_MODE_PLAN.md sec. 63.6).
 #[cfg(all(test, feature = "experimental"))]
+#[path = "probes/residual_split.rs"]
 pub(crate) mod residual_split;
 mod solve;
 #[cfg(all(test, feature = "experimental"))]
+#[path = "probes/stabilized_probes.rs"]
 mod stabilized_probes;
 mod step;
 mod step_control;
 #[cfg(all(test, feature = "experimental"))]
+#[path = "probes/tests.rs"]
 mod tests;
 mod weighted_gap;
 
