@@ -688,7 +688,12 @@ pub fn controlled_step(
                 hooks::record_effectivity(row);
             }
             // Eq. 67 at order 0 (positions only), else eq. 63 at order 2.
-            let (error, order) = if reaching {
+            // On positions only on every try when asked (`position_error`).
+            #[cfg(all(test, feature = "experimental"))]
+            let reaching_or_asked = reaching || super::position_error::on();
+            #[cfg(not(all(test, feature = "experimental")))]
+            let reaching_or_asked = reaching;
+            let (error, order) = if reaching_or_asked {
                 (parts.1, 0.0)
             } else {
                 (norm(&difference) / divisor, 2.0)

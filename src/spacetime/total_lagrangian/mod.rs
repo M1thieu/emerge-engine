@@ -102,6 +102,9 @@ mod nitsche_probes;
 #[cfg(all(test, feature = "experimental"))]
 #[path = "probes/observed_order.rs"]
 pub(crate) mod observed_order;
+#[cfg(all(test, feature = "experimental"))]
+#[path = "probes/position_error.rs"]
+pub(crate) mod position_error;
 mod relaxation;
 /// The internal force's micro-count.
 #[cfg(all(test, feature = "experimental"))]
