@@ -868,7 +868,12 @@ pub fn step_total_lagrangian_contact(
             .iter()
             .map(|row| dot(row, &end_velocity))
             .collect();
-        let solved = super::end_gap_refund::impulses(&s, &b, &work);
+        let solved = if super::end_gap_refund::global() {
+            let pushes: Vec<f64> = held.iter().map(|c| c.multiplier).collect();
+            super::end_gap_refund::global_impulses(&s, &b, &work, &pushes)
+        } else {
+            super::end_gap_refund::impulses(&s, &b, &work)
+        };
         for (z, &p) in columns.iter().zip(&solved.p) {
             end_velocity
                 .iter_mut()

@@ -19,6 +19,13 @@
 //! On a Coulomb floor, `refund` repays along the normal alone (a diagnostic,
 //! the frictionless form on a gripping floor).
 //!
+//! `refund_global`, a diagnostic: their energy condition summed over the
+//! conditions (eq. 62) has infinitely many solutions, and they choose the local
+//! one (eq. 63). This variant chooses instead ONE scalar for the step, each held
+//! condition's impulse in proportion to its own converged push, the root of
+//! eq. 62 that vanishes with the work. A selection among eq. 62's solutions,
+//! not the paper's choice.
+//!
 //! With friction (`refund_friction`): each impulse acts along the condition's
 //! whole contact force, normal push and friction together, not the normal alone
 //! (Love and Laursen, CMAME 192 (2003) 2223-2248, eq. 56). The energy owed stays
@@ -38,6 +45,7 @@ enum Asked {
     Gap,
     Refund,
     RefundFriction,
+    RefundGlobal,
 }
 
 fn asked() -> Asked {
@@ -57,7 +65,15 @@ fn asked() -> Asked {
             );
             Asked::RefundFriction
         }
-        Ok(other) => panic!("EMERGE_PROBE_END_GAP {other}: gap, refund or refund_friction"),
+        Ok("refund_global") => {
+            println!(
+                "knob active: the walls held at the step's end, the energy refunded by one scalar over the pushes"
+            );
+            Asked::RefundGlobal
+        }
+        Ok(other) => panic!(
+            "EMERGE_PROBE_END_GAP {other}: gap, refund, refund_friction or refund_global"
+        ),
         Err(_) => Asked::Off,
     })
 }
@@ -69,7 +85,15 @@ pub(crate) fn gap_on() -> bool {
 
 /// Whether the energy is refunded after the solve.
 pub(crate) fn refund_on() -> bool {
-    matches!(asked(), Asked::Refund | Asked::RefundFriction)
+    matches!(
+        asked(),
+        Asked::Refund | Asked::RefundFriction | Asked::RefundGlobal
+    )
+}
+
+/// Whether the refund is one scalar over the held pushes (`refund_global`).
+pub(crate) fn global() -> bool {
+    asked() == Asked::RefundGlobal
 }
 
 /// Whether the refund takes friction: its impulses along the whole contact
@@ -131,6 +155,40 @@ pub(crate) fn impulses(s: &[Vec<f64>], b: &[f64], w: &[f64]) -> Impulses {
         p,
         no_root,
         converged,
+    }
+}
+
+/// The impulses `kappa lambda_l` with ONE `kappa` for the step: eq. 62 summed
+/// over the conditions, `1/2 kappa^2 lambda S lambda + kappa b lambda + sum w =
+/// 0`, its root that vanishes with the work.
+pub(crate) fn global_impulses(s: &[Vec<f64>], b: &[f64], w: &[f64], lambda: &[f64]) -> Impulses {
+    let n = b.len();
+    let s_lambda: f64 = (0..n)
+        .map(|l| lambda[l] * (0..n).map(|k| s[l][k] * lambda[k]).sum::<f64>())
+        .sum();
+    let a = 0.5 * s_lambda;
+    let big_b: f64 = (0..n).map(|l| b[l] * lambda[l]).sum();
+    let work: f64 = w.iter().sum();
+    let discriminant = big_b * big_b - 4.0 * a * work;
+    let mut no_root = 0;
+    let kappa = if n == 0 {
+        0.0
+    } else if discriminant < 0.0 {
+        no_root = 1;
+        0.0
+    } else {
+        let sign = if big_b < 0.0 { -1.0 } else { 1.0 };
+        let denominator = discriminant.sqrt() + big_b.abs();
+        if denominator > 0.0 {
+            -2.0 * work * sign / denominator
+        } else {
+            0.0
+        }
+    };
+    Impulses {
+        p: lambda.iter().map(|l| kappa * l).collect(),
+        no_root,
+        converged: true,
     }
 }
 
@@ -227,6 +285,23 @@ mod tests {
         let solved = impulses(&[vec![2.0]], &[-3.0], &[0.0]);
         assert!(solved.converged);
         assert_eq!(solved.p[0], 0.0);
+    }
+
+    /// One scalar over the pushes closes the summed balance exactly.
+    #[test]
+    fn one_scalar_closes_the_summed_balance() {
+        let s = vec![
+            vec![2.0, 0.5, 0.1],
+            vec![0.5, 3.0, 0.4],
+            vec![0.1, 0.4, 1.5],
+        ];
+        let (b, w, lambda) = ([1.0, 2.0, 0.5], [-0.3, -0.2, -0.1], [1.0, 2.0, 0.5]);
+        let solved = global_impulses(&s, &b, &w, &lambda);
+        assert_eq!(solved.no_root, 0);
+        let total: f64 = (0..3).map(|l| residual(&s, &b, &w, &solved.p, l)).sum();
+        assert!(total.abs() < 1e-14, "{total}");
+        // In proportion to the pushes.
+        assert!((solved.p[1] / solved.p[0] - 2.0).abs() < 1e-14);
     }
 
     /// Work the root cannot repay is left unrefunded, and counted.
