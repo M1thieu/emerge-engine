@@ -551,6 +551,49 @@ fn ladder() {
     if frames != 40 {
         println!("knob active: {frames} frames");
     }
+    // Roma Plastilina's measured law (`EMERGE_RT_MATERIAL=rp1`), its density
+    // from the same papers; Poisson's ratio `EMERGE_RT_NU` (default the
+    // record's, assumed), and the speed at touch `EMERGE_RT_IMPACT_SPEED`
+    // (m/s, default the fall's) by a start velocity.
+    if std::env::var("EMERGE_RT_MATERIAL").as_deref() == Ok("rp1") {
+        println!("knob active: Roma Plastilina record (Hernandez 2023)");
+        let mut clay = ViscoplasticRecord::roma_plastilina_hernandez_2023();
+        if let Ok(nu) = std::env::var("EMERGE_RT_NU") {
+            println!("knob active: nu {nu}");
+            clay.nu = nu.parse().expect("EMERGE_RT_NU: a number");
+        }
+        let rho = 1529.0;
+        let props = Elastic {
+            e_pa: clay.e_pa as f32,
+            nu: clay.nu as f32,
+            rho_kg_m3: rho as f32,
+        };
+        let labels = Labels {
+            tolerance,
+            material: "Roma Plastilina No. 1, Hernandez 2023 Table 3, 1529 kg/m3, nu assumed",
+            honoured: "not measured for this record",
+        };
+        let mut sim = block(
+            (labels.tolerance, rung.as_str()),
+            lift(),
+            &|config| Box::new(clay.material((clay.e_pa, rho), config)),
+            &props,
+        );
+        if let Ok(speed) = std::env::var("EMERGE_RT_IMPACT_SPEED") {
+            println!("knob active: speed at touch {speed} m/s");
+            let touch: f64 = speed.parse().expect("EMERGE_RT_IMPACT_SPEED: m/s");
+            let config = *sim.config();
+            let fall =
+                f64::from(lift()) * f64::from(cells_across()) / 4.0 * f64::from(config.dx_meters);
+            let start = (touch * touch - 2.0 * 9.81 * fall).sqrt();
+            let grid_speed = start as f32 / config.dx_meters;
+            for v in sim.particles_mut().v.iter_mut() {
+                v.y = -grid_speed;
+            }
+        }
+        record(&format!("{name}_rp1"), sim, frames, &labels);
+        return;
+    }
     if std::env::var("EMERGE_RT_MATERIAL").as_deref() == Ok("norton") {
         println!("knob active: Norton plasticine record");
         let plasticine = ViscoplasticRecord::technical_plasticine_sapozhnikov_2014();

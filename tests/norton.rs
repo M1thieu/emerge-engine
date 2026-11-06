@@ -1,7 +1,8 @@
 //! Norton's power-law flow on the total Lagrangian path: Sapozhnikov and
 //! Ignatova's technical plasticine (`ViscoplasticRecord`) dropped as E2's
-//! block, its energy ledger closed every frame, and the paths that do not
-//! carry the law refusing it.
+//! block, its energy ledger closed every frame; Roma Plastilina's measured
+//! law at a drop test's speed; and the paths that do not carry the law
+//! refusing it.
 
 extern crate emerge_engine as emerge;
 
@@ -55,6 +56,22 @@ struct Dropped {
     iterations: u32,
     rebound: f64,
     first_contact: Option<usize>,
+    /// The least plastic work of a frame (never negative: a law's dissipation).
+    least_plastic: f64,
+    /// The particles' least horizontal extent over the last 10 frames, cells.
+    last_width: f32,
+}
+
+/// The particles' horizontal extent, cells.
+fn width(sim: &Simulation) -> f32 {
+    let (low, high) = sim
+        .particles()
+        .x
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), q| {
+            (low.min(q.x), high.max(q.x))
+        });
+    high - low
 }
 
 fn run(mut sim: Simulation, frames: usize) -> Dropped {
@@ -68,6 +85,8 @@ fn run(mut sim: Simulation, frames: usize) -> Dropped {
         iterations: 0,
         rebound: 0.0,
         first_contact: None,
+        least_plastic: f64::INFINITY,
+        last_width: f32::INFINITY,
     };
     let mut allowed = 0.0f64;
     for k in 1..=frames {
@@ -80,6 +99,10 @@ fn run(mut sim: Simulation, frames: usize) -> Dropped {
         out.worst = out.worst.max(f.balance.abs() / (allowed + round_off));
         out.heat = f.heat;
         out.plastic += f.plastic_work;
+        out.least_plastic = out.least_plastic.min(f.plastic_work);
+        if k + 10 > frames {
+            out.last_width = out.last_width.min(width(&sim));
+        }
         out.outside[0] += f.norton_slower;
         out.outside[1] += f.norton_faster;
         out.outside[2] += f.norton_tension;
@@ -136,6 +159,81 @@ fn a_dropped_norton_block_flows_and_its_plastic_work_becomes_heat() {
             d.plastic
         );
     }
+}
+
+/// Roma Plastilina's record (Hernandez et al. 2023) as an 8 x 4 cm block, 2 cm
+/// cells, plane strain, reaching the frictionless floor at `sqrt(2 g h)` of
+/// a 2.0 m drop, 6.264 m/s: its density from the same papers (1529 kg/m^3),
+/// forecast activation on. Not the sphere drop: a verification of this law on
+/// the path, compared with no measured depth. Criteria written before
+/// measuring: the balance within the solves' bound every frame; the heat the
+/// plastic work alone; no frame's plastic work negative; the block wider
+/// for good (over the last 10 frames, against its start); and the particle-steps
+/// beyond the record counted, as a drop reaches about `v / H` = 157 1/s
+/// against the 0.33 1/s its compression tests reach. Measured: about nine
+/// tenths of the energy at touch became heat at this resolution.
+#[test]
+fn roma_plastilina_at_a_drop_tests_speed_flows_for_good_and_its_work_becomes_heat() {
+    const FRAMES: usize = 30;
+    let record = ViscoplasticRecord::roma_plastilina_hernandez_2023();
+    let rho = 1529.0;
+    let mut config = SimConfig::earth(20, 0.02, 1.0 / 60.0);
+    let mut path = TotalLagrangianConfig::new(1e-2);
+    path.settings.forecast_activation = true;
+    config.total_lagrangian = Some(path);
+    let props = emerge::materials::physical_props::Elastic {
+        e_pa: record.e_pa as f32,
+        nu: record.nu as f32,
+        rho_kg_m3: rho as f32,
+    };
+    let mut sim = Simulation::empty(config);
+    let id = sim
+        .register_material(Box::new(record.material((record.e_pa, rho), &config)))
+        .0;
+    let floor = config.boundary_thickness as f32;
+    let _block = sim.add_body(
+        SpawnRegion::for_sim(&config)
+            .box_of(IVec2::new(4, 2))
+            .at(Vec2::new(10.0, floor + 6.0))
+            .spacing(0.5)
+            .material(id)
+            .mass_from(&props, &config),
+    );
+    // 5 cells above the floor, 0.10 m: the start velocity that reaches it at
+    // the drop's 6.264 m/s.
+    let touch = (2.0f64 * 9.81 * 2.0).sqrt();
+    let start = (touch * touch - 2.0 * 9.81 * 0.10).sqrt();
+    sim.particles_mut()
+        .v
+        .iter_mut()
+        .for_each(|v| v.y = -(start / 0.02) as f32);
+    let start_width = width(&sim);
+    let d = run(sim, FRAMES);
+    println!(
+        "Roma Plastilina at {touch:.3} m/s: balance at most {:.3} of its bound; heat {:.3} J/m, of 1/2 m v^2 = {:.3} J/m; width {start_width:.2} -> at least {:.2} cells; rebound {:.3} m/s; return iterations at most {}; particle-steps beyond the record (slower, faster, tensile) {:?}",
+        d.worst,
+        d.heat,
+        0.5 * rho * 0.08 * 0.04 * touch * touch,
+        d.last_width,
+        d.rebound,
+        d.iterations,
+        d.outside
+    );
+    assert!(d.worst <= 1.0, "balance {} of its bound", d.worst);
+    assert!(d.plastic > 0.0, "no plastic work");
+    assert!(
+        (d.heat - d.plastic).abs() <= 1e-9 * d.plastic,
+        "heat {} against the plastic work {}",
+        d.heat,
+        d.plastic
+    );
+    assert!(d.least_plastic >= 0.0, "plastic work {}", d.least_plastic);
+    assert!(
+        d.last_width > start_width,
+        "not wider for good: {start_width} -> {}",
+        d.last_width
+    );
+    assert!(d.outside[1] > 0, "no step beyond the record's rates");
 }
 
 /// The explicit path does not carry Norton's flow: it refuses the material

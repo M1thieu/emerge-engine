@@ -569,8 +569,10 @@ fn out_of_plane_stretch_keeps_the_energy_and_its_gradient() {
 /// law; the elastic slope within 1 % of E.
 #[test]
 fn rp1_uniaxial_compression_follows_its_measured_power_law() {
-    let (young, k, m, n): (f64, f64, f64, f64) = (1.70e6, 0.173e6, 0.119, 0.037);
-    let eps_0 = (k / young).powf(1.0 / (1.0 - m));
+    let record =
+        super::super::viscoplastic_records::ViscoplasticRecord::roma_plastilina_hernandez_2023();
+    let (young, k, n) = (record.e_pa, record.law.k, record.law.m);
+    let m = record.law.hardening.expect("the record hardens").exponent;
     let steps = 4000;
     let strain_end = 0.4;
     for nu in [0.434, 0.49] {
@@ -580,13 +582,7 @@ fn rp1_uniaxial_compression_follows_its_measured_power_law() {
             yield_stress: 0.0,
             hardening: 0.0,
             viscosity: 0.0,
-            norton: Some(Norton {
-                k,
-                m: n,
-                rate_0: 1.0,
-                valid_rates: (6.56e-4, 3.28e-1),
-                hardening: Some(StrainHardening { eps_0, exponent: m }),
-            }),
+            norton: Some(record.law),
         };
         for rate in [6.56e-4, 6.56e-3, 6.56e-2, 3.28e-1] {
             let dt = strain_end / rate / f64::from(steps);

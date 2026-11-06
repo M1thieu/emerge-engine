@@ -9,7 +9,7 @@
 //! hardening and a temperature term this law does not carry; it would be a
 //! record of its own law.
 
-use super::j2_hencky::Norton;
+use super::j2_hencky::{Norton, StrainHardening};
 use super::von_mises::VonMisesMaterial;
 use crate::materials::FromSI;
 use crate::materials::physical_props::{DuctileProps, Elastic};
@@ -61,6 +61,52 @@ impl ViscoplasticRecord {
         }
     }
 
+    /// Roma Plastilina No. 1 at 23 C, Hernandez, Buchely, Casas-Rodriguez and
+    /// Maranon, J. Def. Model. Simul. 20(3) (2023) 371-381, read in full:
+    /// uniaxial compression (ASTM D695, 1:1, talc-lubricated) at 6.56e-4 to
+    /// 3.28e-1 1/s, regressed on the curves' two log-log lines, `sigma = E
+    /// eps` and `sigma = k eps^m epsdot^n` (eq. 9, Table 3): `E = 1.70 +- 0.28
+    /// MPa`, `k = 0.173 +- 0.011 MPa`, `m = 0.119 +- 0.050`, `n = 0.037 +-
+    /// 0.001`. No drop test entered these numbers. Buchely, Maranon and
+    /// Silberschmidt, IJIE 90 (2016), Table 1, measure `E = 1.73 MPa` on the
+    /// same clay. `eps_0 = (k / E)^(1 / (1 - m))` is where the two lines meet
+    /// at the reference rate (`StrainHardening`): derived, 0.0747.
+    ///
+    /// Declared gaps, each with its removal criterion:
+    /// - Poisson's ratio 0.49 is ASSUMED, by Hernandez et al. 2015 (IJMS 100,
+    ///   p. 162), citing Crandall's 0.434 for another clay; a measurement on
+    ///   this clay replaces it (Crandall et al. 1971, not held). The
+    ///   uniaxial curve moves under 1 % between the two.
+    /// - beyond 0.33 1/s the law is extrapolated, as far as a drop's 400 1/s
+    ///   (counted, `Stepped::outside`): a flow law measured at those rates and
+    ///   not fitted through a drop.
+    /// - beyond the compression curves' strain, and under cycling, it hardens
+    ///   without bound where the clay softens (measured against NIST's
+    ///   oscillatory shear): a law with structure breakdown.
+    /// - the law comes from compression: states in tension are applied outside
+    ///   its data (counted, `Stepped::outside`): a tensile test of this clay.
+    /// - no viscoelastic part and no stored fraction of the plastic work.
+    pub fn roma_plastilina_hernandez_2023() -> Self {
+        let (e_pa, k, m, n): (f64, f64, f64, f64) = (1.70e6, 0.173e6, 0.119, 0.037);
+        Self {
+            law: Norton {
+                k,
+                m: n,
+                rate_0: 1.0,
+                valid_rates: (6.56e-4, 3.28e-1),
+                hardening: Some(StrainHardening {
+                    eps_0: (k / e_pa).powf(1.0 / (1.0 - m)),
+                    exponent: m,
+                }),
+            },
+            e_pa,
+            e_uncertainty_pa: 0.28e6,
+            nu: 0.49,
+            material: "Roma Plastilina No. 1, 23 C, conditioned; nu assumed",
+            source: "Hernandez et al. 2023, eq. 9 and Table 3 (uniaxial compression); nu from Hernandez et al. 2015, p. 162, assumed",
+        }
+    }
+
     /// The ductile material of this record for a scene, with Young's modulus
     /// `e_pa` (the record's or a value inside its uncertainty) and the
     /// density `rho_kg_m3` the scene states with its own source: the record
@@ -81,5 +127,44 @@ impl ViscoplasticRecord {
         let mut material = VonMisesMaterial::from_physical(&props, config);
         material.norton = Some(self.law);
         material
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Roma Plastilina record carries what its source's Table 3 prints,
+    /// the two lines' meeting strain derived from them, and says where its
+    /// numbers and its assumed Poisson's ratio come from.
+    #[test]
+    fn the_roma_plastilina_record_reads_back_its_table_and_its_source() {
+        let record = ViscoplasticRecord::roma_plastilina_hernandez_2023();
+        assert_eq!(
+            (
+                record.e_pa,
+                record.e_uncertainty_pa,
+                record.law.k,
+                record.law.m
+            ),
+            (1.70e6, 0.28e6, 0.173e6, 0.037)
+        );
+        assert_eq!(record.law.valid_rates, (6.56e-4, 3.28e-1));
+        let hardening = record.law.hardening.expect("the law hardens");
+        assert_eq!(hardening.exponent, 0.119);
+        assert!(
+            (hardening.eps_0 - 0.0747).abs() < 5e-5,
+            "{}",
+            hardening.eps_0
+        );
+        // The elastic line meets the plastic line at `eps_0` at 1/s.
+        let elastic = record.e_pa * hardening.eps_0;
+        let plastic = record.law.k * hardening.eps_0.powf(hardening.exponent);
+        assert!(
+            (elastic / plastic - 1.0).abs() < 1e-12,
+            "{elastic} {plastic}"
+        );
+        assert!(record.source.contains("Table 3"));
+        assert!(record.material.contains("assumed") && record.source.contains("assumed"));
     }
 }
