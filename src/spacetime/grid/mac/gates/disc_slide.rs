@@ -461,6 +461,7 @@ fn block_slide_run(per_frame: usize) -> String {
         axis: 1,
         at: if drop > 0.0 { floor } else { bottom + 1e-9 },
         inward: 1.0,
+        speed: 0.0,
     }];
     let penalty: Vec<f64> = (0..n)
         .map(|p| if p < body { 0.0 } else { factor * c_p * c_p })

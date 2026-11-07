@@ -148,13 +148,23 @@ pub struct GridLayout {
     pub nx: usize,
     pub ny: usize,
     pub dx: f32,
+    /// A body of revolution's meridian plane instead of plane strain
+    /// (`axisymmetric`, test builds only).
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) revolution: Option<axisymmetric::Revolution>,
 }
 
 impl GridLayout {
     pub fn new(nx: usize, ny: usize, dx: f32) -> Self {
         assert!(nx > 0 && ny > 0, "a grid needs at least one cell");
         assert!(dx > 0.0, "cell width must be positive");
-        Self { nx, ny, dx }
+        Self {
+            nx,
+            ny,
+            dx,
+            #[cfg(all(test, feature = "experimental"))]
+            revolution: None,
+        }
     }
 }
 

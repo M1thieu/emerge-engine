@@ -12,6 +12,22 @@ pub struct Plane {
     pub axis: usize,
     pub at: f64,
     pub inward: f64,
+    /// The plane's speed along its axis, `d at / dt`, constant over a step:
+    /// a wall driven at a prescribed motion, as a press's platen; zero for a
+    /// wall at rest. `at` is its place at the step's start. The same
+    /// Signorini conditions on the relative motion, and the push's work is
+    /// the press's.
+    pub speed: f64,
+}
+
+impl Plane {
+    /// The plane `elapsed` later.
+    pub(crate) fn after(&self, elapsed: f64) -> Self {
+        Self {
+            at: self.at + self.speed * elapsed,
+            ..*self
+        }
+    }
 }
 
 /// One point of a contact: a particle held against a wall's plane (or a

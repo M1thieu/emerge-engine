@@ -212,6 +212,7 @@ fn bar_impact_run(courant: Option<f64>, cells: usize) -> String {
         axis: 1,
         at: floor,
         inward: 1.0,
+        speed: 0.0,
     }];
     // The augmented Lagrangian's penalty on the contact points, an
     // iteration parameter: `EMERGE_PROBE_BARS_PENALTY` (default 100) times
@@ -657,6 +658,7 @@ fn two_bar_impact_run(courant: Option<f64>, cells: usize) -> String {
                     axis: 1,
                     at: 0.0,
                     inward: 1.0,
+                    speed: 0.0,
                 },
             )
         })

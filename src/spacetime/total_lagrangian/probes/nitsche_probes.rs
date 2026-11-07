@@ -376,7 +376,7 @@ fn tank_step(h: f64, dt: f64, (theta, penalty): (f64, f64)) {
     }
     // Today's two-cell multipliers held at the step's end: `G_c (2 u_m -
     // u_n) = 0`, `A u_m = b + G_c^T lambda`.
-    let trace = outline_trace(&x, &outline, &corners, h);
+    let trace = outline_trace(&x, &outline, &corners, h, None);
     let patches = conditions(&grid, &x, &outline, &trace, &walls, (0.0, bulk));
     let rows: Vec<&[f64]> = patches.iter().map(|c| c.gap.as_slice()).collect();
     let z_g: Vec<Vec<f64>> = rows.iter().map(|r| a.solve(r)).collect();

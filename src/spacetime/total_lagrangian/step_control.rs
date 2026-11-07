@@ -120,6 +120,21 @@ pub struct StepControl {
     pub estimator: Estimator,
 }
 
+impl StepControl {
+    /// Klapproth, Schiela and Deuflhard's values (their Table 2) and their
+    /// three tries, at this tolerance and longest step.
+    pub fn klapproth(tolerance: f64, largest: f64, estimator: Estimator) -> Self {
+        Self {
+            tolerance,
+            safety: 0.9,
+            growth: 10.0,
+            largest,
+            substeps: [1, 2, 3],
+            estimator,
+        }
+    }
+}
+
 /// The error estimate a controlled step uses.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Estimator {
@@ -275,6 +290,7 @@ fn tries_in_sequence() -> bool {
     rayon::current_num_threads() <= 1
         || tries_in_sequence_knob()
         || hooks::order_sensitive()
+        || super::axisymmetric::loaded()
         || crate::matter::materials::solid::j2_hencky::watching_returns()
         || super::solve::push_check()
 }
@@ -332,6 +348,12 @@ pub fn controlled_step(
     (control, scale): (&StepControl, f64),
 ) -> ControlledStep {
     let Particles { x, v, f, mass, v0 } = particles;
+    // That estimator's points read the plane's stress, with no hoop.
+    #[cfg(all(test, feature = "experimental"))]
+    assert!(
+        layout.revolution.is_none() || control.estimator == Estimator::Acary,
+        "the axisymmetric path's controlled step takes Acary's estimator only"
+    );
     // The tries' time by part, and their wall time in all (each group of
     // tries run at once, timed around it: their phases leave out the
     // multipliers' responses and the contact passes, which then read as
@@ -357,6 +379,27 @@ pub fn controlled_step(
     // difference is counted as error: it is the held contact's own error
     // (measured: a norm that leaves it out also hides the impact's error).
     let rate = |d: &State, p: usize| d.v[p];
+    let kinetic = |d: &State, p: usize| 0.5 * mass[p] * rate(d, p).length_squared();
+    // The norm's stored part. On the axisymmetric path the hoop's strain,
+    // `dr / R`, is one more diagonal entry of the strain.
+    #[cfg(all(test, feature = "experimental"))]
+    let hoop = super::axisymmetric::hoop_of(layout, reference);
+    let stored = |d: &State, p: usize| -> f64 {
+        let g = d.f[p];
+        let shear =
+            g.x_axis.x.powi(2) + g.y_axis.y.powi(2) + 0.5 * (g.y_axis.x + g.x_axis.y).powi(2);
+        let trace = g.x_axis.x + g.y_axis.y;
+        #[cfg(all(test, feature = "experimental"))]
+        let (shear, trace) = match hoop.as_ref().map(|h| h.radii[p]).filter(|&r| r > 0.0) {
+            Some(radius) => {
+                let e = d.x[p].x / radius;
+                (shear + e * e, trace + e)
+            }
+            None => (shear, trace),
+        };
+        let lambda = solids[p].bulk - solids[p].mu;
+        0.5 * v0[p] * (2.0 * solids[p].mu * shear + lambda * trace * trace)
+    };
     // With per-body scales (`hooks::body_scales`, test builds only, several
     // bodies): the norm the target is compared with becomes `sqrt(E0) max_b
     // err_b / sqrt(E0_b)`, so `norm <= tol sqrt(E0)` holds iff every body's
@@ -370,14 +413,7 @@ pub fn controlled_step(
             let (body_of, e0) = (&scales.0, &scales.1);
             let mut energy = vec![0.0; e0.len()];
             for p in 0..d.x.len() {
-                let g = d.f[p];
-                let shear = g.x_axis.x.powi(2)
-                    + g.y_axis.y.powi(2)
-                    + 0.5 * (g.y_axis.x + g.x_axis.y).powi(2);
-                let trace = g.x_axis.x + g.y_axis.y;
-                let lambda = solids[p].bulk - solids[p].mu;
-                energy[body_of[p]] += 0.5 * mass[p] * rate(d, p).length_squared()
-                    + 0.5 * v0[p] * (2.0 * solids[p].mu * shear + lambda * trace * trace);
+                energy[body_of[p]] += kinetic(d, p) + stored(d, p);
             }
             let worst = energy
                 .iter()
@@ -388,29 +424,19 @@ pub fn controlled_step(
         }
         let mut energy = 0.0;
         for p in 0..d.x.len() {
-            energy += 0.5 * mass[p] * rate(d, p).length_squared();
-            let g = d.f[p];
-            let shear =
-                g.x_axis.x.powi(2) + g.y_axis.y.powi(2) + 0.5 * (g.y_axis.x + g.x_axis.y).powi(2);
-            let trace = g.x_axis.x + g.y_axis.y;
-            let lambda = solids[p].bulk - solids[p].mu;
-            energy += 0.5 * v0[p] * (2.0 * solids[p].mu * shear + lambda * trace * trace);
+            energy += kinetic(d, p);
+            energy += stored(d, p);
         }
         energy.max(0.0).sqrt()
     };
     // The norm's two parts.
     let split = |d: &State| -> (f64, f64) {
-        let (mut kinetic, mut elastic) = (0.0, 0.0);
+        let (mut moving, mut elastic) = (0.0, 0.0);
         for p in 0..d.x.len() {
-            kinetic += 0.5 * mass[p] * rate(d, p).length_squared();
-            let g = d.f[p];
-            let shear =
-                g.x_axis.x.powi(2) + g.y_axis.y.powi(2) + 0.5 * (g.y_axis.x + g.x_axis.y).powi(2);
-            let trace = g.x_axis.x + g.y_axis.y;
-            let lambda = solids[p].bulk - solids[p].mu;
-            elastic += 0.5 * v0[p] * (2.0 * solids[p].mu * shear + lambda * trace * trace);
+            moving += kinetic(d, p);
+            elastic += stored(d, p);
         }
-        (kinetic.max(0.0).sqrt(), elastic.max(0.0).sqrt())
+        (moving.max(0.0).sqrt(), elastic.max(0.0).sqrt())
     };
     let mut solves = 0u32;
     // One try: its own copy of the start (state and cache), so tries run
@@ -420,9 +446,25 @@ pub fn controlled_step(
         let mut s = start.clone();
         let mut reports = Vec::with_capacity(pieces);
         let mut contact = false;
-        for _ in 0..pieces {
+        for piece in 0..pieces {
             let stateful = s.solids.iter().any(Elastic::carries_state);
             let before = if stateful { s.f.clone() } else { Vec::new() };
+            #[cfg(all(test, feature = "experimental"))]
+            let radially = if stateful && hoop.is_some() {
+                s.x.clone()
+            } else {
+                Vec::new()
+            };
+            // The driven walls where they are at this piece's start.
+            let moved: Vec<Plane> = set
+                .planes
+                .iter()
+                .map(|plane| plane.after(piece as f64 * dt / pieces as f64))
+                .collect();
+            let set = ContactSet {
+                planes: &moved,
+                ..set
+            };
             let mut report = step_total_lagrangian_contact(
                 layout,
                 Particles {
@@ -453,6 +495,19 @@ pub fn controlled_step(
                         before[p].transpose() * before[p],
                         s.f[p].transpose() * s.f[p],
                     );
+                    #[cfg(all(test, feature = "experimental"))]
+                    let committed = match &hoop {
+                        Some(hoop) if hoop.radii[p] > 0.0 => {
+                            let stretch = |q: DVec2| ((q.x - hoop.axis_x) / hoop.radii[p]).powi(2);
+                            s.solids[p].committed_with_stretch(
+                                (c0, stretch(radially[p])),
+                                (c1, stretch(s.x[p])),
+                                dt / pieces as f64,
+                            )
+                        }
+                        _ => s.solids[p].committed(c0, c1, dt / pieces as f64),
+                    };
+                    #[cfg(not(all(test, feature = "experimental")))]
                     let committed = s.solids[p].committed(c0, c1, dt / pieces as f64);
                     let (next, dissipated, relaxed) =
                         (committed.solid, committed.plastic, committed.relaxed);
@@ -527,16 +582,16 @@ pub fn controlled_step(
     let mut unconverged = 0;
     // A point beyond a plane, per particle (the walls' contact status,
     // Acary's `s_k`).
-    let beyond = |x: &[DVec2]| -> Vec<bool> {
+    let beyond = |x: &[DVec2], elapsed: f64| -> Vec<bool> {
         x.iter()
             .map(|q| {
                 set.planes
                     .iter()
-                    .any(|plane| plane.inward * (q[plane.axis] - plane.at) < 0.0)
+                    .any(|plane| plane.inward * (q[plane.axis] - plane.after(elapsed).at) < 0.0)
             })
             .collect()
     };
-    let start_beyond = beyond(&start.x);
+    let start_beyond = beyond(&start.x, 0.0);
     // The pair: the whole step against `pieces` pieces; the order-2
     // estimate's Richardson divisor `pieces^2 - 1` (3 for the halves).
     let (pieces, by_contacts) = floor_knobs();
@@ -628,7 +683,7 @@ pub fn controlled_step(
                 );
             }
             // Eqs. 68-70: free at the start, beyond at the end, in either.
-            let reaching = [beyond(&whole.x), beyond(&halves.x)]
+            let reaching = [beyond(&whole.x, dt), beyond(&halves.x, dt)]
                 .iter()
                 .any(|end| end.iter().zip(&start_beyond).any(|(&e, &s)| e && !s))
                 || (by_contacts
@@ -712,7 +767,7 @@ pub fn controlled_step(
                 // try's contacts per piece.
                 let switch = if std::env::var_os("EMERGE_PROBE_CONTROL_SWITCH").is_some() {
                     let count = |b: &[bool]| b.iter().filter(|&&e| e).count();
-                    let (end_whole, end_halves) = (beyond(&whole.x), beyond(&halves.x));
+                    let (end_whole, end_halves) = (beyond(&whole.x, dt), beyond(&halves.x, dt));
                     let differ = end_whole
                         .iter()
                         .zip(&end_halves)

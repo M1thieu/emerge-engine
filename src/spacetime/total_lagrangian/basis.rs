@@ -147,6 +147,10 @@ pub(crate) struct Grid {
     /// Per unknown, whether it carries no inertia (`hooks::set_massless`).
     #[cfg(all(test, feature = "experimental"))]
     pub(crate) massless: Option<Vec<bool>>,
+    /// The hoop's data on the axisymmetric path (`axisymmetric::hoop_of`),
+    /// shared by the grid's clones (the controller's tries).
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) hoop: Option<std::sync::Arc<super::axisymmetric::Hoop>>,
 }
 
 /// The unknowns a degenerate face's coefficient is extrapolated from, with
@@ -239,6 +243,8 @@ impl Grid {
             weights: None,
             #[cfg(all(test, feature = "experimental"))]
             massless: None,
+            #[cfg(all(test, feature = "experimental"))]
+            hoop: super::axisymmetric::hoop_of(layout, x),
         };
         let mut reached = vec![0.0; len];
         // The faces any point's support meets, the massless outline points'
@@ -266,11 +272,21 @@ impl Grid {
             let (ni, nj) = (l.ni as i64, l.nj as i64);
             let mut fraction = vec![0.0; l.ni * l.nj];
             if occupation.is_some() {
-                for (q, &vol) in x.iter().zip(volume) {
+                // On a body of revolution the volumes are per radian, and a
+                // cell's fraction is of its area.
+                #[cfg(all(test, feature = "experimental"))]
+                let area = |p: usize, vol: f64| {
+                    grid.hoop.as_ref().map_or(vol, |hoop| {
+                        if vol > 0.0 { vol / hoop.radii[p] } else { 0.0 }
+                    })
+                };
+                #[cfg(not(all(test, feature = "experimental")))]
+                let area = |_: usize, vol: f64| vol;
+                for (p, (q, &vol)) in x.iter().zip(volume).enumerate() {
                     let s = *q / h - l.offset;
                     let (m, n) = ((s.x + 0.5).floor() as i64, (s.y + 0.5).floor() as i64);
                     if m >= 0 && n >= 0 && m < ni && n < nj {
-                        fraction[(m + ni * n) as usize] += vol / (h * h);
+                        fraction[(m + ni * n) as usize] += area(p, vol) / (h * h);
                     }
                 }
             }
@@ -293,7 +309,7 @@ impl Grid {
                     // The axisymmetric
                     // path's mirrored columns are no unknowns of their own.
                     #[cfg(all(test, feature = "experimental"))]
-                    if super::axisymmetric::excluded(a, i, j) {
+                    if super::axisymmetric::excluded(layout, a, i, j) {
                         stable[k] = false;
                         continue;
                     }
@@ -326,7 +342,7 @@ impl Grid {
                     let k = l.start + (i + ni * j) as usize;
                     // A mirrored face takes its coefficients from `mirror`.
                     #[cfg(all(test, feature = "experimental"))]
-                    if super::axisymmetric::excluded(a, i as usize, j as usize) {
+                    if super::axisymmetric::excluded(layout, a, i as usize, j as usize) {
                         continue;
                     }
                     let wall_only = grid.slot[k] != usize::MAX && !stable[k];
@@ -390,7 +406,7 @@ impl Grid {
             }
         }
         #[cfg(all(test, feature = "experimental"))]
-        super::axisymmetric::mirror(&mut grid);
+        super::axisymmetric::mirror(layout, &mut grid);
         grid.active = grid.wall.iter().map(|w| w.is_none()).collect();
         grid.relump(mass);
         #[cfg(all(test, feature = "experimental"))]
@@ -641,6 +657,15 @@ impl Grid {
                     }
                     let (mu, lame) = (solids[p].mu, solids[p].bulk - solids[p].mu);
                     value += vol * (lame * gk[a] * gm[b] + mu * gk[b] * gm[a]);
+                    #[cfg(all(test, feature = "experimental"))]
+                    if let Some(hoop) = &self.hoop {
+                        value += super::axisymmetric::hoop_stiffness(
+                            (vol, hoop.radii[p]),
+                            (mu, lame),
+                            (a, wk, gk),
+                            (b, wm, gm),
+                        );
+                    }
                     band.add(k, m, value);
                 }
             }

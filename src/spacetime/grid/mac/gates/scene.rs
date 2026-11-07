@@ -677,8 +677,12 @@ impl Scene {
             mass: &mass,
             v0: &v0,
         };
-        let plane =
-            |axis, at, inward| crate::spacetime::total_lagrangian::Plane { axis, at, inward };
+        let plane = |axis, at, inward| crate::spacetime::total_lagrangian::Plane {
+            axis,
+            at,
+            inward,
+            speed: 0.0,
+        };
         let planes = [
             plane(0, lo.x, 1.0),
             plane(0, hi.x, -1.0),

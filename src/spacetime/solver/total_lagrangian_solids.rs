@@ -537,14 +537,11 @@ impl Simulation {
         }
         let (planes, friction) = self.total_lagrangian_walls();
         let layout = self.total_lagrangian_layout();
-        let control = StepControl {
-            tolerance: config.tolerance,
-            safety: 0.9,
-            growth: 10.0,
-            largest: f64::from(self.config.dt),
-            substeps: [1, 2, 3],
-            estimator: crate::spacetime::total_lagrangian::estimator_knob(Estimator::Acary),
-        };
+        let control = StepControl::klapproth(
+            config.tolerance,
+            f64::from(self.config.dt),
+            crate::spacetime::total_lagrangian::estimator_knob(Estimator::Acary),
+        );
         let gravity = self.total_lagrangian_gravity();
         let mut state = self.total_lagrangian.take().expect("built above");
         let scale = state.tolerance_energy.max(f64::MIN_POSITIVE).sqrt();

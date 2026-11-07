@@ -72,7 +72,7 @@ mod tests {
     /// The law's own `sigma_eq = sqrt(3/2) 2G |dev e|` at `C`, from its
     /// principal logs (`HenckyJ2::logs`, the ones its return reads).
     fn sigma_eq(law: &HenckyJ2, c: DMat2) -> f64 {
-        let (e, _, _) = law.logs(c, &PlasticMetric::unstrained());
+        let (e, _, _) = law.logs_with_stretch(c, 1.0, &PlasticMetric::unstrained());
         let tr = e[0] + e[1] + e[2];
         let dev2: f64 = e.iter().map(|x| (x - tr / 3.0).powi(2)).sum();
         (1.5f64).sqrt() * 2.0 * law.shear * dev2.sqrt()

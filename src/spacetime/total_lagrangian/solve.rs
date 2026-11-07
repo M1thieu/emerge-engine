@@ -188,6 +188,9 @@ struct Linearised {
     f1: DMat2,
     s: DMat2,
     ds: [DMat2; 3],
+    /// The hoop's part on the axisymmetric path.
+    #[cfg(all(test, feature = "experimental"))]
+    hoop: Option<super::axisymmetric::HoopLine>,
 }
 
 /// The step's nonlinear solve on `grid` (`step`).
@@ -267,7 +270,7 @@ pub(crate) fn solve(
     };
     // The axisymmetric path's hoop, when set.
     #[cfg(all(test, feature = "experimental"))]
-    let hoop = super::axisymmetric::hoop(grid, n);
+    let hoop = grid.hoop.as_deref();
     #[cfg(all(test, feature = "experimental"))]
     assert!(
         hoop.is_none() || lagrangian,
@@ -316,7 +319,7 @@ pub(crate) fn solve(
             (cells, pressure)
         });
         #[cfg(all(test, feature = "experimental"))]
-        if let Some(hoop) = &hoop {
+        if let Some(hoop) = hoop {
             return parallel_scatter(grid.len, n, |p, acc| {
                 super::axisymmetric::hoop_force(
                     grid,
@@ -633,8 +636,7 @@ pub(crate) fn solve(
     // F F_33`, with `F_33 = r / R`.
     #[cfg(all(test, feature = "experimental"))]
     let through_axis = |u: &[f64], p: usize| {
-        hoop.as_ref()
-            .is_some_and(|h| super::axisymmetric::through_axis(grid, h, (p, u, x[p])))
+        hoop.is_some_and(|h| super::axisymmetric::through_axis(grid, h, (p, u, x[p])))
     };
     #[cfg(not(all(test, feature = "experimental")))]
     let through_axis = |_: &[f64], _: usize| false;
@@ -944,8 +946,7 @@ pub(crate) fn solve(
         && (hooks::cells().is_some()
             || hooks::viscosity() > 0.0
             || hooks::trapezoid_p()
-            || hooks::cofactor()
-            || hoop.is_some()));
+            || hooks::cofactor()));
     #[cfg(not(all(test, feature = "experimental")))]
     let exact = true;
     let (linearise_clock, push_clock) = (Cell::new(0.0), Cell::new(0.0));
@@ -971,10 +972,30 @@ pub(crate) fn solve(
                 }
                 let (f0, f1) = (f_now[p], deformation_at(u, p));
                 let (c0, c1) = (f0.transpose() * f0, f1.transpose() * f1);
+                #[cfg(all(test, feature = "experimental"))]
+                if let Some(hoop) = hoop {
+                    let r = hoop.radii[p];
+                    if r <= 0.0 {
+                        return Linearised::default();
+                    }
+                    let (f33_0, f33_1) = (
+                        (x[p].x - hoop.axis_x) / r,
+                        (x[p].x - hoop.axis_x + grid.read(u, p, 0).0) / r,
+                    );
+                    let line = solids[p].hoop_linearised((c0, f33_0), (c1, f33_1), dt, unit);
+                    return Linearised {
+                        f1,
+                        s: line.s,
+                        ds: line.ds,
+                        hoop: Some(line.rest),
+                    };
+                }
                 Linearised {
                     f1,
                     s: solids[p].step_stress(c0, c1, dt),
                     ds: unit.map(|e| solids[p].step_stress_tangent(c0, c1, dt, e)),
+                    #[cfg(all(test, feature = "experimental"))]
+                    hoop: None,
                 }
             })
             .collect();
@@ -997,6 +1018,17 @@ pub(crate) fn solve(
             let f0 = f_now[p];
             let df = if lagrangian { grad } else { grad * f0 };
             let dc = df.transpose() * t.f1 + t.f1.transpose() * df;
+            #[cfg(all(test, feature = "experimental"))]
+            if let (Some(line), Some(hoop)) = (&t.hoop, hoop) {
+                super::axisymmetric::hoop_product(
+                    grid,
+                    (t.f1, t.s, &t.ds, line),
+                    (p, d, hoop.radii[p]),
+                    (v0[p], f0, df, dc),
+                    acc,
+                );
+                return;
+            }
             let ds = t.ds[0] * dc.x_axis.x + t.ds[1] * dc.y_axis.y + t.ds[2] * dc.y_axis.x;
             // `d(F_n+1/2 S) = 1/2 dF S + F_n+1/2 dS`.
             let first = 0.5 * df * t.s + 0.5 * (f0 + t.f1) * ds;

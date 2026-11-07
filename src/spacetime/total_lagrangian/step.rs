@@ -395,16 +395,20 @@ pub fn step_total_lagrangian_contact(
         // were not unique and their semismooth Newton cycled (period 4,
         // 400 passes) where Uzawa crept.
         if traces.len() != outlines.len() {
+            #[cfg(all(test, feature = "experimental"))]
+            let axis_x = grid.hoop.as_ref().map(|hoop| hoop.axis_x);
+            #[cfg(not(all(test, feature = "experimental")))]
+            let axis_x = None;
             *traces = outlines
                 .iter()
                 .enumerate()
                 .map(|(o, outline)| {
                     let at = corners.get(o).map_or(&[][..], |c| &c[..]);
-                    outline_trace(reference, outline, at, grid.cell)
+                    outline_trace(reference, outline, at, grid.cell, axis_x)
                 })
                 .collect();
         }
-        candidates = reaching_conditions(traces, outlines, (x, v), planes, &mut own, &reaches);
+        candidates = reaching_conditions(traces, outlines, (x, v, dt), planes, &mut own, &reaches);
         let mut on_outline = vec![false; n];
         for &q in outlines.iter().flatten() {
             on_outline[q] = true;
@@ -419,12 +423,12 @@ pub fn step_total_lagrangian_contact(
                     continue;
                 }
                 let gap = plane.inward * (q[plane.axis] - plane.at);
-                if at_wall || reaches(gap, plane.inward * v[p][plane.axis]) {
+                if at_wall || reaches(gap, plane.inward * (v[p][plane.axis] - plane.speed)) {
                     own.push(if at_wall {
-                        *plane
+                        plane.after(dt)
                     } else {
                         Plane {
-                            at: q[plane.axis],
+                            at: q[plane.axis] + plane.speed * dt,
                             ..*plane
                         }
                     });
@@ -462,6 +466,10 @@ pub fn step_total_lagrangian_contact(
             }
         }
     }
+    assert!(
+        velocity || planes.iter().all(|plane| plane.speed == 0.0),
+        "a driven wall holds on the velocity condition only"
+    );
     let used: &[Plane] = if velocity { &own } else { planes };
     let mut inputs = Inputs {
         x,

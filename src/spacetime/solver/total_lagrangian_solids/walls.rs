@@ -18,11 +18,13 @@ impl Simulation {
                     axis,
                     at: t,
                     inward: 1.0,
+                    speed: 0.0,
                 });
                 planes.push(Plane {
                     axis,
                     at: res - t,
                     inward: -1.0,
+                    speed: 0.0,
                 });
             }
             match friction {

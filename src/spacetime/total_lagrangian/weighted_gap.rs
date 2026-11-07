@@ -61,12 +61,17 @@ pub(crate) struct OutlineTrace {
 /// max(1, floor(L / H))` equal patches, `H = 2 cell`; each patch's function
 /// the constant one on it, its members the outline points and the exact
 /// integral over the patch of their piecewise linear hat. A corner point
-/// belongs to both faces, with its half segment on each.
+/// belongs to both faces, with its half segment on each. On a body of
+/// revolution about the line `x = axis_x` the surface's measure per radian
+/// is `R ds`, so each integral carries the radius, linear on a segment: a
+/// patch on the axis weighs nothing and holds no condition. Derived from
+/// the weak form of the source's weighted gap (`Revolution`).
 pub(crate) fn outline_trace(
     reference: &[DVec2],
     outline: &[usize],
     corners: &[usize],
     cell: f64,
+    axis_x: Option<f64>,
 ) -> OutlineTrace {
     let count = outline.len();
     if count < 2 {
@@ -141,8 +146,21 @@ pub(crate) fn outline_trace(
                     continue;
                 }
                 // The integral over [c, d] of the segment's two hats.
-                let toward_end = ((d - a).powi(2) - (c - a).powi(2)) / (2.0 * (b - a));
-                add(members, s % count, (d - c) - toward_end);
+                let (toward_start, toward_end) = match axis_x {
+                    None => {
+                        let end = ((d - a).powi(2) - (c - a).powi(2)) / (2.0 * (b - a));
+                        ((d - c) - end, end)
+                    }
+                    Some(axis) => {
+                        let (ra, rb) = (at(s).x - axis, at(s + 1).x - axis);
+                        let (t0, t1) = ((c - a) / (b - a), (d - a) / (b - a));
+                        let (squares, cubes) = (t1 * t1 - t0 * t0, t1 * t1 * t1 - t0 * t0 * t0);
+                        let end = (b - a) * (ra * squares / 2.0 + (rb - ra) * cubes / 3.0);
+                        let all = (b - a) * (ra * (t1 - t0) + (rb - ra) * squares / 2.0);
+                        (all - end, end)
+                    }
+                };
+                add(members, s % count, toward_start);
                 add(members, (s + 1) % count, toward_end);
             }
         }
@@ -178,7 +196,7 @@ pub(crate) type Reaches<'a> = &'a dyn Fn(f64, f64) -> bool;
 pub(crate) fn reaching_conditions(
     traces: &[OutlineTrace],
     outlines: &[Vec<usize>],
-    (x, v): (&[DVec2], &[DVec2]),
+    (x, v, dt): (&[DVec2], &[DVec2], f64),
     planes: &[Plane],
     own: &mut Vec<Plane>,
     reaches: Reaches<'_>,
@@ -207,7 +225,7 @@ pub(crate) fn reaching_conditions(
                     let q = outline[r];
                     (
                         g + w / total * plane.inward * (x[q][plane.axis] - plane.at),
-                        d + w / total * plane.inward * v[q][plane.axis],
+                        d + w / total * plane.inward * (v[q][plane.axis] - plane.speed),
                     )
                 });
                 if !at_wall && !reaches(gap, rate) {
@@ -218,10 +236,10 @@ pub(crate) fn reaching_conditions(
                     .map(|&(r, w)| {
                         let q = outline[r];
                         own.push(if at_wall {
-                            *plane
+                            plane.after(dt)
                         } else {
                             Plane {
-                                at: x[q][plane.axis],
+                                at: x[q][plane.axis] + plane.speed * dt,
                                 ..*plane
                             }
                         });
@@ -437,7 +455,7 @@ pub(super) mod tests {
         for corner in [DVec2::new(5.0, 2.0), DVec2::new(5.3, 2.7)] {
             let (reference, corners) = block(corner, (6, 4));
             let outline: Vec<usize> = (0..reference.len()).collect();
-            let trace = outline_trace(&reference, &outline, &corners, 1.0);
+            let trace = outline_trace(&reference, &outline, &corners, 1.0, None);
             assert_eq!(trace.functions.len(), 10);
             let total: f64 = trace.functions.iter().flatten().map(|&(_, w)| w).sum();
             assert!((total - 20.0).abs() < 1e-12, "perimeter {total}");
@@ -564,7 +582,7 @@ pub(super) mod tests {
                 sides[0] + sides[1],
                 sides[0] + sides[1] + sides[2],
             ];
-            let trace = outline_trace(&x, &outline, &corners, h);
+            let trace = outline_trace(&x, &outline, &corners, h, None);
             let mut rows: Vec<Vec<f64>> = Vec::new();
             for members in &trace.functions {
                 // The bottom face's functions: every point on the floor.

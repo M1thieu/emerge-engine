@@ -269,13 +269,9 @@ fn interpolate(m: DMat2, (l1, g1): (f64, f64), slope: f64) -> DMat2 {
 }
 
 impl HenckyJ2 {
-    /// The principal elastic log strains `(e1, e2, e3)` of the state at `C`.
-    fn logs(&self, c: DMat2, state: &PlasticMetric) -> ([f64; 3], f64, f64) {
-        self.logs_with_stretch(c, 1.0, state)
-    }
-
-    /// The same with an out-of-plane `C_33` (an axisymmetric hoop entry; plane strain is `C_33 = 1`): `e3 = 1/2
-    /// ln(C_33 Gp_33)`, the third eigenvalue of the block-diagonal `C Gp`.
+    /// The principal elastic log strains `(e1, e2, e3)` of the state at `C`, with an out-of-plane `C_33` (an
+    /// axisymmetric hoop entry; plane strain is `C_33 = 1`): `e3 = 1/2 ln(C_33 Gp_33)`, the third eigenvalue of the
+    /// block-diagonal `C Gp`.
     fn logs_with_stretch(&self, c: DMat2, c33: f64, state: &PlasticMetric) -> ([f64; 3], f64, f64) {
         let (half, r) = mean_and_radius(c * state.gp);
         let (l1, l2) = (half + r, half - r);
@@ -288,7 +284,12 @@ impl HenckyJ2 {
 
     /// The stored energy per reference volume at `C` in the state.
     pub(crate) fn energy_at(&self, c: DMat2, state: &PlasticMetric) -> f64 {
-        let (e, _, _) = self.logs(c, state);
+        self.energy_with_stretch(c, 1.0, state)
+    }
+
+    /// The same with an out-of-plane `C_33` (`logs_with_stretch`).
+    pub(crate) fn energy_with_stretch(&self, c: DMat2, c33: f64, state: &PlasticMetric) -> f64 {
+        let (e, _, _) = self.logs_with_stretch(c, c33, state);
         let tr = e[0] + e[1] + e[2];
         let dev2 = e.iter().map(|x| (x - tr / 3.0).powi(2)).sum::<f64>();
         self.shear * dev2 + 0.5 * self.bulk * tr * tr + 0.5 * self.hardening * state.alpha.powi(2)

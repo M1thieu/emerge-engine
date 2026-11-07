@@ -1,6 +1,6 @@
-//! The axisymmetric path, test-only
-//! (knob `EMERGE_PROBE_AXISYMMETRIC_PATH = i_a`, the axis's node column; off
-//! by default): the symmetry axis on the grid's unknowns.
+//! The axisymmetric path, test-only: a grid whose layout names a
+//! `Revolution` is a body of revolution's meridian plane, the symmetry axis
+//! on the grid's unknowns.
 //!
 //! Source: Nairn and Guilkey, IJNME 101 (2015) 127-147, Fig. 6 and its text:
 //! `v_r = 0` on the axis, a mirrored ghost node `v_r(-dr) = -v_r(dr)`. Here
@@ -20,40 +20,89 @@
 //! the weights `w = A_p R_p` (per radian) the caller gives as `v0` and the
 //! masses per radian. The law's step stress is the discrete gradient over
 //! the block-diagonal `C` (the in-plane block and `C_33`), Gonzalez's formula
-//! in that space. Declared limits: the reference radii come
-//! through this thread (`set_radii`), so only a step run on the caller's
-//! thread sees them (`step_total_lagrangian`, not the controller's
-//! concurrent tries); the internal force's derivative is taken by central
-//! differences; the midpoint only (no theta step, no backward Euler); the
-//! neo-Hookean and J2 laws only, with no dashpot and no relaxation branch.
+//! in that space. The axis, the planes and the radii (read from the reference
+//! positions) travel with the step's inputs (`GridLayout`, `Grid`), so the
+//! controller's concurrent tries have them. Declared limits: the step stress's
+//! tangent is taken by central differences, point by point; the midpoint only (no
+//! theta step, no backward Euler); the neo-Hookean and J2 laws only, with no
+//! dashpot and no relaxation branch.
+//!
+//! A wall's weighted gap carries the radius (`outline_trace`), the cells'
+//! fractions read area (`Grid::new`), the preconditioner holds the hoop's
+//! linear elastic stiffness (`hoop_stiffness`), and a plastic state advances
+//! through the hoop (`committed_with_stretch`). The controller's energy norm
+//! holds the hoop's strain; its `Klapproth` estimator is refused, and the
+//! energy guard's knob reads the plane's energy.
 //!
 //! For the cases of `probes/axisymmetric_dynamic`: slip planes and a held rim
-//! as the same mirror on other node lines (`set_planes`: the normal
+//! as the same mirror on other node lines (`Revolution::planes`: the normal
 //! coefficient odd, the tangential even, the static probe's rule), and dead
-//! loads per radian on massless points (`set_point_loads`).
+//! loads per radian on massless points (`set_point_loads`), a test's fixture
+//! on its own thread: a controlled step under any runs its tries on that
+//! thread (`loaded`).
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
+use std::sync::Arc;
 
 use glam::{DMat2, DVec2};
 
+use super::GridLayout;
 use super::basis::Grid;
-use super::elastic::{Elastic, ElasticLaw};
+use super::elastic::{Committed, Elastic, ElasticLaw};
+use super::relaxation::Relaxed;
 use crate::matter::materials::solid::neo_hookean::{
     neo_hookean_energy_axisymmetric, neo_hookean_energy_increment_axisymmetric,
     neo_hookean_second_pk_axisymmetric,
 };
 
 thread_local! {
-    static AXIS: Cell<Option<usize>> = const { Cell::new(None) };
-    static RADII: RefCell<Option<Vec<f64>>> = const { RefCell::new(None) };
-    static PLANES: RefCell<Vec<(usize, usize, i64)>> = const { RefCell::new(Vec::new()) };
     static POINT_LOADS: RefCell<Vec<(usize, DVec2)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The mirror planes beside the axis for this thread's grids: each `(normal
-/// axis, node line, side of the body)`, the side `1` above or right of the line.
-pub(crate) fn set_planes(planes: Vec<(usize, usize, i64)>) {
-    PLANES.with(|p| *p.borrow_mut() = planes);
+/// A mirror on a node line: `(normal axis, node line, side of the body)`, the
+/// side `1` above or right of the line.
+pub(crate) type Mirror = (usize, usize, i64);
+
+/// A grid as a body of revolution's meridian plane: part of the step's inputs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Revolution {
+    /// The axis's node column.
+    pub(crate) axis: usize,
+    /// The mirrors beside the axis: a rectangular grid has three more sides.
+    pub(crate) planes: [Option<Mirror>; 3],
+}
+
+impl Revolution {
+    /// The axis alone.
+    pub(crate) fn about(axis: usize) -> Self {
+        Self {
+            axis,
+            planes: [None; 3],
+        }
+    }
+
+    /// The axis and at most three mirrors beside it.
+    pub(crate) fn with_planes(axis: usize, planes: &[Mirror]) -> Self {
+        let mut out = Self::about(axis);
+        for (slot, &plane) in out.planes.iter_mut().zip(planes) {
+            *slot = Some(plane);
+        }
+        assert!(planes.len() <= out.planes.len(), "a grid has four sides");
+        out
+    }
+}
+
+impl GridLayout {
+    /// This layout as `revolution`'s meridian plane.
+    pub(crate) fn of_revolution(mut self, revolution: Revolution) -> Self {
+        self.revolution = Some(revolution);
+        self
+    }
+}
+
+/// Whether this thread's solves carry dead loads, which only this thread sees.
+pub(crate) fn loaded() -> bool {
+    POINT_LOADS.with(|l| !l.borrow().is_empty())
 }
 
 /// Dead loads per radian for this thread's solves: `(point, force)`.
@@ -73,24 +122,19 @@ pub(crate) fn with_point_loads(grid: &Grid, mut external: Vec<f64>) -> Vec<f64> 
     external
 }
 
-/// Every mirror: the axis, then the planes.
-fn mirrors() -> Vec<(usize, usize, i64)> {
-    let Some(axis) = axis() else {
+/// Every mirror of a layout: the axis, then the planes.
+fn mirrors(layout: &GridLayout) -> Vec<Mirror> {
+    let Some(revolution) = layout.revolution else {
         return Vec::new();
     };
-    let mut all = vec![(0, axis, 1)];
-    PLANES.with(|p| all.extend(p.borrow().iter().copied()));
+    let mut all = vec![(0, revolution.axis, 1)];
+    all.extend(revolution.planes.iter().flatten());
     all
 }
 
 /// Whether displacement `u` takes point `p` through the axis (`F_33 <= 0`).
 pub(crate) fn through_axis(grid: &Grid, hoop: &Hoop, (p, u, x): (usize, &[f64], DVec2)) -> bool {
     x.x - hoop.axis_x + grid.read(u, p, 0).0 <= 0.0
-}
-
-/// Each point's reference radius for this thread's solves.
-pub(crate) fn set_radii(radii: Option<Vec<f64>>) {
-    RADII.with(|r| *r.borrow_mut() = radii);
 }
 
 /// What a solve needs for the hoop: the axis's position (the step's length
@@ -100,15 +144,16 @@ pub(crate) struct Hoop {
     pub(crate) radii: Vec<f64>,
 }
 
-/// The hoop's data for a solve on `grid` with `n` points, when the path is
-/// axisymmetric and the radii match.
-pub(crate) fn hoop(grid: &Grid, n: usize) -> Option<Hoop> {
-    let axis = axis()?;
-    let radii = RADII.with(|r| r.borrow().clone())?;
-    (radii.len() == n).then_some(Hoop {
-        axis_x: axis as f64 * grid.cell,
-        radii,
-    })
+/// The hoop's data of a grid built on the reference positions `reference`, when
+/// its layout names a revolution: a body sits on one side of its axis.
+pub(crate) fn hoop_of(layout: &GridLayout, reference: &[DVec2]) -> Option<Arc<Hoop>> {
+    let axis_x = layout.revolution?.axis as f64 * f64::from(layout.dx);
+    let radii: Vec<f64> = reference.iter().map(|q| q.x - axis_x).collect();
+    assert!(
+        radii.iter().all(|&r| r >= 0.0),
+        "a point on the far side of the axis"
+    );
+    Some(Arc::new(Hoop { axis_x, radii }))
 }
 
 /// The stored energy per reference volume with the hoop stretch `f33`.
@@ -118,11 +163,39 @@ pub(crate) fn energy_with_stretch(solid: &Elastic, f: DMat2, f33: f64) -> f64 {
         ElasticLaw::NeoHookean => {
             neo_hookean_energy_axisymmetric(f.transpose() * f, f33 * f33, lambda, mu)
         }
-        _ => panic!("the axisymmetric path's energy is the neo-Hookean law's only"),
+        ElasticLaw::HenckyJ2(law, state) => {
+            law.energy_with_stretch(f.transpose() * f, f33 * f33, &state)
+        }
+        _ => panic!("the axisymmetric path carries the neo-Hookean and J2 laws only"),
     }
 }
 
 impl Elastic {
+    /// The solid after a kept step (`Elastic::committed`), the plastic law's
+    /// return map through the hoop.
+    pub(crate) fn committed_with_stretch(
+        &self,
+        start: (DMat2, f64),
+        end: (DMat2, f64),
+        dt: f64,
+    ) -> Committed {
+        let mut out = Committed {
+            solid: *self,
+            plastic: 0.0,
+            relaxed: Relaxed::default(),
+            iterations: 0,
+            outside: None,
+        };
+        if let ElasticLaw::HenckyJ2(law, state) = &self.law {
+            let stepped = law.step_with_stretch(start, end, state, dt);
+            out.solid.law = ElasticLaw::HenckyJ2(*law, stepped.state);
+            out.plastic = stepped.dissipated;
+            out.iterations = stepped.iterations;
+            out.outside = stepped.outside;
+        }
+        out
+    }
+
     /// The step's stress between `(C_n, C33_n)` and `(C_n+1, C33_n+1)`:
     /// the mean of the end stresses plus Gonzalez's correction along the
     /// increment, so that `S : dC / 2` (the hoop entry included) is the
@@ -198,32 +271,133 @@ pub(crate) fn hoop_force(
     grid.visit(p, 0, |k, w, _| acc[k] += p33 * w);
 }
 
-/// The axis's node column for this thread's grids (the unit tests), in place
-/// of the knob.
-pub(crate) fn set_axis(axis: Option<usize>) {
-    AXIS.with(|a| a.set(axis));
+/// A point's linearisation on the axisymmetric path: the in-plane stress and its
+/// three in-plane directions, and `HoopLine`.
+pub(crate) struct LinearisedHoop {
+    pub(crate) s: DMat2,
+    pub(crate) ds: [DMat2; 3],
+    pub(crate) rest: HoopLine,
 }
 
-/// The axis's node column, if the path is axisymmetric; says so once.
-pub(crate) fn axis() -> Option<usize> {
-    static KNOB: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
-    AXIS.with(Cell::get).or_else(|| {
-        *KNOB.get_or_init(|| {
-            let axis = std::env::var("EMERGE_PROBE_AXISYMMETRIC_PATH")
-                .ok()?
-                .parse()
-                .ok()?;
-            println!("knob active: axisymmetric path, axis on node column {axis}");
-            Some(axis)
-        })
-    })
+/// The rest of a point's linearisation: `S_33`, the hoop stretches at the step's
+/// ends, `S_33`'s derivative along the three in-plane directions of `C`, and both
+/// stresses' derivatives in `C_33`.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct HoopLine {
+    s33: f64,
+    f33_0: f64,
+    f33_1: f64,
+    ds33: [f64; 3],
+    ds_dc33: DMat2,
+    ds33_dc33: f64,
+}
+
+impl Elastic {
+    /// The step stress's linearisation at the iterate, by central differences of
+    /// `step_stress_with_stretch`, the steps as `step_stress_tangent_by_differences`'s
+    /// (the scaffold of the laws without a derived tangent).
+    pub(crate) fn hoop_linearised(
+        &self,
+        (c0, f33_0): (DMat2, f64),
+        (c1, f33_1): (DMat2, f64),
+        dt: f64,
+        unit: [DMat2; 3],
+    ) -> LinearisedHoop {
+        let (a0, a1) = (f33_0 * f33_0, f33_1 * f33_1);
+        let (s, s33) = self.step_stress_with_stretch((c0, a0), (c1, a1), dt);
+        let size = c1
+            .x_axis
+            .x
+            .abs()
+            .max(c1.x_axis.y.abs())
+            .max(c1.y_axis.x.abs())
+            .max(c1.y_axis.y.abs())
+            .max(a1.abs())
+            .max(1.0);
+        let h = 1e-6 * size;
+        let mut ds = [DMat2::ZERO; 3];
+        let mut ds33 = [0.0; 3];
+        for (k, e) in unit.into_iter().enumerate() {
+            let (up, up33) = self.step_stress_with_stretch((c0, a0), (c1 + e * h, a1), dt);
+            let (down, down33) = self.step_stress_with_stretch((c0, a0), (c1 - e * h, a1), dt);
+            ds[k] = (up - down) * (0.5 / h);
+            ds33[k] = (up33 - down33) * 0.5 / h;
+        }
+        let (up, up33) = self.step_stress_with_stretch((c0, a0), (c1, a1 + h), dt);
+        let (down, down33) = self.step_stress_with_stretch((c0, a0), (c1, a1 - h), dt);
+        LinearisedHoop {
+            s,
+            ds,
+            rest: HoopLine {
+                s33,
+                f33_0,
+                f33_1,
+                ds33,
+                ds_dc33: (up - down) * (0.5 / h),
+                ds33_dc33: (up33 - down33) * 0.5 / h,
+            },
+        }
+    }
+}
+
+/// The hoop force's derivative along `d` from a point's linearisation:
+/// `d(F_mid S) = 1/2 dF S + F_mid dS` on the in-plane rows, `d(F33_mid S_33) / R` on the
+/// radial ones, with `dC_33 = 2 F33 dF33` and `dF33 = d_r / R`.
+pub(crate) fn hoop_product(
+    grid: &Grid,
+    (f1, s, ds, line): (DMat2, DMat2, &[DMat2; 3], &HoopLine),
+    (p, d, r): (usize, &[f64], f64),
+    (v0, f0, df, dc): (f64, DMat2, DMat2, DMat2),
+    acc: &mut [f64],
+) {
+    let df33 = grid.read(d, p, 0).0 / r;
+    let dc33 = 2.0 * line.f33_1 * df33;
+    let in_plane = |a: f64, b: f64, c: f64| a * dc.x_axis.x + b * dc.y_axis.y + c * dc.y_axis.x;
+    let dstress =
+        ds[0] * dc.x_axis.x + ds[1] * dc.y_axis.y + ds[2] * dc.y_axis.x + line.ds_dc33 * dc33;
+    let dstress33 = in_plane(line.ds33[0], line.ds33[1], line.ds33[2]) + line.ds33_dc33 * dc33;
+    let first = v0 * (0.5 * df * s + 0.5 * (f0 + f1) * dstress);
+    for a in 0..2 {
+        let row = first.row(a);
+        grid.visit(p, a, |k, _, g| acc[k] += row.dot(g));
+    }
+    let hoop = v0 * (0.5 * df33 * line.s33 + 0.5 * (line.f33_0 + line.f33_1) * dstress33) / r;
+    grid.visit(p, 0, |k, w, _| acc[k] += hoop * w);
+}
+
+/// The hoop's part of the preconditioner's linear elastic stiffness at the
+/// reference shape, between the unknown `(a, w_k, grad_k)` and `(b, w_m, grad_m)`
+/// (the second derivative of `V0 (mu e33^2 + lame e33 tr + lame e33^2 / 2)`, `e33 =
+/// u_r / R`, `tr` the in-plane trace). Without it a nearly incompressible body's
+/// bulk stiffness in `e33` is missing from the preconditioner: measured, about 130
+/// GMRES iterations per Newton at Poisson's ratio 0.49.
+pub(crate) fn hoop_stiffness(
+    (v0, r): (f64, f64),
+    (mu, lame): (f64, f64),
+    (a, wk, gk): (usize, f64, DVec2),
+    (b, wm, gm): (usize, f64, DVec2),
+) -> f64 {
+    if v0 <= 0.0 || r <= 0.0 {
+        return 0.0;
+    }
+    let mut value = 0.0;
+    if a == 0 {
+        value += v0 * lame * wk / r * gm[b];
+    }
+    if b == 0 {
+        value += v0 * lame * gk[a] * wm / r;
+    }
+    if a == 0 && b == 0 {
+        value += v0 * (lame + 2.0 * mu) * wk * wm / (r * r);
+    }
+    value
 }
 
 /// Whether face `(i, j)` of lattice `a` (0 the radial component, 1 the axial)
 /// is no unknown of its own: every face on a mirror's far side, and for the
 /// component normal to it a face on the mirror.
-pub(crate) fn excluded(a: usize, i: usize, j: usize) -> bool {
-    mirrors().into_iter().any(|(normal, node, side)| {
+pub(crate) fn excluded(layout: &GridLayout, a: usize, i: usize, j: usize) -> bool {
+    mirrors(layout).into_iter().any(|(normal, node, side)| {
         let along = if normal == 0 { i } else { j } as i64 - node as i64;
         along * side < 0 || (a == normal && along == 0)
     })
@@ -234,8 +408,8 @@ pub(crate) fn excluded(a: usize, i: usize, j: usize) -> bool {
 /// beyond it) its image's list times `-1` (normal) or `+1` (tangential). Two
 /// passes, so that a corner's ghost, whose image is another mirror's ghost, is
 /// filled.
-pub(crate) fn mirror(grid: &mut Grid) {
-    let all = mirrors();
+pub(crate) fn mirror(layout: &GridLayout, grid: &mut Grid) {
+    let all = mirrors(layout);
     for _ in 0..2 {
         for &(normal, node, side) in &all {
             for (a, l) in grid.lattices.iter().enumerate() {
@@ -287,8 +461,7 @@ mod tests {
     #[test]
     fn the_mirror_reproduces_the_axisymmetric_linear_fields() {
         let (axis, h) = (6usize, 1.0);
-        set_axis(Some(axis));
-        let layout = GridLayout::new(24, 24, 1.0);
+        let layout = GridLayout::new(24, 24, 1.0).of_revolution(Revolution::about(axis));
         let mut x = Vec::new();
         for i in 0..8 {
             for j in 0..12 {
@@ -300,7 +473,6 @@ mod tests {
         let mass = vec![1.0; x.len()];
         let volume = vec![0.25; x.len()];
         let grid = Grid::new(&layout, &x, (&mass, &volume), &|_, _, _| None, Some(0.5));
-        set_axis(None);
         let (a, b) = (0.03, -0.7);
         let mut y = vec![0.0; grid.len];
         let lattice = grid.lattices;
@@ -333,8 +505,7 @@ mod tests {
     #[test]
     fn a_trial_through_the_axis_is_refused() {
         let axis = 4usize;
-        set_axis(Some(axis));
-        let layout = GridLayout::new(16, 16, 1.0);
+        let layout = GridLayout::new(16, 16, 1.0).of_revolution(Revolution::about(axis));
         let mut x = Vec::new();
         for i in 0..4 {
             for j in 0..4 {
@@ -347,7 +518,6 @@ mod tests {
         let mass = vec![1.0; x.len()];
         let volume = vec![0.25; x.len()];
         let grid = Grid::new(&layout, &x, (&mass, &volume), &|_, _, _| None, Some(0.5));
-        set_axis(None);
         let hoop = Hoop {
             axis_x: axis as f64,
             radii,
@@ -392,8 +562,7 @@ mod tests {
     #[test]
     fn a_released_neo_hookean_cylinder_keeps_its_energy() {
         let axis = 4usize;
-        set_axis(Some(axis));
-        let layout = GridLayout::new(24, 24, 1.0);
+        let layout = GridLayout::new(24, 24, 1.0).of_revolution(Revolution::about(axis));
         let mut reference = Vec::new();
         for i in 0..4 {
             for j in 0..8 {
@@ -404,7 +573,6 @@ mod tests {
         }
         let n = reference.len();
         let radii: Vec<f64> = reference.iter().map(|q| q.x - axis as f64).collect();
-        set_radii(Some(radii.clone()));
         // Weights per radian: area times radius, density one.
         let v0: Vec<f64> = radii.iter().map(|r| 0.25 * r).collect();
         let mass = v0.clone();
@@ -462,8 +630,6 @@ mod tests {
                 allowed + round_off
             );
         }
-        set_axis(None);
-        set_radii(None);
         println!(
             "released cylinder: stored at the start {:.6e} per radian, largest kinetic {largest_kinetic:.6e}, worst |balance| {worst:.3e} within residual work {allowed:.3e}",
             start.1

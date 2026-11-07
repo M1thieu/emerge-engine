@@ -365,7 +365,7 @@ fn norton(m: f64) -> HenckyJ2 {
 
 /// `sigma_eq = sqrt(3/2) |dev tau|` of the state at `C`.
 fn sigma_eq(law: &HenckyJ2, c: DMat2, state: &PlasticMetric) -> f64 {
-    let (e, _, _) = law.logs(c, state);
+    let (e, _, _) = law.logs_with_stretch(c, 1.0, state);
     let tr = e[0] + e[1] + e[2];
     let dev2: f64 = e.iter().map(|x| (x - tr / 3.0).powi(2)).sum();
     (1.5f64).sqrt() * 2.0 * law.shear * dev2.sqrt()

@@ -186,7 +186,7 @@ fn spectra(
     let grid = Grid::new(layout, x, (mass, &volume), &open, Some(0.75));
     let solids = vec![solid; x.len()];
     let a = grid.approximate_jacobian((mass, &volume, &solids), 0.0, 2.0 / (dt * dt), &[]);
-    let trace = outline_trace(x, outline, corners, trace_cell);
+    let trace = outline_trace(x, outline, corners, trace_cell, None);
     let (mu, lame) = (solid.mu, solid.bulk - solid.mu);
     let all = conditions(&grid, x, outline, &trace, walls, (mu, lame));
     let m = all.len();
@@ -347,7 +347,7 @@ fn trace_on_exact_start(h: f64) {
             at: corner.x + width,
         },
     ];
-    let trace = outline_trace(&x, &outline, &corners, h);
+    let trace = outline_trace(&x, &outline, &corners, h, None);
     let all = conditions(&grid, &x, &outline, &trace, &walls, (0.0, bulk));
     let scale = rho * g * depth;
     let mut worst = [(0.0f64, 0.0f64); 3];
