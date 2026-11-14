@@ -9,7 +9,8 @@ use glam::Mat2;
 
 use super::{ColorMode, OpticalTable, Renderer};
 use crate::energy::radiation::{
-    blackbody_linear_srgb_locus_fit, blackbody_radiance_w_m2_sr, slab_radiance,
+    blackbody_display_exposure, blackbody_linear_srgb_locus_fit, scattering_from_reduced,
+    slab_radiance,
 };
 use crate::particle::Particle;
 
@@ -18,17 +19,33 @@ use crate::particle::Particle;
 const BLACKBODY_MAX_EXPOSURE: f32 = 16.0;
 
 impl Renderer {
-    /// Thermal emission: Planck's colour (`energy::radiation`) weighted by
-    /// Stefan-Boltzmann's `T^4` exposure. The CPU mirror of
-    /// `blackbody.inc.wgsl`'s `blackbody_emission`, including its exposure
-    /// ceiling, so both paths saturate at the same place.
+    /// Thermal emission: Planck's colour (`energy::radiation`) scaled to the
+    /// body's visible-band radiance over the display white's
+    /// ([`blackbody_display_exposure`]); under the SI contract a cold body
+    /// is dark, as it is on a camera. The exposure ceiling is a declared
+    /// display choice, not a physical limit.
+    ///
+    /// Without a contract the legacy `(T / reference)^4` proxy remains, a
+    /// dimensionless display convention with no radiometric meaning.
+    ///
+    /// KNOWN-LIMIT[HARD-WIRED/TECH-LIMIT]: the GPU mirror still divides the
+    /// total radiance `sigma T^4 / pi` by the mean display white
+    /// (`shaders/blackbody.inc.wgsl:114-131`, `blackbody_exposure_scalar`;
+    /// the same scalar feeds `shaders/curvature_flow.wgsl:1029`), so on the
+    /// GPU the exposure of a body at room temperature is far above 1 and
+    /// is cut only by the ceiling | source: Wyman, Sloan and
+    /// Shirley 2013 eq. 1 and the Planck integral over the observer (this
+    /// function) | replace when: the shader takes the exposure from a table
+    /// of `blackbody_display_exposure` uploaded per frame and a GPU adapter
+    /// test matches this function | state: waiting | gap: no GPU adapter test
+    /// in CI
     pub(super) fn blackbody_emission(&self, temperature_k: f32) -> [f32; 3] {
         if !temperature_k.is_finite() || temperature_k <= 0.0 {
             return [0.0; 3];
         }
         let exposure = match self.physical_render_contract {
-            Some(_) => {
-                blackbody_radiance_w_m2_sr(temperature_k) / self.display_white_mean().max(1.0e-12)
+            Some(contract) => {
+                blackbody_display_exposure(temperature_k, contract.display_white_radiance_w_m2_sr())
             }
             None => {
                 let ratio = temperature_k / self.emission_reference_temperature().max(1.0);
@@ -84,7 +101,9 @@ impl Renderer {
                         contract.background_radiance_w_m2_sr(),
                         contract.incident_radiance_w_m2_sr(),
                         sigma,
-                        sigma_s,
+                        // The direct beam decays with the scattering
+                        // coefficient mu_s' / (1 - g), not the reduced one.
+                        scattering_from_reduced(sigma_s, self.scattering_asymmetry[slot]),
                         path_m,
                         self.specular_r0[slot],
                         1.0,
