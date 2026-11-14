@@ -608,40 +608,65 @@ impl Elastic {
     /// and Guan's derived tangent, their App. B eq. B.10, not built) and the
     /// probes' variants of the base stress take central differences of
     /// `step_stress` itself (`step_stress_tangent_by_differences`).
+    #[cfg(test)]
     pub(crate) fn step_stress_tangent(&self, c0: DMat2, c1: DMat2, dt: f64, dc: DMat2) -> DMat2 {
+        self.step_stress_tangents(c0, c1, dt, [dc])[0]
+    }
+
+    /// `step_stress_tangent` along each of `dcs`: `S(C_m)`, `S(C_{n+1})` and
+    /// `dW` do not depend on the direction, so they are evaluated once. Each
+    /// direction's value is the same expression on the same inputs as alone.
+    pub(crate) fn step_stress_tangents<const N: usize>(
+        &self,
+        c0: DMat2,
+        c1: DMat2,
+        dt: f64,
+        dcs: [DMat2; N],
+    ) -> [DMat2; N] {
         #[cfg(all(test, feature = "experimental"))]
         if hooks::split() || hooks::trapezoid() {
-            return self.step_stress_tangent_by_differences(c0, c1, dt, dc);
+            return dcs.map(|dc| self.step_stress_tangent_by_differences(c0, c1, dt, dc));
         }
         if self.is_relaxing() {
-            return self.step_stress_tangent_by_differences(c0, c1, dt, dc);
+            return dcs.map(|dc| self.step_stress_tangent_by_differences(c0, c1, dt, dc));
         }
         let colon = |a: DMat2, b: DMat2| a.x_axis.dot(b.x_axis) + a.y_axis.dot(b.y_axis);
         let mid = 0.5 * (c0 + c1);
-        let Some(d_mid) = self.second_pk_tangent(mid, 0.5 * dc) else {
-            return self.step_stress_tangent_by_differences(c0, c1, dt, dc);
-        };
         let d = c1 - c0;
         let norm2 = colon(d, d);
-        let law = if norm2 <= 1e-28 {
-            d_mid
-        } else {
-            let s_mid = self.second_pk(mid);
-            let g = self.energy_increment(c0, c1) - 0.5 * colon(s_mid, d);
-            let dg = 0.5 * colon(self.second_pk(c1) - s_mid, dc) - 0.5 * colon(d_mid, d);
-            d_mid
-                + d * (2.0 * dg / norm2 - 4.0 * g * colon(d, dc) / (norm2 * norm2))
-                + dc * (2.0 * g / norm2)
+        // `S(C_m)`, `g` and `S(C_{n+1})`, where the quotient is formed and a
+        // derived tangent exists (the law decides, not the direction).
+        let shared = std::cell::OnceCell::new();
+        let shared = || {
+            *shared.get_or_init(|| {
+                let s_mid = self.second_pk(mid);
+                let g = self.energy_increment(c0, c1) - 0.5 * colon(s_mid, d);
+                (s_mid, g, self.second_pk(c1))
+            })
         };
-        if self.is_viscous() {
-            law + newtonian_viscous_stress(
-                dc * (0.5 / dt),
-                self.shear_viscosity,
-                self.bulk_viscosity,
-            )
-        } else {
-            law
-        }
+        dcs.map(|dc| {
+            let Some(d_mid) = self.second_pk_tangent(mid, 0.5 * dc) else {
+                return self.step_stress_tangent_by_differences(c0, c1, dt, dc);
+            };
+            let law = if norm2 <= 1e-28 {
+                d_mid
+            } else {
+                let (s_mid, g, s_end) = shared();
+                let dg = 0.5 * colon(s_end - s_mid, dc) - 0.5 * colon(d_mid, d);
+                d_mid
+                    + d * (2.0 * dg / norm2 - 4.0 * g * colon(d, dc) / (norm2 * norm2))
+                    + dc * (2.0 * g / norm2)
+            };
+            if self.is_viscous() {
+                law + newtonian_viscous_stress(
+                    dc * (0.5 / dt),
+                    self.shear_viscosity,
+                    self.bulk_viscosity,
+                )
+            } else {
+                law
+            }
+        })
     }
 
     /// The derivative of `second_pk` at `c` along `d`, `matter`'s derived

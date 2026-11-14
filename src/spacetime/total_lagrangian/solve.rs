@@ -279,6 +279,14 @@ pub(crate) fn solve(
     // reference basis `F_n^T grad_n N` is `grad_X N` itself.
     // The internal force's evaluations (`Timing::internal_evaluations`).
     let evaluations = Cell::new(0u64);
+    // The last internal force's iterate, bit for bit, with each point's
+    // `F_n+1` and the law's stress there (before any probe's variant):
+    // Newton linearises at the trial it has just accepted, whose force it
+    // evaluated, so `linearised_at` reads these instead of computing the
+    // same values again.
+    // The iterate and, per point, the first Piola stress, `F_n+1` and the law's stress.
+    type Kept = Option<(Vec<f64>, Vec<(DMat2, DMat2, DMat2)>)>;
+    let last_stresses: std::cell::RefCell<Kept> = std::cell::RefCell::new(None);
     let internal = |u: &[f64]| -> Vec<f64> {
         evaluations.set(evaluations.get() + 1);
         #[cfg(all(test, feature = "experimental"))]
@@ -335,13 +343,14 @@ pub(crate) fn solve(
         // expressions on the same inputs, the same sums, so the force is
         // bitwise the serial one (one chunk
         // holds 64 points, so a small body's law ran on one thread).
-        let first_at = |p: usize| -> DMat2 {
+        let first_at = |p: usize| -> (DMat2, DMat2, DMat2) {
             let f1 = deformation_at(u, p);
             let f0 = f_now[p];
             let (c0, c1) = (f0.transpose() * f0, f1.transpose() * f1);
             // The law's step stress and the Kelvin-Voigt dashpot's in
             // parallel, on the same `F_n+1/2` (`Elastic::step_stress`).
             let s = solids[p].step_stress(c0, c1, dt);
+            let law_stress = s;
             // The stress acts through `F_n+1/2`.
             let carrier = f0 * 0.5 + f1 * 0.5;
             #[cfg(all(test, feature = "experimental"))]
@@ -388,15 +397,17 @@ pub(crate) fn solve(
             } else {
                 first
             };
-            first
+            (first, f1, law_stress)
         };
-        let firsts: Vec<DMat2> = (0..n).into_par_iter().map(first_at).collect();
-        parallel_scatter(grid.len, n, |p, acc| {
+        let firsts: Vec<(DMat2, DMat2, DMat2)> = (0..n).into_par_iter().map(first_at).collect();
+        let force = parallel_scatter(grid.len, n, |p, acc| {
             for a in 0..2 {
-                let row = firsts[p].row(a);
+                let row = firsts[p].0.row(a);
                 grid.visit(p, a, |k, _, g| acc[k] += row.dot(g));
             }
-        })
+        });
+        *last_stresses.borrow_mut() = Some((u.to_vec(), firsts));
+        force
     };
     // The walls' push on the particles held on their planes (`step`),
     // `max(0, lambda - k g)` along the inward normal, `g` the particle's
@@ -963,13 +974,24 @@ pub(crate) fn solve(
             DMat2::from_cols(DVec2::ZERO, DVec2::Y),
             DMat2::from_cols(DVec2::Y, DVec2::X),
         ];
+        // The internal force's `F_n+1` and stress, when it was evaluated at
+        // this very iterate (bit for bit): the same values as computing them.
+        let kept = last_stresses.borrow();
+        let kept = kept.as_ref().and_then(|(at, points)| {
+            (at.len() == u.len() && at.iter().zip(u).all(|(a, b)| a.to_bits() == b.to_bits()))
+                .then_some(points)
+        });
         let out = (0..n)
             .into_par_iter()
             .map(|p| {
                 if v0[p] <= 0.0 {
                     return Linearised::default();
                 }
-                let (f0, f1) = (f_now[p], deformation_at(u, p));
+                let (f0, f1) = (
+                    f_now[p],
+                    kept.map_or_else(|| deformation_at(u, p), |k| k[p].1),
+                );
+                let law_stress = kept.map(|k| k[p].2);
                 let (c0, c1) = (f0.transpose() * f0, f1.transpose() * f1);
                 #[cfg(all(test, feature = "experimental"))]
                 if let Some(hoop) = hoop {
@@ -991,8 +1013,8 @@ pub(crate) fn solve(
                 }
                 Linearised {
                     f1,
-                    s: solids[p].step_stress(c0, c1, dt),
-                    ds: unit.map(|e| solids[p].step_stress_tangent(c0, c1, dt, e)),
+                    s: law_stress.unwrap_or_else(|| solids[p].step_stress(c0, c1, dt)),
+                    ds: solids[p].step_stress_tangents(c0, c1, dt, unit),
                     #[cfg(all(test, feature = "experimental"))]
                     hoop: None,
                 }
