@@ -21,7 +21,7 @@ pub(crate) use stencil::stable_sub_steps;
 pub mod transfer;
 pub mod water_saturation;
 
-pub use cosserat_field::{CosseratConfig, CosseratField};
+pub use cosserat_field::{CosseratConfig, CosseratField, GridScale};
 pub use diffusion::{ThermalConfig, ThermalDiffusion};
 pub use enthalpy::{
     PhaseChainProperties, PhaseState, chained_enthalpy_from_temperature,
