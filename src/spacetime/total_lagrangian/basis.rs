@@ -473,8 +473,11 @@ impl Grid {
         let matrix = kept.as_ref().expect("assembled above");
         (0..self.len)
             .map(|k| {
-                (matrix.start[k]..matrix.start[k + 1])
-                    .map(|e| matrix.value[e] * y[matrix.column[e]])
+                let (a, b) = (matrix.start[k], matrix.start[k + 1]);
+                matrix.value[a..b]
+                    .iter()
+                    .zip(&matrix.column[a..b])
+                    .map(|(value, &column)| value * y[column])
                     .sum()
             })
             .collect()
@@ -566,6 +569,14 @@ impl Grid {
         }
     }
 
+    /// Gradient alone of lattice `a`'s field `y` at particle `p`: `read`'s
+    /// gradient, the same sum in the same order.
+    pub(crate) fn gradient(&self, y: &[f64], p: usize, a: usize) -> DVec2 {
+        let mut grad = DVec2::ZERO;
+        self.visit(p, a, |k, _, g| grad += g * y[k]);
+        grad
+    }
+
     /// Value and gradient of lattice `a`'s field `y` at particle `p`.
     pub(crate) fn read(&self, y: &[f64], p: usize, a: usize) -> (f64, DVec2) {
         let (mut value, mut grad) = (0.0, DVec2::ZERO);
@@ -609,8 +620,8 @@ impl Grid {
         } else {
             vec![0.0; self.len]
         };
-        for k in 0..self.len {
-            out[k] += eps * self.lumped[k] * y[k];
+        for (value, (lumped, e)) in out.iter_mut().zip(self.lumped.iter().zip(y)) {
+            *value += eps * lumped * e;
         }
         if let Some(inert) = self.massless() {
             for (value, &none) in out.iter_mut().zip(inert) {
@@ -648,6 +659,11 @@ impl Grid {
             let list = reach(p);
             for &(k, a, wk, gk) in &list {
                 for &(m, b, wm, gm) in &list {
+                    // The upper triangle's entries are dropped by `add`:
+                    // not computed (the kept ones are the same sums).
+                    if !band.keeps(k, m) {
+                        continue;
+                    }
                     let mut value = 0.0;
                     if a == b {
                         if !inert(k) && !inert(m) {
@@ -865,6 +881,7 @@ impl Grid {
             width,
             data: vec![0.0; n * (width + 1)],
             order,
+            upper: Vec::new(),
         }
     }
 

@@ -210,6 +210,7 @@ fn the_band_factor_solves_its_system() {
         width,
         data: vec![0.0; n * (width + 1)],
         order: order.clone(),
+        upper: Vec::new(),
     };
     for i in 0..n {
         for j in i.saturating_sub(width)..=i {

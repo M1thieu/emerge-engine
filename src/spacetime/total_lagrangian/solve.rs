@@ -259,8 +259,7 @@ pub(crate) fn solve(
     let external = super::axisymmetric::with_point_loads(grid, external);
     let f_now: &[DMat2] = f;
     let deformation_at = |u: &[f64], p: usize| -> DMat2 {
-        let (_, gu) = grid.read(u, p, 0);
-        let (_, gv) = grid.read(u, p, 1);
+        let (gu, gv) = (grid.gradient(u, p, 0), grid.gradient(u, p, 1));
         let grad = DMat2::from_cols(DVec2::new(gu.x, gv.x), DVec2::new(gu.y, gv.y));
         if lagrangian {
             f_now[p] + grad
@@ -1012,8 +1011,7 @@ pub(crate) fn solve(
                 return;
             }
             let t = &lin[p];
-            let (_, gu) = grid.read(d, p, 0);
-            let (_, gv) = grid.read(d, p, 1);
+            let (gu, gv) = (grid.gradient(d, p, 0), grid.gradient(d, p, 1));
             let grad = DMat2::from_cols(DVec2::new(gu.x, gv.x), DVec2::new(gu.y, gv.y));
             let f0 = f_now[p];
             let df = if lagrangian { grad } else { grad * f0 };
