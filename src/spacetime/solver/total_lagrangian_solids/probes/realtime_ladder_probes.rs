@@ -339,7 +339,7 @@ fn tries_knob() -> bool {
 
 /// One frame's cost breakdown: the frame report's timing parts (s), its
 /// kept steps, rejected tries, kept Newton iterations and GMRES iterations,
-/// and the TEMPORARY solve counters of the snapshot summed over every solve
+/// and the snapshot's solve counters (`hooks::take_parts`) summed over every solve
 /// of the frame (discarded and rejected tries included): Newton iterations,
 /// solves, Jacobian products, linearisations, residual evaluations, the
 /// solves' wall time.

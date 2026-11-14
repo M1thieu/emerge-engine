@@ -3031,7 +3031,7 @@ fn fluid_geostatic_prestress_isothermal_cavitating_vs_newtonian_ab() {
     println!("[isothermal-ab] cavitating_300k:          {cavitating_line}");
 }
 
-/// TEMPORARY structural-boundary investigation: the literature-derived 2x2
+/// Structural-boundary diagnostic (opt-in feature, ignored by default): the literature-derived 2x2
 /// matrix, measured through
 /// the accepted-substep impulse ledger rather than visual motion. All four runs
 /// have identical particles, material, wall position, timestep and analytic

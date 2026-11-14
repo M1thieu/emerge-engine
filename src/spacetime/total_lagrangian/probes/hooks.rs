@@ -598,7 +598,7 @@ pub(crate) fn take_effectivity() -> Vec<EffectivityRow> {
     std::mem::take(&mut *EFFECTIVITY_ROWS.lock().expect("rows lock"))
 }
 
-/// TEMPORARY measurement (not to be committed): the solve's parts, summed:
+/// The solve's parts, summed for the cost probes (test builds only):
 /// 0 Jacobian products, 1 their vector setup s, 2 their mass products s,
 /// 3 their internal-force products s, 4 their masking s, 5 linearisations,
 /// 6 residual evaluations, 7 solves, 8 the solves' wall time s, 9 Newton
