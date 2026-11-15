@@ -693,6 +693,90 @@ fn two_blocks_collide_with_their_energy_and_momentum_kept() {
     );
 }
 
+/// Two equal bars meeting head-on separate after the impact. In the
+/// centre-of-mass frame each bar meets the symmetry plane as a rigid
+/// frictionless wall, the bar-on-wall problem of Doyen, Ern and Piperno
+/// (2011, sec. 3.1): the push lasts `2L/c` and the bar leaves; in the lab
+/// frame the striker slows, the struck bar leaves faster, and the gap opens.
+/// Held here: after the meeting the contact pushes and never pulls (the
+/// struck bar ends faster than the striker, the gap grows frame to frame);
+/// the momentum's own check is the two blocks' collision's. The
+/// exchange's completeness converges with the tolerance (measured, bars
+/// 24 x 2 cells, the striker's speed after the meeting: 0.188, 0.0885,
+/// 0.0538, 0.0560 of `V` at 1e-1, 1e-2, 1e-3, 1e-4) and is not asserted at
+/// this one. Before the admissibility test of the body-body gaps
+/// (`weighted_gap`), the striker's back face was paired with the struck
+/// bar's front face through its own body and the bars never separated.
+#[test]
+fn two_equal_bars_meet_push_and_separate() {
+    let mut config = SimConfig::earth(80, CELL_M, 1.0 / 60.0);
+    config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
+    let mut sim = Simulation::empty(config);
+    let id = sim
+        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .0;
+    // Bars of 24 x 2 cells 6 cells apart, the striker at 0.25 m/s: they
+    // meet after about 0.24 s (frame 15 of 1/60 s).
+    let speed = 0.25 / CELL_M;
+    let striker_tag = sim.add_body(block(&config, id, (24, 2), 20.0, 0.0));
+    let _struck = sim.add_body(block(&config, id, (24, 2), 50.0, 0.0));
+    let striker: Vec<bool> = sim
+        .particles()
+        .user_tag
+        .iter()
+        .map(|&t| t == striker_tag)
+        .collect();
+    for (v, &s) in sim.particles_mut().v.iter_mut().zip(&striker) {
+        if s {
+            *v = Vec2::new(speed, 0.0);
+        }
+    }
+    // Per body its mean velocity along the bars, and the gap between the
+    // striker's front particle and the struck bar's back one, cells.
+    let read = |sim: &Simulation| -> (f64, f64, f64) {
+        let p = sim.particles();
+        let (mut ms, mut mt, mut ps, mut pt) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        let (mut front, mut back) = (f32::NEG_INFINITY, f32::INFINITY);
+        for (((&s, &m), v), x) in striker.iter().zip(&p.mass).zip(&p.v).zip(&p.x) {
+            let w = f64::from(m);
+            if s {
+                ms += w;
+                ps += w * f64::from(v.x);
+                front = front.max(x.x);
+            } else {
+                mt += w;
+                pt += w * f64::from(v.x);
+                back = back.min(x.x);
+            }
+        }
+        (ps / ms, pt / mt, f64::from(back - front))
+    };
+    let mut gaps = Vec::new();
+    for _ in 0..20 {
+        sim.step();
+        let (vs, vt, gap) = read(&sim);
+        println!(
+            "bars: striker {:.4} of V, struck {:.4} of V, gap {gap:.4} cells",
+            vs / f64::from(speed),
+            vt / f64::from(speed)
+        );
+        gaps.push((vs, vt, gap));
+    }
+    let &(vs, vt, _) = gaps.last().expect("frames");
+    assert!(
+        vt > vs,
+        "the struck bar ({vt}) is not faster than the striker ({vs}): no separation"
+    );
+    // After the push has ended (its last frames), the gap grows frame to
+    // frame: the bars separate and nothing pulls them back.
+    let tail = &gaps[gaps.len() - 3..];
+    assert!(
+        tail.windows(2).all(|w| w[1].2 > w[0].2),
+        "the gap does not open: {:?}",
+        tail.iter().map(|g| g.2).collect::<Vec<_>>()
+    );
+}
+
 #[test]
 #[should_panic(expected = "does not support force fields")]
 fn the_path_refuses_force_fields_it_does_not_carry() {

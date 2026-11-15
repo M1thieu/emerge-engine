@@ -33,7 +33,16 @@
 //!   point faces: on a side perpendicular to the obstacle its sign is the
 //!   solve's noise (measured: a flat block's corner conditions decided
 //!   differently left and right, the block left a flat bounce turning at
-//!   4.9 rad/s);
+//!   4.9 rad/s). Against a body the sign comes from the geometry instead:
+//!   a point penetrates only inside the other body (point in polygon,
+//!   Laursen and Chawla 1997, eq. (1)), and its facing segment is the one
+//!   its normal line enters the other body through, ahead of it when
+//!   outside and behind it when inside, not reached through its own body.
+//!   Measured without it: two equal bars meeting head-on, the moving bar's
+//!   back face was paired with the resting bar's front face through its own
+//!   body, held there as already across, and the bars never separated;
+//!   with it they exchange their velocities and separate, converging in the
+//!   tolerance;
 //! - between two bodies, single pass: the first outline is the non-mortar
 //!   side, as in Puso et al.'s sec. 3 (their two-pass repeats it flipped).
 //!
@@ -269,8 +278,16 @@ pub(crate) fn reaching_conditions(
                 for &(r, w) in members {
                     let p = outline[r];
                     let (normal, nodal) = outward(grid, x, outline, r);
-                    // The master's segment the point's normal line meets,
-                    // nearest along it, facing the point.
+                    // A point penetrates only inside the other body
+                    // (Laursen and Chawla 1997, eq. (1)), tested on its
+                    // outline polygon.
+                    let penetrating = inside(x, master, x[p]);
+                    // The master's segment through which the point's normal
+                    // line enters it: ahead of the point and nearest when the
+                    // point is outside (a positive gap), behind it and nearest
+                    // when inside (the way it came in, a negative gap). A line
+                    // that meets the other body only behind an outside point,
+                    // through the point's own body, has no facing segment.
                     let mut best: Option<(f64, (usize, usize), f64)> = None;
                     for k in 0..master.len() {
                         let (first, second) = (master[k], master[(k + 1) % master.len()]);
@@ -287,13 +304,28 @@ pub(crate) fn reaching_conditions(
                         if !(0.0..=1.0).contains(&xi) {
                             continue;
                         }
+                        // The master runs counter-clockwise, its outward
+                        // normal on the right of `side`: the line enters the
+                        // body across this segment exactly when it points
+                        // against that normal (no angle chosen).
+                        if normal.dot(DVec2::new(side.y, -side.x)) >= 0.0 {
+                            continue;
+                        }
                         let hit = x[first] + xi * side;
                         let signed = (hit - x[p]).dot(normal);
-                        if best.is_none_or(|(s, _, _)| signed.abs() < s.abs()) {
-                            let closing =
-                                ((1.0 - xi) * v[first] + xi * v[second] - v[p]).dot(normal);
-                            best = Some((signed, (first, second), closing));
+                        if penetrating != (signed <= 0.0) {
+                            continue;
                         }
+                        if best.is_some_and(|(s, _, _)| s.abs() <= signed.abs()) {
+                            continue;
+                        }
+                        // An outside point whose way to the segment crosses
+                        // its own body does not face it (self-shadowing).
+                        if !penetrating && crosses_own_outline(x, outline, r, hit) {
+                            continue;
+                        }
+                        let closing = ((1.0 - xi) * v[first] + xi * v[second] - v[p]).dot(normal);
+                        best = Some((signed, (first, second), closing));
                     }
                     if let Some((signed, ends, closing)) = best {
                         facing.push((
@@ -330,6 +362,42 @@ pub(crate) fn reaching_conditions(
         }
     }
     found
+}
+
+/// Whether `q` lies inside the polygon through the outline points `polygon` (in order), by the crossing count of a
+/// ray along +x: the admissibility test of a body-body gap (Laursen and Chawla 1997, eq. (1): penetration only inside
+/// the other body), discretised on the outline polygon.
+fn inside(x: &[DVec2], polygon: &[usize], q: DVec2) -> bool {
+    let mut crossings = false;
+    for k in 0..polygon.len() {
+        let (a, b) = (x[polygon[k]], x[polygon[(k + 1) % polygon.len()]]);
+        if (a.y > q.y) != (b.y > q.y) && q.x < a.x + (q.y - a.y) / (b.y - a.y) * (b.x - a.x) {
+            crossings = !crossings;
+        }
+    }
+    crossings
+}
+
+/// Whether the open segment from the outline point `r` to `target` crosses the outline `outline` itself, away from
+/// the two edges at `r`: the point's way to `target` then passes through its own body.
+fn crosses_own_outline(x: &[DVec2], outline: &[usize], r: usize, target: DVec2) -> bool {
+    let count = outline.len();
+    let from = x[outline[r]];
+    let along = target - from;
+    (0..count).any(|k| {
+        if k == r || (k + 1) % count == r {
+            return false;
+        }
+        let (a, b) = (x[outline[k]], x[outline[(k + 1) % count]]);
+        let side = b - a;
+        let denominator = along.perp_dot(side);
+        if denominator.abs() <= f64::MIN_POSITIVE {
+            return false;
+        }
+        let t = (a - from).perp_dot(side) / denominator;
+        let u = (a - from).perp_dot(along) / denominator;
+        t > 0.0 && t < 1.0 && (0.0..=1.0).contains(&u)
+    })
 }
 
 #[cfg(test)]
