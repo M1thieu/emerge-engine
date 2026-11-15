@@ -16,5 +16,6 @@ domain walls, through `walls.rs`), `matter/materials/` (each body's record).
 | `flight.rs` | a body in free flight carried by its exact modes |
 | `handoff.rs` | when flight hands back to the step inside a frame |
 | `rest.rs`, `rest/` | a body at rest carried by its constrained modes |
+| `equilibrium.rs` | an initial condition: a lone body's shape at rest under its weight, by the static mode of the step's solve |
 | `walls.rs` | the wall laws as contact planes: an adapter, no law of its own |
 | `probes/` | test builds only; see its README |

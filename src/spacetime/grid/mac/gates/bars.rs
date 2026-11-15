@@ -507,6 +507,13 @@ fn probe_bar_impact() {
                 }
             };
             println!("{}", bar_impact_run(courant, cells));
+            let refund = crate::spacetime::total_lagrangian::end_gap_refund::refund_on();
+            if refund {
+                println!(
+                    "  so far: {}",
+                    crate::spacetime::total_lagrangian::end_gap_refund::report()
+                );
+            }
         }
     }
 }

@@ -771,6 +771,51 @@ impl Simulation {
         frame.tolerance_energy = state.tolerance_energy;
         frame.balance = frame.energy + frame.heat - frame.start_energy;
         state.frame = frame;
+        // A kept probe (`EMERGE_PROBE_STATE_HASH`, experimental builds only):
+        // the bit-identity gate of a change meant to be lossless, an FNV-1a
+        // hash of the state's bits and the frame's counts, printed per frame.
+        #[cfg(feature = "experimental")]
+        if std::env::var_os("EMERGE_PROBE_STATE_HASH").is_some() {
+            let mut hash = 0xcbf2_9ce4_8422_2325u64;
+            let mut eat = |word: u64| {
+                for byte in word.to_le_bytes() {
+                    hash ^= u64::from(byte);
+                    hash = hash.wrapping_mul(0x0100_0000_01b3);
+                }
+            };
+            for p in 0..state.particles {
+                for value in [state.x[p].x, state.x[p].y, state.v[p].x, state.v[p].y] {
+                    eat(value.to_bits());
+                }
+                for value in state.f[p].to_cols_array() {
+                    eat(value.to_bits());
+                }
+            }
+            for value in [state.frame.energy, state.frame.heat, state.frame.balance] {
+                eat(value.to_bits());
+            }
+            println!(
+                "state hash: frame {} {hash:016x} steps {} rejected {} passes {} newton {} gmres {}",
+                self.frame_index,
+                state.frame.steps,
+                state.frame.rejected,
+                state.frame.passes,
+                state.frame.newton,
+                state.frame.gmres
+            );
+        }
+        self.write_total_lagrangian_particles(&state);
+        #[cfg(all(test, feature = "experimental"))]
+        handoff::frame_report(&state, self.frame_index);
+        #[cfg(all(test, feature = "experimental"))]
+        pressure_wave_energy::frame_end(&state, self.frame_index);
+        self.total_lagrangian = Some(state);
+        self.frame_index = self.frame_index.saturating_add(1);
+    }
+
+    /// The particles' `f32` copies of the path's state, for the renderer, the
+    /// queries and the GPU.
+    fn write_total_lagrangian_particles(&mut self, state: &TotalLagrangianState) {
         let units = GridUnits::of(&self.config);
         for p in 0..state.particles {
             let f = state.f[p];
@@ -785,12 +830,6 @@ impl Simulation {
                 self.particles.density[p] = units.density_to_grid(state.mass[p] / volume);
             }
         }
-        #[cfg(all(test, feature = "experimental"))]
-        handoff::frame_report(&state, self.frame_index);
-        #[cfg(all(test, feature = "experimental"))]
-        pressure_wave_energy::frame_end(&state, self.frame_index);
-        self.total_lagrangian = Some(state);
-        self.frame_index = self.frame_index.saturating_add(1);
     }
 
     /// One frame of a lone body's flight carried by its modes, when it may
@@ -923,6 +962,8 @@ impl Simulation {
     }
 }
 
+mod equilibrium;
+pub use equilibrium::{AtRest, SettleRefused};
 mod flight;
 mod handoff;
 mod walls;
@@ -961,6 +1002,10 @@ mod at_rest_tests;
 #[cfg(all(test, feature = "experimental"))]
 #[path = "total_lagrangian_solids/probes/damped_rest_tests.rs"]
 mod damped_rest_tests;
+
+#[cfg(all(test, feature = "experimental"))]
+#[path = "total_lagrangian_solids/probes/equilibrium_tests.rs"]
+mod equilibrium_tests;
 
 #[cfg(all(test, feature = "experimental"))]
 #[path = "total_lagrangian_solids/probes/probes.rs"]

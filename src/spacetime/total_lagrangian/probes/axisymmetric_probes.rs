@@ -24,6 +24,8 @@ use glam::{DMat2, DVec2};
 
 #[path = "axisymmetric_dynamic.rs"]
 mod dynamic;
+#[path = "tied_body.rs"]
+mod tied_body;
 
 use super::basis::axis;
 use super::multipliers::dense_solve;

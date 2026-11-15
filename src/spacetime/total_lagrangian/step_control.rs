@@ -129,11 +129,15 @@ impl StepControl {
             safety: 0.9,
             growth: 10.0,
             largest,
-            substeps: [1, 2, 3],
+            substeps: KLAPPROTH_SUBSTEPS,
             estimator,
         }
     }
 }
+
+/// The try lengths of Klapproth, Schiela and Deuflhard's estimate: the whole
+/// step, its halves and its thirds (`StepControl::substeps`).
+pub(crate) const KLAPPROTH_SUBSTEPS: [usize; 3] = [1, 2, 3];
 
 /// The error estimate a controlled step uses.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -927,7 +931,17 @@ pub fn controlled_step(
             let refused = breach.is_some() && dt > floor;
             #[cfg(not(all(test, feature = "experimental")))]
             let refused = false;
-            let failed = refused || halves_reports.iter().any(|r| !r.converged && !r.stagnated);
+            // The whole try is the error estimate's other end: unconverged, it
+            // is no solution of the step's equations either, and the
+            // difference to it measures the solve's failure, not the step's
+            // error. No estimate then, so no acceptance: the step is halved
+            // as for unconverged halves. Kept, a whole try at the contact
+            // passes' cap (a multiplier 2-cycle on two conditions, traced)
+            // was compared against halves that had settled.
+            let unestimated = whole_reports.iter().any(|r| !r.converged && !r.stagnated);
+            let failed = refused
+                || unestimated
+                || halves_reports.iter().any(|r| !r.converged && !r.stagnated);
             if failed && dt > floor {
                 #[cfg(all(test, feature = "experimental"))]
                 hooks::add_return_split(returns.0, returns.1, false);
@@ -1040,6 +1054,12 @@ pub fn controlled_step(
         let (c1, c2, beta) = pair(k1, k2);
         let second_two = combine(c1, &first, c2, &second);
         let contact = contact_first || contact_second;
+        // Both tries enter every estimate below (eqs. 33, 36-39): either
+        // unconverged, there is no estimate (as in the step-doubling branch).
+        let unestimated = first_reports
+            .iter()
+            .chain(&second_reports)
+            .any(|r| !r.converged && !r.stagnated);
         let (kept, reports, error, ratio, contact, parts) = if !contact {
             // Eqs. 33 and 42.
             let difference = combine(1.0, &second, -1.0, &second_two);
@@ -1194,7 +1214,9 @@ pub fn controlled_step(
         let refused = breach.is_some();
         #[cfg(not(all(test, feature = "experimental")))]
         let refused = false;
-        if (refused || reports.iter().any(|r| !r.converged && !r.stagnated)) && dt > floor {
+        if (refused || unestimated || reports.iter().any(|r| !r.converged && !r.stagnated))
+            && dt > floor
+        {
             rejected += 1;
             unconverged += 1;
             *tau = (0.5 * dt).max(floor);

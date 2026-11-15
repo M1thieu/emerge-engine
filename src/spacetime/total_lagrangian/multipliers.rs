@@ -64,7 +64,7 @@ pub(crate) fn newton_on_multipliers(
         if size == 0.0 {
             return false;
         }
-        let h = 1e-6 * (grid.cell + base) / size;
+        let h = central_difference_step(grid.cell, base, size);
         let plus: Vec<f64> = solution
             .u
             .iter()

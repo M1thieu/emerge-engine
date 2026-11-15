@@ -202,9 +202,33 @@ fn run_measured(sim: &mut Simulation, frames: usize) -> (f64, f32, f64) {
     let mut replay = Vec::new();
     let frame_s = f64::from(sim.config().dt);
     let count = sim.particles().len() as f64;
+    // The run's cost in counts (no clock): steps, rejected tries, contact
+    // passes and Newton iterations, and the heaviest frame's passes, printed
+    // once per run as a `cost counts` line for the cost check
+    // (`EMERGE_COST_BASELINE` is not read here: the comparison is outside).
+    let (mut steps, mut rejected, mut passes, mut newton, mut heaviest) =
+        (0u64, 0u64, 0u64, 0u64, 0u64);
+    // The Jacobian factorizations, appended after the fields the cost check
+    // reads; and a kept probe (`EMERGE_PROBE_PROFILE`), the wall model's
+    // profile: the frames' always-on `Timing` and wall summed.
+    let mut factorizations = 0u64;
+    let mut profile: Option<(f64, _)> = None;
     for _ in 0..frames {
         sim.step();
         let frame = sim.total_lagrangian_frame().expect("the path is on");
+        match profile.as_mut() {
+            None => profile = Some((frame.wall, frame.timing)),
+            Some((wall, timing)) => {
+                *wall += frame.wall;
+                timing.add(&frame.timing);
+            }
+        }
+        factorizations += frame.timing.factorizations;
+        steps += u64::from(frame.steps);
+        rejected += u64::from(frame.rejected);
+        passes += u64::from(frame.passes);
+        newton += u64::from(frame.newton);
+        heaviest = heaviest.max(u64::from(frame.passes));
         assert!(frame.energy.is_finite(), "energy not finite");
         allowed += frame.residual_work + frame.contact_work_bound;
         impulse += frame.residual_impulse.x + frame.impulse_round_off;
@@ -326,7 +350,35 @@ fn run_measured(sim: &mut Simulation, frames: usize) -> (f64, f32, f64) {
     // How close the balance came to the bound: a bound far looser than the
     // drift (1e-6 of it, say) would hide a defect below it.
     println!("balance over the solves' bound: at most {tightest:.3e}");
+    if std::env::var_os("EMERGE_PROBE_PROFILE").is_some()
+        && let Some((wall, t)) = profile
+    {
+        let share = |x: f64| 100.0 * x / wall.max(f64::MIN_POSITIVE);
+        println!(
+            "profile: wall {wall:.3} s; residual {:.1} %, jacobian {:.1} % (push derivative {:.1} %, responses' products {:.1} %), linearisation {:.1} %, preconditioner build {:.1} %, preconditioner solve {:.1} %, GMRES {:.1} %, responses {:.1} %, contact {:.1} %, multipliers {:.1} %, grid {:.1} %, finishing {:.1} %, controller {:.1} %; internal-force evaluations {}, factorizations {}",
+            share(t.residual),
+            share(t.jacobian),
+            share(t.push_derivative),
+            share(t.responses_jacobian),
+            share(t.linearisation),
+            share(t.preconditioner_build),
+            share(t.preconditioner_solve),
+            share(t.gmres),
+            share(t.responses),
+            share(t.contact),
+            share(t.multipliers),
+            share(t.grid),
+            share(t.finishing),
+            share(t.controller),
+            t.internal_evaluations,
+            t.factorizations
+        );
+    }
     write_replay(sim, &replay);
+    println!(
+        "cost counts: {}: frames {frames}, steps {steps}, rejected {rejected}, passes {passes}, newton {newton}, heaviest frame passes {heaviest}, factorizations {factorizations}",
+        std::thread::current().name().unwrap_or("unnamed")
+    );
     (worst, deepest, impulse)
 }
 
@@ -358,8 +410,15 @@ fn a_dropped_block_bounces_with_its_energy_kept() {
     }
 }
 
+/// The block's ledger closes and it comes to rest. The heat claim ("all the
+/// kinetic energy becomes heat") is not asserted here: this corotated clay has
+/// no material damping, so the vibration that the sliding and the settling
+/// excite stays in the block (measured: 6e-4 of `1/2 M v0^2` as kinetic and
+/// stored energy at the end, about 20 times what a block at rest can keep,
+/// derived). The claim is the damped block's,
+/// `a_damped_block_slides_to_rest_and_its_energy_becomes_heat`.
 #[test]
-fn a_block_slides_to_rest_and_its_energy_becomes_heat() {
+fn a_block_slides_to_rest_with_its_ledger_closed() {
     let config = config(1e-1);
     let mut sim = Simulation::empty(config);
     let id = sim
@@ -394,19 +453,103 @@ fn a_block_slides_to_rest_and_its_energy_becomes_heat() {
         "still sliding at {} m/s",
         mean_speed * CELL_M
     );
+}
+
+/// The slide of `a_block_slides_to_rest_with_its_ledger_closed` in a damped
+/// material: Harbutt's Plasticine, freshly formed, its relaxed elasticity and
+/// three Zener mechanisms measured by Crandall, Ehrlich and Wenk 1970
+/// (`ViscoelasticRecord::plasticine_crandall_1970_fresh`). Damped, the
+/// vibration the sliding and the settling excite is dissipated into heat, so
+/// at the end the block keeps no more than a block at rest can, derived here
+/// (first law plus statics; no source beyond the record):
+/// - the shear its base traction holds, at most `(mu M g)^2 H / (2 G W)`
+///   (simple shear of a `W x H` block per metre of depth, `k_T = G W / H`);
+/// - its self-weight energy, `W rho^2 g^2 H^3 (1 - nu^2) / (6 E)` (plane
+///   strain, free sides, `sigma_yy = rho g (H - y)`);
+/// - the kinetic energy of the translation left (its mean speed);
+///
+/// all with the relaxed modulus (the slowest state, the largest energies).
+/// Asserted: the ledger per frame (`run`), the stop, and the end kinetic plus
+/// stored energy within that bound plus the ledger's worst balance: the rest
+/// of `1/2 M v0^2` has become heat (the ledger's identity).
+#[test]
+fn a_damped_block_slides_to_rest_and_its_energy_becomes_heat() {
+    let config = config(1e-1);
+    let record =
+        emerge::materials::relaxation::ViscoelasticRecord::plasticine_crandall_1970_fresh();
+    let mut material = CorotatedMaterial::from_physical(&record.relaxed, &config);
+    material.relaxation = Some(record.spectrum);
+    let mut sim = Simulation::empty(config);
+    let id = sim.register_material(Box::new(material)).0;
+    let floor = config.boundary_thickness as f32;
+    let _block = sim.add_body(
+        SpawnRegion::for_sim(&config)
+            .box_of(IVec2::new(8, 4))
+            .at(Vec2::new(SLIDE_START, floor + 2.0))
+            .spacing(0.5)
+            .material(id)
+            .mass_from(&record.relaxed, &config),
+    );
+    sim.add_boundary_condition(Box::new(FrictionBoundary::new(
+        config.boundary_thickness,
+        0.3,
+    )));
+    let speed = 1.0 / CELL_M;
+    let stopping = speed * speed / (2.0 * 0.3 * config.gravity.length());
+    assert_clear_of_side_walls(&config, SLIDE_START, 4.0, stopping);
+    for v in sim.particles_mut().v.iter_mut() {
+        *v = Vec2::new(speed, 0.0);
+    }
+    let (worst, _) = run(&mut sim, 30);
+    let frame = sim.total_lagrangian_frame().expect("the path is on");
+    let mass: f64 = sim.particles().mass.iter().map(|&m| f64::from(m)).sum();
+    let kinetic0 = 0.5 * mass * f64::from(speed) * f64::from(speed) * energy_unit(&sim);
+    let mean_speed: f32 =
+        sim.particles().v.iter().map(|v| v.x).sum::<f32>() / sim.particles().len() as f32;
+    // The bound, SI per metre of depth (the block: 8 x 4 cells of 1 cm).
+    let (e, nu, rho) = (
+        f64::from(record.relaxed.e_pa),
+        f64::from(record.relaxed.nu),
+        f64::from(record.relaxed.rho_kg_m3),
+    );
+    let (w, h, mu, g) = (
+        0.08f64,
+        0.04f64,
+        0.3f64,
+        f64::from(config.gravity.length() * CELL_M),
+    );
+    let m = 2.0 * kinetic0; // 1/2 m v0^2 with v0 = 1 m/s
+    let shear = (mu * m * g).powi(2) * h / (2.0 * e / (2.0 * (1.0 + nu)) * w);
+    let static_weight = w * rho * rho * g * g * h.powi(3) * (1.0 - nu * nu) / (6.0 * e);
+    let translation = 0.5 * m * f64::from(mean_speed * CELL_M).powi(2);
+    let bound = shear + static_weight + translation;
+    let left = frame.parts[0] + frame.parts[1];
+    println!(
+        "damped slide: heat {:.6} of 1/2 M v0^2, kinetic {:.3e}, stored {:.3e}, their sum {left:.3e} against the at-rest bound {bound:.3e} (shear {shear:.3e}, self-weight {static_weight:.3e}, translation {translation:.3e}) J/m, worst balance {worst:.2e}, end speed {:.3e} m/s",
+        frame.heat / kinetic0,
+        frame.parts[0],
+        frame.parts[1],
+        mean_speed * CELL_M
+    );
+    assert!(worst < 1e-6, "balance {worst:e}");
     assert!(
-        (frame.heat / kinetic0 - 1.0).abs() < 0.01,
-        "heat {} of the kinetic energy",
-        frame.heat / kinetic0
+        mean_speed.abs() * CELL_M < 0.05,
+        "still sliding at {} m/s",
+        mean_speed * CELL_M
+    );
+    assert!(
+        left <= bound + worst,
+        "the block keeps {left:e} J/m, beyond a block at rest's {bound:e}"
     );
 }
 
-/// The same slide in the rigid limit's stand-in, `E` 1 GPa: the settling
-/// vibration of a block released unstressed on the floor carries energy
-/// about `1/E` (2.3 percent of `1/2 M v0^2` at the clay's 11 MPa), so here
-/// the heat must be the kinetic energy to the strict 1 percent.
+/// The same slide in the rigid limit's stand-in, `E` 1 GPa: its ledger
+/// closes. The heat claim is not asserted: undamped, the block keeps its
+/// settling and sliding vibration (measured: 8e-6 of `1/2 M v0^2` at the end,
+/// about 60 times what a block at rest can keep, derived); the claim is the
+/// damped block's, `a_damped_block_slides_to_rest_and_its_energy_becomes_heat`.
 #[test]
-fn a_stiff_block_slides_to_rest_and_its_energy_becomes_heat() {
+fn a_stiff_block_slides_to_rest_with_its_ledger_closed() {
     let stiff = Elastic {
         e_pa: 1e9,
         ..clay()
@@ -446,11 +589,6 @@ fn a_stiff_block_slides_to_rest_and_its_energy_becomes_heat() {
         clock.elapsed().as_secs_f64()
     );
     assert!(worst < 1e-6, "balance {worst:e}");
-    assert!(
-        (frame.heat / kinetic0 - 1.0).abs() < 0.01,
-        "heat {} of the kinetic energy",
-        frame.heat / kinetic0
-    );
 }
 
 #[test]
@@ -518,10 +656,40 @@ fn two_blocks_collide_with_their_energy_and_momentum_kept() {
         allowed + sums,
         moved / (allowed + sums)
     );
+    // The bodies met, and did not pass through each other: Signorini between
+    // them, the gap never negative, so their order along the closing axis
+    // is kept. Checked at the run's end, after the meeting time (0.16 s of
+    // 0.5 s): the left body's rightmost particle stays left of the right
+    // body's leftmost one within the path's declared penetration, a step's
+    // travel at the closing speed (`v dt`, as the drop test declares). The
+    // ledger and the momentum alone hold as well when the bodies pass
+    // through each other (measured: a run whose body-body conditions were
+    // all dropped kept both and passed).
+    let x = &sim.particles().x;
+    let left_most = x
+        .iter()
+        .zip(&left)
+        .filter(|&(_, &l)| l)
+        .map(|(q, _)| q.x)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let right_least = x
+        .iter()
+        .zip(&left)
+        .filter(|&(_, &l)| !l)
+        .map(|(q, _)| q.x)
+        .fold(f32::INFINITY, f32::min);
+    let penetration = speed * sim.config().dt;
+    println!(
+        "collision: the left body's rightmost particle at {left_most:.4} cells, the right body's leftmost at {right_least:.4} (declared penetration {penetration:.4})"
+    );
     assert!(worst < 1e-6, "balance {worst:e}");
     assert!(
         moved <= allowed + sums,
         "the momentum moved {moved:e} N s/m, beyond what the solves allow, {allowed:e} plus {sums:e} (sums)"
+    );
+    assert!(
+        left_most <= right_least + penetration,
+        "the bodies passed through each other: the left body reaches {left_most} cells, the right body starts at {right_least}"
     );
 }
 
@@ -621,16 +789,34 @@ fn a_falling_block_gains_g_t_in_si() {
 }
 
 /// A block sliding on a Coulomb floor stops after `v0^2 / (2 mu g)`, in
-/// metres (rigid-body Coulomb, the elastic block's centre of mass): within
-/// 1 percent, the heat criterion's own tolerance, stated before measuring.
+/// metres (rigid-body Coulomb, the block's centre of mass): within 1
+/// percent, the heat criterion's own tolerance, stated before measuring.
+/// The block is the measured plasticine (Crandall, Ehrlich and Wenk 1970,
+/// its three relaxation mechanisms): a body that dissipates its vibration.
+/// The rigid distance is the limit of such a body, not of a lossless one:
+/// an undamped elastic block, released unstressed, keeps vibrating, its base
+/// leaves the floor and its slip reverses, and it slides further (measured,
+/// E 1 MPa: 1.051 of the rigid distance, converged in the step tolerance,
+/// 1.0508 at 1e-2 and 1.0512 at 1e-3, its base out of contact at 73 percent
+/// of the step ends; the plasticine 0.99998 at both).
 #[test]
 fn a_sliding_block_stops_after_v0_squared_over_2_mu_g() {
     let config = config(1e-1);
+    let record =
+        emerge::materials::relaxation::ViscoelasticRecord::plasticine_crandall_1970_fresh();
+    let mut material = CorotatedMaterial::from_physical(&record.relaxed, &config);
+    material.relaxation = Some(record.spectrum);
     let mut sim = Simulation::empty(config);
-    let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
-        .0;
-    let _block = sim.add_body(block(&config, id, (8, 4), SLIDE_START, 0.0));
+    let id = sim.register_material(Box::new(material)).0;
+    let floor = config.boundary_thickness as f32;
+    let _block = sim.add_body(
+        SpawnRegion::for_sim(&config)
+            .box_of(IVec2::new(8, 4))
+            .at(Vec2::new(SLIDE_START, floor + 2.0))
+            .spacing(0.5)
+            .material(id)
+            .mass_from(&record.relaxed, &config),
+    );
     sim.add_boundary_condition(Box::new(FrictionBoundary::new(
         config.boundary_thickness,
         0.3,
@@ -663,6 +849,80 @@ fn a_sliding_block_stops_after_v0_squared_over_2_mu_g() {
     println!("slide: travel {travel:.5} m, v0^2 / (2 mu g) {stopping:.5} m");
     assert!(
         (travel / stopping - 1.0).abs() < 0.01,
+        "travel {travel} m against {stopping} m"
+    );
+}
+
+/// The sliding block of `a_sliding_block_stops_after_v0_squared_over_2_mu_g`
+/// in a von Mises solid (J2 on Hencky elasticity, the record of
+/// `a_ductile_block_splats_and_its_plastic_work_becomes_heat`): the centre
+/// of mass, decelerated by `mu g` while the whole base slides, stops after
+/// `v0^2 / (2 mu g)`. The base's shear, `mu rho g H`, about 200 Pa, stays far
+/// below the 20 kPa yield: no plastic flow. The ledger closes within the
+/// solves' bound (`run`). Bound on the travel: 0.1 percent, stated before
+/// measuring.
+/// Known limit (kind: scope; why: no measured dissipation for this record's
+/// elastic part): a lossless body is not at the rigid limit (it keeps
+/// vibrating and slides further, `a_sliding_block_stops_after_v0_squared_
+/// over_2_mu_g`); at this step tolerance its vibration is under-resolved and
+/// the travel measured, 1.0008 of the rigid distance, sits near the limit.
+/// Removal: a measured dissipation for this record, or the lossless body's
+/// own converged answer as the reference.
+#[test]
+fn a_ductile_block_slides_v0_squared_over_2_mu_g() {
+    let config = config(1e-1);
+    let props = DuctileProps {
+        elastic: Elastic {
+            e_pa: 1.0e6,
+            nu: 0.3,
+            rho_kg_m3: 1700.0,
+        },
+        yield_stress_pa: 2.0e4,
+    };
+    let mut sim = Simulation::empty(config);
+    let id = sim
+        .register_material(Box::new(VonMisesMaterial::from_physical(&props, &config)))
+        .0;
+    let floor = config.boundary_thickness as f32;
+    let _block = sim.add_body(
+        SpawnRegion::for_sim(&config)
+            .box_of(IVec2::new(8, 4))
+            .at(Vec2::new(SLIDE_START, floor + 2.0))
+            .spacing(0.5)
+            .material(id)
+            .mass_from(&props.elastic, &config),
+    );
+    sim.add_boundary_condition(Box::new(FrictionBoundary::new(
+        config.boundary_thickness,
+        0.3,
+    )));
+    let (v0, mu, g) = (1.0f64, 0.3f64, 9.81f64);
+    let stopping = v0 * v0 / (2.0 * mu * g);
+    assert_clear_of_side_walls(
+        &config,
+        SLIDE_START,
+        4.0,
+        (stopping / f64::from(CELL_M)) as f32,
+    );
+    for v in sim.particles_mut().v.iter_mut() {
+        *v = Vec2::new((v0 / f64::from(CELL_M)) as f32, 0.0);
+    }
+    let centre = |sim: &Simulation| -> f64 {
+        let p = sim.particles();
+        let mass: f64 = p.mass.iter().map(|&m| f64::from(m)).sum();
+        p.x.iter()
+            .zip(&p.mass)
+            .map(|(x, &m)| f64::from(x.x) * f64::from(m))
+            .sum::<f64>()
+            / mass
+            * f64::from(CELL_M)
+    };
+    let start = centre(&sim);
+    let _ = run(&mut sim, 30);
+    let travel = centre(&sim) - start;
+    println!("ductile slide: travel {travel:.5} m, v0^2 / (2 mu g) {stopping:.5} m");
+    assert!(
+        (travel / stopping - 1.0).abs() < 0.001,
         "travel {travel} m against {stopping} m"
     );
 }

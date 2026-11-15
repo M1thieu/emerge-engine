@@ -50,6 +50,10 @@ pub(crate) fn preconditioned_cg(
     let norm_b = dot(b, b).sqrt().max(f64::MIN_POSITIVE);
     let mut rz = dot(&r, &z);
     for _ in 0..10 * n.max(1) {
+        // KNOWN-LIMIT[DISCRETIZATION/OPEN-GAP]: the relative residual 1e-13
+        // is not sourced. Removal criterion: a sourced or derived stopping
+        // rule (the mass's conditioning times eps) with the counts identical
+        // or explained.
         if dot(&r, &r).sqrt() <= 1e-13 * norm_b {
             break;
         }

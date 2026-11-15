@@ -295,6 +295,24 @@ impl Relaxation {
             .fold(DMat2::ZERO, |sum, s| sum + s)
     }
 
+    /// Every branch relaxed at `C`: its internal strain `E = S_P(C) / mu_b`,
+    /// so its conjugate `Q = S_P(C) - mu_b E` is zero and the branch stores
+    /// and pushes nothing (`energy`, `step_stress` at `C_n = C_{n+1} = C`).
+    /// The state a branch reaches held at `C` long enough: Liu and Guan's
+    /// eq. 4.23 at constant `C` decays `Q` as `e^(-theta t)`. For the static
+    /// mode's end state (`Elastic::static_stress`), an initial condition.
+    pub(crate) fn relax_at(&mut self, c: DMat2, (lambda, mu): (f64, f64)) {
+        for pair in self.branches[..self.count].iter_mut() {
+            for (b, (l, m)) in pair
+                .iter_mut()
+                .zip([(0.0, mu), (lambda, 0.0)])
+                .filter_map(|(b, moduli)| b.as_mut().map(|b| (b, moduli)))
+            {
+                b.strain = corotated_second_pk(c, l, m) * b.branch.modulus.recip();
+            }
+        }
+    }
+
     /// The branches after a kept step from `C_n` to `C_{n+1}` of length
     /// `dt`, and what the step did (the heat, the strain against the
     /// record's limit).

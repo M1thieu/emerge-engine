@@ -126,6 +126,9 @@ pub(crate) fn step_total_lagrangian(
         body,
         friction: 0.0,
         responses: false,
+        bounded_friction: false,
+        statics: false,
+        gauge: None,
     };
     let Solution {
         u, v_n, mut report, ..
@@ -292,6 +295,45 @@ pub fn step_total_lagrangian_contact(
     (set, penalty, settings): (ContactSet<'_>, &[f64], &ConservingSettings),
     cache: &mut Option<LagrangianCache>,
 ) -> StepReport {
+    contact_step(
+        layout,
+        particles,
+        (reference, solids),
+        (dt, mode, gravity, false, None),
+        (set, penalty, settings),
+        cache,
+    )
+}
+
+/// `step_total_lagrangian_contact`, or with `statics` one load increment of
+/// the static mode (`solve`'s `Inputs::statics`; the caller,
+/// `settle_total_lagrangian_at_rest`, ramps the load). The contact passes
+/// are the step's own; at rest:
+/// - the conditions held in velocity, each against a plane at its point's
+///   start position, so a condition's gap is its normal displacement over
+///   the increment and its tangential gap its slip over the increment: the
+///   quasi-static incremental frictional problem of Alart and Curnier,
+///   CMAME 92(3) (1991), the slip measured from each increment's start;
+/// - a condition is a candidate when it touches its wall at the
+///   increment's start (its weighted gap within the positions' round-off,
+///   `8 eps` of their size, the margin of `contact_allowance`), there being
+///   no motion to forecast; and every candidate is in the set from the
+///   first pass, a body at rest having no free flight to start from;
+/// - an unconverged frictional solve is not solved again with the bounded
+///   friction penalty (that bound is inertial): it is reported;
+/// - the velocities stay zero.
+pub(crate) fn contact_step(
+    layout: &GridLayout,
+    particles: Particles<'_>,
+    (reference, solids): (&[DVec2], &[Elastic]),
+    (dt, mode, gravity, statics, gauge): (f64, ContactMode, DVec2, bool, Option<usize>),
+    (set, penalty, settings): (ContactSet<'_>, &[f64], &ConservingSettings),
+    cache: &mut Option<LagrangianCache>,
+) -> StepReport {
+    assert!(
+        !statics || mode == ContactMode::Velocity,
+        "the static mode holds its contacts in velocity"
+    );
     let ContactSet {
         planes,
         pairs,
@@ -364,8 +406,19 @@ pub fn step_total_lagrangian_contact(
     // its own step leaves an error the step's length cannot reduce).
     // Held at its start position, a forecast point stands off by its
     // start gap instead of crossing by `v dt`.
-    let reaches =
-        |gap: f64, rate: f64| gap < 0.0 || (settings.forecast_activation && gap + dt * rate <= 0.0);
+    // At rest (`statics`): touching, within the positions' round-off.
+    let touching = 8.0
+        * f64::EPSILON
+        * x.iter()
+            .map(|q| q.x.abs().max(q.y.abs()))
+            .chain(planes.iter().map(|plane| plane.at.abs()))
+            .fold(0.0f64, f64::max);
+    let reaches = |gap: f64, rate: f64| {
+        if statics {
+            return gap <= touching;
+        }
+        gap < 0.0 || (settings.forecast_activation && gap + dt * rate <= 0.0)
+    };
     // With the walls held at the step's end (`end_gap_refund`), every wall
     // condition is a candidate, against the wall itself, its tolerance the
     // resolution alone.
@@ -408,7 +461,15 @@ pub fn step_total_lagrangian_contact(
                 })
                 .collect();
         }
-        candidates = reaching_conditions(traces, outlines, (x, v, dt), planes, &mut own, &reaches);
+        candidates = reaching_conditions(
+            grid,
+            traces,
+            outlines,
+            (x, v, dt),
+            planes,
+            &mut own,
+            &reaches,
+        );
         let mut on_outline = vec![false; n];
         for &q in outlines.iter().flatten() {
             on_outline[q] = true;
@@ -425,7 +486,7 @@ pub fn step_total_lagrangian_contact(
                 let gap = plane.inward * (q[plane.axis] - plane.at);
                 if at_wall || reaches(gap, plane.inward * (v[p][plane.axis] - plane.speed)) {
                     own.push(if at_wall {
-                        plane.after(dt)
+                        plane.after(dt).at_most_across(gap)
                     } else {
                         Plane {
                             at: q[plane.axis] + plane.speed * dt,
@@ -471,6 +532,9 @@ pub fn step_total_lagrangian_contact(
         "a driven wall holds on the velocity condition only"
     );
     let used: &[Plane] = if velocity { &own } else { planes };
+    if statics {
+        contacts.extend(candidates.iter().cloned());
+    }
     let mut inputs = Inputs {
         x,
         v,
@@ -487,6 +551,9 @@ pub fn step_total_lagrangian_contact(
         body: None,
         friction,
         responses: false,
+        bounded_friction: false,
+        statics,
+        gauge,
     };
     let mut most = contacts.len();
     let mut passes = 0;
@@ -498,6 +565,9 @@ pub fn step_total_lagrangian_contact(
     let mut timing = Timing::default();
     let mut solve_seconds = 0.0;
     let passing = std::time::Instant::now();
+    // The passes solve from one start: its parts are computed by the first
+    // pass's solve and reused by the others (`Factors::start`).
+    factors.start = Some(None);
     let Solution {
         u,
         v_n,
@@ -506,11 +576,48 @@ pub fn step_total_lagrangian_contact(
         ..
     } = loop {
         let solving = std::time::Instant::now();
-        let solution = solve(grid, &inputs, contacts, factors);
+        let mut solution = solve(grid, &inputs, contacts, factors);
         solve_seconds += solving.elapsed().as_secs_f64();
         timing.add(&solution.report.timing);
         for (total, part) in phases.iter_mut().zip(solution.report.phases).skip(1) {
             *total += part;
+        }
+        // A frictional solve that did not converge is solved again, once,
+        // with the friction's augmentation parameter held below Alart's
+        // bound (`tangential_penalty`). Alart, J. Math. Pures Appl. 76
+        // (1997), Part II: with a parameter beyond it, the generalized
+        // Newton cycles between the two slip regions when the solution
+        // sticks (his Fig. 5), and his remedy in practice (end of II.3) is
+        // to lower the parameter drastically where sliding reverses
+        // through sticking. Below the bound everywhere, the outer passes
+        // contract at `max |1 - k_T lambda_i|` and stalled at their cap
+        // wherever contacts stuck (measured: 141 of 612 step ends on a
+        // sliding block); the contacts' own penalty settles in about 5
+        // passes except on the cycling solves (measured: 13, fresh
+        // contacts at zero multipliers on a Coulomb floor at rest). The
+        // augmented Lagrangian's converged state does not depend on the
+        // parameter, only its iterations do. The failed solve's Newton
+        // iterations stay counted.
+        if friction > 0.0
+            && !statics
+            && !contacts.is_empty()
+            && !solution.report.converged
+            && !solution.report.stagnated
+            && !inputs.bounded_friction
+        {
+            let failed_newton = solution.report.newton;
+            let failed_gmres = solution.report.gmres;
+            inputs.bounded_friction = true;
+            let solving = std::time::Instant::now();
+            solution = solve(grid, &inputs, contacts, factors);
+            solve_seconds += solving.elapsed().as_secs_f64();
+            inputs.bounded_friction = false;
+            timing.add(&solution.report.timing);
+            for (total, part) in phases.iter_mut().zip(solution.report.phases).skip(1) {
+                *total += part;
+            }
+            solution.report.newton += failed_newton;
+            solution.report.gmres += failed_gmres;
         }
         // Each contact's own tolerance on what it leaves
         // (`contact_allowance`).
@@ -554,8 +661,13 @@ pub fn step_total_lagrangian_contact(
                 0.0
             };
             let k = contact_penalty(c, penalty);
-            let (size, along) =
-                contact_force((c.multiplier, c.tangential), (g, g_t), (k, friction), None);
+            let k_t = solution.tangential_penalty.unwrap_or(k);
+            let (size, along) = contact_force(
+                (c.multiplier, c.tangential),
+                (g, g_t),
+                ((k, k_t), friction),
+                None,
+            );
             // A sticking contact must not slide (Hueber, Stadler and
             // Wohlmuth eq. 3.5a), to the same tolerance as the gap.
             if friction > 0.0 && along.abs() < friction * size {
@@ -571,7 +683,7 @@ pub fn step_total_lagrangian_contact(
             if k > 0.0 {
                 deepest = deepest
                     .max((size - c.multiplier).abs() / (k * scale))
-                    .max((along - c.tangential).abs() / (k * scale));
+                    .max((along - c.tangential).abs() / (k_t * scale));
             }
             c.multiplier = size;
             c.tangential = along;
@@ -667,6 +779,77 @@ pub fn step_total_lagrangian_contact(
         // it. Ending there left them unsettled and the step's energy off by
         // 1e-7 of the start's per such step (measured, a slab at rest).
         let failed = !solution.report.converged && !solution.report.stagnated;
+        // A kept probe (`EMERGE_PROBE_BRANCH_CHECK`, experimental builds
+        // only), the law check: at every settled step, each contact's applied
+        // tractions and gaps against Signorini and Coulomb, to its own
+        // tolerance; a judge of every contact change, read only.
+        #[cfg(feature = "experimental")]
+        if settled && std::env::var_os("EMERGE_PROBE_BRANCH_CHECK").is_some() {
+            for (c, &(used_n, used_t)) in contacts.iter().zip(&before) {
+                let (g, shares) = contact_geometry(grid, x, used, &solution.u, c);
+                let g_t = if friction > 0.0 {
+                    contact_tangential_gap(grid, &solution.u, &shares)
+                } else {
+                    0.0
+                };
+                let k = contact_penalty(c, penalty);
+                let k_t = solution.tangential_penalty.unwrap_or(k);
+                let tol = allowed(c, &shares);
+                let branch = crate::forces::boundary::signorini_coulomb::contact_branch(
+                    (used_n, used_t),
+                    (g, g_t),
+                    ((k, k_t), friction),
+                );
+                let held = branch.slip;
+                let applied = if friction > 0.0 {
+                    contact_force(
+                        (used_n, used_t),
+                        (g, g_t),
+                        ((k, k_t), friction),
+                        Some(crate::forces::boundary::signorini_coulomb::ContactBranch {
+                            slip: held,
+                            ..branch
+                        }),
+                    )
+                } else {
+                    contact_force((used_n, used_t), (g, g_t), ((k, k_t), friction), None)
+                };
+                let (n_force, t_force) = (
+                    applied.0.max(0.0),
+                    if applied.0 > 0.0 { applied.1 } else { 0.0 },
+                );
+                let ftol = k * tol;
+                // The heat the step books for this contact (its updated
+                // tangential multiplier times the friction motion) against the
+                // work of the traction it applied over the same motion.
+                let motion = contact_friction_motion(grid, x, &solution.u, &shares);
+                let booked = -c.tangential * motion;
+                let applied_work = -t_force * motion;
+                println!(
+                    "heat check: held {held}, booked {booked:+.6e}, applied work {applied_work:+.6e}, difference {:+.6e}, applied tangential {:+.6e}, mu N {:.6e}",
+                    applied_work - booked,
+                    t_force,
+                    friction * n_force
+                );
+                println!(
+                    "law check: friction {friction}, held {held}, normal {:.3e}, gap {:+.3e} of tol, pressed gap {:.3e} of tol, cone excess {:+.3e} of k tol, stick slip {:.3e} of tol, slip opposing {}",
+                    n_force,
+                    g / tol,
+                    if n_force > 0.0 { g.abs() / tol } else { 0.0 },
+                    (t_force.abs() - friction * n_force) / ftol,
+                    if held == 0.0 && n_force > 0.0 {
+                        g_t.abs() / tol
+                    } else {
+                        0.0
+                    },
+                    if held != 0.0 && n_force > 0.0 {
+                        t_force * g_t <= 0.0
+                    } else {
+                        true
+                    }
+                );
+            }
+        }
         if settled || passes == 400 || failed {
             // Stopped at the cap with a contact still beyond its
             // tolerance, the step solves its contact conditions no more
@@ -684,6 +867,7 @@ pub fn step_total_lagrangian_contact(
             break solution;
         }
     };
+    factors.start = None;
     timing.contact = passing.elapsed().as_secs_f64() - solve_seconds - timing.multipliers;
     report.contacts = most;
     report.passes = passes;
@@ -1110,7 +1294,9 @@ pub fn step_total_lagrangian_contact(
         }
         let g = DMat2::from_cols(DVec2::new(gu.x, gv.x), DVec2::new(gu.y, gv.y));
         x[p] += step_x;
-        v[p] += step_v;
+        if !statics {
+            v[p] += step_v;
+        }
         f[p] += g;
     }
     #[cfg(all(test, feature = "experimental"))]

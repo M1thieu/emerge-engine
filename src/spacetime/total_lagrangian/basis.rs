@@ -131,9 +131,10 @@ pub(crate) struct Grid {
     /// not change while the masses do not. Shared by the grid's clones (the
     /// controller's tries), which are the same grid.
     pub(crate) mass_matrix: std::sync::Arc<std::sync::Mutex<Option<MassMatrix>>>,
-    /// The band's empty form and the point count it was built for
-    /// (`Grid::empty_band`), shared by the grid's clones.
-    pub(crate) band_template: std::sync::Arc<std::sync::Mutex<Option<(usize, Band)>>>,
+    /// The band's empty form, the point count and the body-body couplings'
+    /// unknowns it was built for (`Grid::empty_band`), shared by the grid's
+    /// clones.
+    pub(crate) band_template: std::sync::Arc<std::sync::Mutex<Option<BandTemplate>>>,
     /// Each point's reach per component, merged by unknown (`Grid::relump`
     /// builds it; `visit` reads it): the expanded reach repeats an unknown
     /// once per degenerate face folded into it (62.6 entries against 21.4
@@ -160,6 +161,10 @@ pub(crate) type Extension = Box<[(usize, f64)]>;
 /// One point's reach on one lattice, merged by unknown: each unknown once,
 /// with its weight and weight gradient (`Grid::reach`).
 pub(crate) type Reach = Box<[(usize, f64, DVec2)]>;
+
+/// The band's empty form with the point count and the body-body couplings'
+/// unknowns it was built for (`Grid::empty_band`).
+pub(crate) type BandTemplate = (usize, Vec<Vec<usize>>, Band);
 
 /// The consistent mass in compressed rows, `M_c[k][m] = sum_p m_p N_k(X_p)
 /// N_m(X_p)` over each lattice (the two components do not couple), and the
@@ -638,8 +643,10 @@ impl Grid {
     /// dt^2`), `K` the stiffness of the solid's linear elasticity (`sigma =
     /// 2 mu eps + (K - mu) tr(eps) I`, the linearisation of its energy at `F
     /// = I`), in band form, factored.
-    /// The unknowns are renumbered body by body, then row by row of the face
-    /// positions, so the band is a few rows of one body's faces wide.
+    /// The unknowns are renumbered body by body, row by row of the face
+    /// positions, except where bodies are coupled by a held contact: there
+    /// the coupled bodies are numbered together in reverse Cuthill-McKee
+    /// order (`build_empty_band`), so the band holds the couplings.
     pub(crate) fn approximate_jacobian(
         &self,
         (mass, v0, solids): (&[f64], &[f64], &[Elastic]),
@@ -649,7 +656,28 @@ impl Grid {
     ) -> Band {
         #[cfg(all(test, feature = "experimental"))]
         let clock = std::time::Instant::now();
-        let mut band = self.empty_band(mass.len());
+        // The unknowns each body-body coupling reaches: the band's ordering
+        // keeps each group together (`build_empty_band`).
+        let links: Vec<Vec<usize>> = springs
+            .iter()
+            .filter_map(|spring| match spring {
+                Spring::Couple(members, ..) => {
+                    let mut reached = Vec::with_capacity(54);
+                    for &(r, c) in members {
+                        for a in 0..2 {
+                            if c[a] != 0.0 {
+                                self.visit(r, a, |k, _, _| reached.push(k));
+                            }
+                        }
+                    }
+                    reached.sort_unstable();
+                    reached.dedup();
+                    Some(reached)
+                }
+                Spring::Ground(..) => None,
+            })
+            .collect();
+        let mut band = self.empty_band(mass.len(), &links);
         #[cfg(all(test, feature = "experimental"))]
         let ordered = clock.elapsed().as_secs_f64();
         let inert = |k: usize| self.massless().is_some_and(|none| none[k]);
@@ -689,13 +717,48 @@ impl Grid {
         for k in 0..self.len {
             band.add(k, k, inertia * eps * self.lumped[k]);
         }
-        // A held particle's penalty along its plane's normal (`step`).
-        for &(p, a, stiffness) in springs {
+        // A held particle's penalty along its plane's normal (`step`), and a
+        // body-body condition's penalty on the relative displacement, kept
+        // whole when the band holds every one of its entries, otherwise
+        // replaced by its ground springs (the springs of before). A coupling
+        // cut in part is a matrix that is no longer the tangent's
+        // approximation (measured, FAST_MODE_PLAN 111.51: 21 % of Newton
+        // iterations at GMRES's cap); whole or absent keeps it consistent.
+        let ground = |band: &mut Band, p: usize, a: usize, stiffness: f64| {
             let mut list = Vec::with_capacity(9);
             self.visit(p, a, |k, w, _| list.push((k, w)));
             for &(k, wk) in &list {
                 for &(m, wm) in &list {
                     band.add(k, m, stiffness * wk * wm);
+                }
+            }
+        };
+        for spring in springs {
+            match spring {
+                &Spring::Ground(p, a, stiffness) => ground(&mut band, p, a, stiffness),
+                Spring::Couple(members, stiffness, fallback) => {
+                    let mut list = Vec::with_capacity(54);
+                    for &(r, c) in members {
+                        for a in 0..2 {
+                            if c[a] != 0.0 {
+                                self.visit(r, a, |k, w, _| list.push((k, c[a] * w)));
+                            }
+                        }
+                    }
+                    let whole = list
+                        .iter()
+                        .all(|&(k, _)| list.iter().all(|&(m, _)| band.holds(k, m)));
+                    if whole {
+                        for &(k, wk) in &list {
+                            for &(m, wm) in &list {
+                                band.add(k, m, stiffness * wk * wm);
+                            }
+                        }
+                    } else {
+                        for &(p, a, s) in fallback {
+                            ground(&mut band, p, a, s);
+                        }
+                    }
                 }
             }
         }
@@ -719,7 +782,8 @@ impl Grid {
     /// band form, factored: the projection's exact preconditioner, the
     /// inverse of the masked system itself (`solve`).
     pub(crate) fn mass_band(&self, mass: &[f64], eps: f64) -> Band {
-        let mut band = self.empty_band(mass.len());
+        let links: [Vec<usize>; 0] = [];
+        let mut band = self.empty_band(mass.len(), &links);
         let massive = self.massive();
         for (p, &mp) in mass.iter().enumerate() {
             for a in 0..2 {
@@ -803,22 +867,25 @@ impl Grid {
         merged
     }
 
-    /// The band's empty form for `particles` points: its ordering depends on
-    /// the grid alone, so it is built once and kept with the grid, shared by
-    /// its clones (`band_template`), and each build starts from a copy.
-    pub(crate) fn empty_band(&self, particles: usize) -> Band {
+    /// The band's empty form for `particles` points and the held body-body
+    /// couplings' unknowns `links` (each group must sit inside the band
+    /// together): its ordering depends on the grid and on which bodies are
+    /// coupled, so it is built when either changes and kept with the grid,
+    /// shared by its clones (`band_template`); each build starts from a copy.
+    pub(crate) fn empty_band(&self, particles: usize, links: &[Vec<usize>]) -> Band {
         let mut kept = self.band_template.lock().expect("band template lock");
-        if let Some((count, band)) = kept.as_ref()
+        if let Some((count, built_for, band)) = kept.as_ref()
             && *count == particles
+            && built_for.as_slice() == links
         {
             return band.clone();
         }
-        let band = self.build_empty_band(particles);
-        *kept = Some((particles, band.clone()));
+        let band = self.build_empty_band(particles, links);
+        *kept = Some((particles, links.to_vec(), band.clone()));
         band
     }
 
-    fn build_empty_band(&self, particles: usize) -> Band {
+    fn build_empty_band(&self, particles: usize, links: &[Vec<usize>]) -> Band {
         let n = self.len;
         // Position of each unknown, in half cells, for the ordering.
         let mut key = vec![(0i64, 0i64); n];
@@ -835,36 +902,120 @@ impl Grid {
         }
         // Each particle's unknowns with their weights and gradients.
         let reach = |p: usize| self.merged_reach(p);
-        // Bodies that share no unknown share no entry of the system: each
-        // is numbered as a block of its own, so the band spans one body's
-        // rows, not every body's on the same rows. A body here is the
-        // unknowns the particles' supports join, found by union-find.
-        let mut parent: Vec<usize> = (0..n).collect();
-        let root = |parent: &mut [usize], mut k: usize| {
-            while parent[k] != k {
-                parent[k] = parent[parent[k]];
-                k = parent[k];
-            }
-            k
-        };
-        for p in 0..particles {
-            let list = reach(p);
-            if let Some(&(first, ..)) = list.first() {
-                for &(k, ..) in &list[1..] {
-                    let (a, b) = (root(&mut parent, first), root(&mut parent, k));
-                    parent[a.max(b)] = a.min(b);
+        // The union graph: two unknowns are adjacent when one point's support
+        // reaches both, or when one held body-body coupling reaches both
+        // (`links`). Bodies that share no unknown and no coupling share no
+        // entry of the system: they fall in separate components, each
+        // numbered as a block of its own, as before.
+        let mut adjacent: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let join = |group: &[usize], adjacent: &mut Vec<Vec<usize>>| {
+            for &k in group {
+                for &m in group {
+                    if k != m {
+                        adjacent[k].push(m);
+                    }
                 }
             }
+        };
+        for p in 0..particles {
+            let list: Vec<usize> = reach(p).iter().map(|entry| entry.0).collect();
+            join(&list, &mut adjacent);
         }
-        let roots: Vec<usize> = (0..n).map(|k| root(&mut parent, k)).collect();
-        let mut body_key = vec![(i64::MAX, i64::MAX); n];
-        for (k, &r) in roots.iter().enumerate() {
-            body_key[r] = body_key[r].min(key[k]);
+        for group in links {
+            join(group, &mut adjacent);
         }
+        for list in adjacent.iter_mut() {
+            list.sort_unstable();
+            list.dedup();
+        }
+        // Each component in reverse Cuthill-McKee order: level sets from a
+        // start node, each node's unvisited neighbours taken from lowest to
+        // highest degree, the whole sequence reversed (Saad, Iterative
+        // Methods for Sparse Linear Systems, 2nd ed., 2003, sec. 3.3.3, Alg.
+        // 3.3 and George's reversal). The level sets are separators, so the
+        // matrix is block tridiagonal with blocks of the level sets' sizes:
+        // across two bodies in contact the levels sweep through both, and
+        // the coupling between them lies inside the band. Adaptation,
+        // declared: the start node is the component's first unknown along
+        // its longer extent (Saad asks for a peripheral node; his
+        // pseudo-peripheral search is not in that section), ties broken by
+        // position for a deterministic order.
         let mut by_position: Vec<usize> = (0..n).collect();
-        by_position.sort_by_key(|&k| (body_key[roots[k]], key[k]));
+        by_position.sort_by_key(|&k| key[k]);
+        let mut linked = vec![false; n];
+        for group in links {
+            for &k in group {
+                linked[k] = true;
+            }
+        }
+        let (mut found, mut placed) = (vec![false; n], vec![false; n]);
+        let mut sequence: Vec<usize> = Vec::with_capacity(n);
+        for &first in &by_position {
+            if found[first] {
+                continue;
+            }
+            let mut component = vec![first];
+            found[first] = true;
+            let mut head = 0;
+            while head < component.len() {
+                let v = component[head];
+                head += 1;
+                for &w in &adjacent[v] {
+                    if !found[w] {
+                        found[w] = true;
+                        component.push(w);
+                    }
+                }
+            }
+            // A component without a body-body coupling (a lone body) keeps
+            // the ordering of before, by row then column: its band and its
+            // preconditioner are unchanged. RCM over a lone body moved its
+            // heavy frames (measured, FAST_MODE_PLAN 111.61: a bouncing
+            // block's 95th-percentile frame +4.6 %), so it is used only where
+            // it brings the couplings into the band.
+            if !component.iter().any(|&k| linked[k]) {
+                component.sort_by_key(|&k| key[k]);
+                sequence.extend(component);
+                continue;
+            }
+            let extent = |pick: fn(&(i64, i64)) -> i64| {
+                let values = component.iter().map(|&k| pick(&key[k]));
+                values.clone().max().unwrap_or(0) - values.min().unwrap_or(0)
+            };
+            // `key` holds rows in half cells and columns in quarter cells.
+            let along_columns = extent(|q| q.1) >= 2 * extent(|q| q.0);
+            let start = *component
+                .iter()
+                .min_by_key(|&&k| {
+                    if along_columns {
+                        (key[k].1, key[k].0)
+                    } else {
+                        key[k]
+                    }
+                })
+                .expect("a component has an unknown");
+            let mut queue = vec![start];
+            placed[start] = true;
+            let mut head = 0;
+            while head < queue.len() {
+                let h = queue[head];
+                head += 1;
+                let mut next: Vec<usize> = adjacent[h]
+                    .iter()
+                    .copied()
+                    .filter(|&w| !placed[w])
+                    .collect();
+                next.sort_by_key(|&w| (adjacent[w].len(), key[w]));
+                for w in next {
+                    placed[w] = true;
+                    queue.push(w);
+                }
+            }
+            queue.reverse();
+            sequence.extend(queue);
+        }
         let mut order = vec![0; n];
-        for (position, &k) in by_position.iter().enumerate() {
+        for (position, &k) in sequence.iter().enumerate() {
             order[k] = position;
         }
         let mut width = 0;
@@ -872,6 +1023,13 @@ impl Grid {
             let list = reach(p);
             for &(k, ..) in &list {
                 for &(m, ..) in &list {
+                    width = width.max(order[k].abs_diff(order[m]));
+                }
+            }
+        }
+        for group in links {
+            for &k in group {
+                for &m in group {
                     width = width.max(order[k].abs_diff(order[m]));
                 }
             }

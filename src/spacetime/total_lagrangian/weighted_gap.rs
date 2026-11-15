@@ -172,10 +172,10 @@ pub(crate) fn outline_trace(
 /// The outward normal of an outline's point `r` (counter-clockwise: on the
 /// right of the direction from its previous neighbour to its next), and the
 /// neighbours, at the positions `x`.
-fn outward(x: &[DVec2], outline: &[usize], r: usize) -> (DVec2, (usize, usize)) {
+fn outward(grid: &Grid, x: &[DVec2], outline: &[usize], r: usize) -> (DVec2, (usize, usize)) {
     let count = outline.len();
     let (previous, next) = (outline[(r + count - 1) % count], outline[(r + 1) % count]);
-    let along = x[next] - x[previous];
+    let along = nodal_line(grid, |q| x[q], outline[r], (previous, next));
     (
         DVec2::new(along.y, -along.x) / along.length().max(f64::MIN_POSITIVE),
         (previous, next),
@@ -194,6 +194,7 @@ pub(crate) type Reaches<'a> = &'a dyn Fn(f64, f64) -> bool;
 /// condition is the weighted normal displacement over the step (Laursen and
 /// Chawla's velocity condition on the weighted gap).
 pub(crate) fn reaching_conditions(
+    grid: &Grid,
     traces: &[OutlineTrace],
     outlines: &[Vec<usize>],
     (x, v, dt): (&[DVec2], &[DVec2], f64),
@@ -209,8 +210,6 @@ pub(crate) fn reaching_conditions(
     let at_wall = false;
     let mut found = Vec::new();
     let mut function = 0usize;
-    #[cfg(feature = "experimental")]
-    let mut census = [0u64; 3];
     for (o, (trace, outline)) in traces.iter().zip(outlines).enumerate() {
         for members in &trace.functions {
             for (index, plane) in planes.iter().enumerate() {
@@ -236,7 +235,7 @@ pub(crate) fn reaching_conditions(
                     .map(|&(r, w)| {
                         let q = outline[r];
                         own.push(if at_wall {
-                            plane.after(dt)
+                            plane.after(dt).at_most_across(gap)
                         } else {
                             Plane {
                                 at: x[q][plane.axis] + plane.speed * dt,
@@ -267,11 +266,9 @@ pub(crate) fn reaching_conditions(
                     continue;
                 }
                 let mut facing: Vec<(ContactPoint, f64, f64, f64)> = Vec::new();
-                #[cfg(feature = "experimental")]
-                let mut dropped = 0u64;
                 for &(r, w) in members {
                     let p = outline[r];
-                    let (normal, nodal) = outward(x, outline, r);
+                    let (normal, nodal) = outward(grid, x, outline, r);
                     // The master's segment the point's normal line meets,
                     // nearest along it, facing the point.
                     let mut best: Option<(f64, (usize, usize), f64)> = None;
@@ -299,21 +296,6 @@ pub(crate) fn reaching_conditions(
                         }
                     }
                     if let Some((signed, ends, closing)) = best {
-                        // The proposed fix, behind its switch: the gap's sign by
-                        // admissibility (Laursen and Chawla 1997, eq. (1)), so a point outside the other body whose
-                        // normal line meets it only behind (through its own body) is not in penetration and has
-                        // no facing segment. Adaptation: admissibility tested on the other body's outline polygon.
-                        #[cfg(feature = "experimental")]
-                        let behind =
-                            (census_on() || fix_on()) && signed < 0.0 && !inside(x, master, x[p]);
-                        #[cfg(feature = "experimental")]
-                        if census_on() && behind {
-                            dropped += 1;
-                        }
-                        #[cfg(feature = "experimental")]
-                        if fix_on() && behind {
-                            continue;
-                        }
                         facing.push((
                             ContactPoint {
                                 particle: p,
@@ -337,15 +319,6 @@ pub(crate) fn reaching_conditions(
                 if !reaches(gap, rate) {
                     continue;
                 }
-                #[cfg(feature = "experimental")]
-                if dropped > 0 {
-                    census[0] += 1;
-                    census[1] += dropped;
-                }
-                #[cfg(feature = "experimental")]
-                {
-                    census[2] += 1;
-                }
                 found.push(Contact {
                     points: facing.iter().map(|f| (f.0, f.1 / total)).collect(),
                     key: (4, function, other),
@@ -356,69 +329,7 @@ pub(crate) fn reaching_conditions(
             function += 1;
         }
     }
-    #[cfg(feature = "experimental")]
-    if census_on() && census[0] > 0 {
-        census_record(census);
-    }
     found
-}
-
-/// The zero-change census of the proposed gap fix: on when the environment variable
-/// `EMERGE_PROBE_BODY_GAP_CENSUS` names a file.
-#[cfg(feature = "experimental")]
-fn census_on() -> bool {
-    static ON: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
-    ON.get_or_init(|| std::env::var_os("EMERGE_PROBE_BODY_GAP_CENSUS").map(Into::into))
-        .is_some()
-}
-
-/// The fix's switch: on when the environment variable `EMERGE_PROBE_BODY_GAP_FIX` is set.
-#[cfg(feature = "experimental")]
-fn fix_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| {
-        let on = std::env::var_os("EMERGE_PROBE_BODY_GAP_FIX").is_some();
-        if on {
-            println!("knob active: body-body gap fix");
-        }
-        on
-    })
-}
-
-/// Appends one call's counts to the census file, with the thread's name (the test's, under the test harness):
-/// body-body conditions formed holding points the fix would drop, those points, and all body-body conditions formed.
-#[cfg(feature = "experimental")]
-fn census_record(counts: [u64; 3]) {
-    use std::io::Write;
-    let Some(path) = std::env::var_os("EMERGE_PROBE_BODY_GAP_CENSUS") else {
-        return;
-    };
-    let name = std::thread::current()
-        .name()
-        .unwrap_or("unnamed")
-        .to_string();
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(file, "{name}	{}	{}	{}", counts[0], counts[1], counts[2]);
-    }
-}
-
-/// Whether `q` lies inside the polygon through the outline points `polygon` (in order), by the crossing count of a
-/// ray along +x. The proposed fix's admissibility test (Laursen and Chawla 1997, eq. (1): penetration only inside the
-/// other body), discretised on the outline polygon.
-#[cfg(feature = "experimental")]
-fn inside(x: &[DVec2], polygon: &[usize], q: DVec2) -> bool {
-    let mut crossings = false;
-    for k in 0..polygon.len() {
-        let (a, b) = (x[polygon[k]], x[polygon[(k + 1) % polygon.len()]]);
-        if (a.y > q.y) != (b.y > q.y) && q.x < a.x + (q.y - a.y) / (b.y - a.y) * (b.x - a.x) {
-            crossings = !crossings;
-        }
-    }
-    crossings
 }
 
 #[cfg(test)]

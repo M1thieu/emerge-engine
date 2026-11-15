@@ -505,7 +505,10 @@ impl Elastic {
     }
 
     /// `W(C)` through `F = sqrt(C)`: the energy depends on `F` through `C`
-    /// alone.
+    /// alone. Test builds only: the probes, the research path and the
+    /// increment's own test compare against it; the step uses each law's
+    /// increment (`energy_increment`).
+    #[cfg(test)]
     pub(crate) fn energy_of_c(&self, c: DMat2) -> f64 {
         self.energy(sqrt_spd(c))
     }
@@ -514,9 +517,7 @@ impl Elastic {
     /// increment `dC` itself: the part of the law the discrete gradient's
     /// quotient divides by `|dC|^2`, so its round-off must be relative to the
     /// change, not to the energies (`algorithmic_stress`). Each law supplies
-    /// its own exact form; a law without one must not use the quotient. The
-    /// isochoric research law (the mac gates' only, to be retired) is the
-    /// one exception: the energies' difference, declared.
+    /// its own exact form; a law without one must not use the quotient.
     pub(crate) fn energy_increment(&self, c0: DMat2, c1: DMat2) -> f64 {
         match self.law {
             ElasticLaw::Corotated => {
@@ -543,7 +544,7 @@ impl Elastic {
                     c0, c1, self.bulk,
                 )
             }
-            ElasticLaw::Isochoric => self.energy_of_c(c1) - self.energy_of_c(c0),
+            ElasticLaw::Isochoric => isochoric_energy_increment(c0, c1, self.mu, self.bulk),
             // Its own exact increment, the return's included (the step's
             // length enters only through the viscoplastic rate).
             ElasticLaw::HenckyJ2(law, state) => law.step(c0, c1, &state, 0.0).energy_change,
@@ -725,6 +726,50 @@ impl Elastic {
         (self.step_stress(c0, c1 + dc * h, dt) - self.step_stress(c0, c1 - dc * h, dt)) * (0.5 / h)
     }
 
+    /// The stress of the static mode (`Inputs::statics`) at `C`: the law's
+    /// own `S(C)`, the relaxation branches and the dashpot left out. It is
+    /// `step_stress` with `C_n = C_{n+1} = C` and the branches relaxed: a
+    /// discrete gradient is consistent, `grad_bar W(C, C) = grad W(C)`
+    /// (Gonzalez, CMAME 190 (2000), eq. 12's quotient vanishing at `dC = 0`;
+    /// Li and Wu, arXiv 2012.13064, eq. (4)), the dashpot's stress is zero at
+    /// zero strain rate, and a branch relaxed at `C` (`Relaxation::relax_at`)
+    /// stores and pushes nothing: the record's long-time limit, the relaxed
+    /// moduli (Blanc et al. 2016, `M(0) = M_r`). One definition: the
+    /// dynamic step's at rest, not a second law. The plastic law is refused
+    /// (its return map carries the history of a load path, `dt`'s rate
+    /// included; the static mode for it comes after the elastic one).
+    pub(crate) fn static_stress(&self, c: DMat2) -> DMat2 {
+        assert!(
+            !self.is_plastic(),
+            "the static mode takes elastic laws only (a plastic law's history comes later)"
+        );
+        self.second_pk(c)
+    }
+
+    /// The derivative of `static_stress` at `C` along `dc`: the law's derived
+    /// tangent (`second_pk_tangent`), or, for a law without one, central
+    /// differences of `static_stress` (the declared scaffold of
+    /// `step_stress_tangent_by_differences`, same step).
+    pub(crate) fn static_stress_tangent(&self, c: DMat2, dc: DMat2) -> DMat2 {
+        if let Some(d) = self.second_pk_tangent(c, dc) {
+            return d;
+        }
+        let size = |m: DMat2| {
+            m.x_axis
+                .x
+                .abs()
+                .max(m.x_axis.y.abs())
+                .max(m.y_axis.x.abs())
+                .max(m.y_axis.y.abs())
+        };
+        let along = size(dc);
+        if along == 0.0 {
+            return DMat2::ZERO;
+        }
+        let h = 1e-6 * size(c).max(1.0) / along;
+        (self.static_stress(c + dc * h) - self.static_stress(c - dc * h)) * (0.5 / h)
+    }
+
     /// The solid after a kept step from `C_n` to `C_{n+1}` of length `dt`,
     /// and what the step did (`Committed`): the plastic law's state advanced
     /// by its return map, the branches' internal strains by their update;
@@ -841,6 +886,88 @@ impl Elastic {
         // fragility at small increments.
         let gap = self.energy_increment(c0, c1) - 0.5 * contracted;
         stress + (2.0 * gap / norm2) * dc
+    }
+}
+
+/// The isochoric research law's energy change between right Cauchy-Green
+/// tensors `c0` and `c1`, computed from the increment `dC = C_1 - C_0`
+/// itself (the reason of `corotated_energy_increment`): the energies'
+/// difference carries `C`'s round-off, about `eps |S| |C|`, whatever `dC`
+/// is, and the discrete gradient's quotient divides it by `|dC|`. Measured
+/// on the bar with massless bottom rows: compressed particles nearly at
+/// rest within a step (`|dC|` about 1e-9) had their step stress jump by
+/// 4e-4 to 7e-4 for a move of 1e-15 cells, against `|S| eps |C| / |dC|`
+/// = 3e-4, and Newton stalled at its cap on that noise (FAST_MODE_PLAN
+/// 111.55).
+///
+/// The law (`law_energy`, at `F = sqrt(C)`, so `J = sqrt(det C) > 0`): `W =
+/// mu |F_hat - R(F_hat)|^2 + K/2 (J - 1)^2`, `F_hat = F / sqrt(J)`. In 2D,
+/// `C_hat = C / J` has `det C_hat = 1`, so `|F_hat - R|^2 = tr C_hat - 2 tr
+/// U_hat + 2` with `tr U_hat = sqrt(tr C_hat + 2)` (`(tr U)^2 = tr C + 2
+/// det U` for a 2 x 2 symmetric positive definite `U`): `W = mu (a - 2
+/// sqrt(a + 2) + 2) + K/2 (J - 1)^2`, `a = tr C / J`. Exact identities
+/// (derived on the page; the first two as in `corotated_energy_increment`):
+/// `det C_1 - det C_0 = tr(adj(C_0) dC) + det(dC)`, `J_1 - J_0 = (det C_1 -
+/// det C_0) / (J_0 + J_1)`, `a_1 - a_0 = (tr dC J_0 - tr C_0 (J_1 - J_0)) /
+/// (J_0 J_1)`, `sqrt(a_1 + 2) - sqrt(a_0 + 2) = (a_1 - a_0) / (sqrt(a_1 +
+/// 2) + sqrt(a_0 + 2))`, `(J_1 - 1)^2 - (J_0 - 1)^2 = (J_1 - J_0) (J_1 + J_0
+/// - 2)`. No term is a difference of two energies.
+fn isochoric_energy_increment(c0: DMat2, c1: DMat2, mu: f64, bulk: f64) -> f64 {
+    let dc = c1 - c0;
+    let [[a, b], [c, d]] = [c0.x_axis.to_array(), c0.y_axis.to_array()];
+    let [[da, db], [dcc, dd]] = [dc.x_axis.to_array(), dc.y_axis.to_array()];
+    let det_change = a * dd + d * da - b * dcc - c * db + (da * dd - db * dcc);
+    let (j0, j1) = (
+        c0.determinant().max(0.0).sqrt(),
+        c1.determinant().max(0.0).sqrt(),
+    );
+    let j_change = det_change / (j0 + j1);
+    let (tr0, tr_change) = (a + d, da + dd);
+    let (a0, a1) = (tr0 / j0, (tr0 + tr_change) / j1);
+    let a_change = (tr_change * j0 - tr0 * j_change) / (j0 * j1);
+    let root_change = a_change / ((a1 + 2.0).sqrt() + (a0 + 2.0).sqrt());
+    mu * (a_change - 2.0 * root_change) + 0.5 * bulk * j_change * (j0 + j1 - 2.0)
+}
+
+#[cfg(test)]
+mod isochoric_increment_tests {
+    use super::*;
+
+    /// The increment equals the energies' difference where that difference
+    /// is accurate (a large change), and stays relative to the change where
+    /// it is not (changes of 1e-12 under a standing strain).
+    #[test]
+    fn the_isochoric_increment_matches_the_energies_and_keeps_small_changes() {
+        let solid = Elastic::isochoric(1.3e6, 2.0e6);
+        let f0 = DMat2::from_cols(DVec2::new(0.97, 0.02), DVec2::new(-0.01, 1.01));
+        let c0 = f0.transpose() * f0;
+        let big = DMat2::from_cols(DVec2::new(0.03, -0.01), DVec2::new(-0.01, 0.02));
+        let c1 = c0 + big;
+        let exact = solid.energy_of_c(c1) - solid.energy_of_c(c0);
+        let increment = isochoric_energy_increment(c0, c1, solid.mu, solid.bulk);
+        assert!(
+            (increment - exact).abs() <= 1e-9 * exact.abs(),
+            "large change: {increment} against {exact}"
+        );
+        // Changes of 1e-12 and twice that: the increment is linear in a
+        // small change up to O(|dC|^2), here about 1e-11 of it; the
+        // energies' difference carried its round-off, `eps |W|` with `|W|`
+        // about 1e3, about 4e-6 of the increment. (Not checked against
+        // `1/2 S(C_m) : dC`: this research law's stored stress differs from
+        // its energy's gradient by about 1e-5 relative, measured here; the
+        // discrete gradient's quotient keeps `S : dC = 2 dW` regardless.)
+        // Dyadic entries, so `C_0 + dC` is exact and the increment sees the
+        // `dC` given (otherwise the sum's rounding, about 2e-16 on a change
+        // of 1e-12, changes `dC` itself by up to 2e-4).
+        let c0 = DMat2::from_cols(DVec2::new(0.9375, 0.015625), DVec2::new(0.015625, 1.015625));
+        let unit = 2f64.powi(-40);
+        let small = DMat2::from_cols(DVec2::new(3.0 * unit, -unit), DVec2::new(-unit, 2.0 * unit));
+        let once = isochoric_energy_increment(c0, c0 + small, solid.mu, solid.bulk);
+        let twice = isochoric_energy_increment(c0, c0 + 2.0 * small, solid.mu, solid.bulk);
+        assert!(
+            (twice - 2.0 * once).abs() <= 1e-9 * once.abs(),
+            "small change: {twice} against twice {once}"
+        );
     }
 }
 

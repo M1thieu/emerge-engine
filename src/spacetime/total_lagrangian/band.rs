@@ -36,6 +36,11 @@ impl Band {
         self.order[k] >= self.order[m]
     }
 
+    /// Whether the band holds the entry of the unknowns `(k, m)`.
+    pub(crate) fn holds(&self, k: usize, m: usize) -> bool {
+        self.order[k].abs_diff(self.order[m]) <= self.width
+    }
+
     pub(crate) fn at(&self, i: usize, j: usize) -> usize {
         i * (self.width + 1) + (j + self.width - i)
     }

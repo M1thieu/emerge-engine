@@ -181,7 +181,7 @@ fn bodies_apart_keep_the_band_of_one() {
     let width = |x: &[DVec2]| {
         let volume = vec![0.25; x.len()];
         let grid = Grid::new(&layout, x, (&volume, &volume), &open, Some(0.75));
-        grid.empty_band(x.len()).width
+        grid.empty_band(x.len(), &[]).width
     };
     let one = block(3.0);
     let mut two = one.clone();

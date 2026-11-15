@@ -70,6 +70,9 @@ pub(crate) struct Revolution {
     pub(crate) axis: usize,
     /// The mirrors beside the axis: a rectangular grid has three more sides.
     pub(crate) planes: [Option<Mirror>; 3],
+    /// The node rows `(first, last)` of a rigid body: its radial coefficients
+    /// zero, its axial ones all one unknown (`tie`).
+    pub(crate) tied: Option<(usize, usize)>,
 }
 
 impl Revolution {
@@ -78,6 +81,7 @@ impl Revolution {
         Self {
             axis,
             planes: [None; 3],
+            tied: None,
         }
     }
 
@@ -89,6 +93,13 @@ impl Revolution {
         }
         assert!(planes.len() <= out.planes.len(), "a grid has four sides");
         out
+    }
+
+    /// The same with the node rows `(first, last)` holding a rigid body, which
+    /// shares no coefficient with what lies outside them.
+    pub(crate) fn with_tied_rows(mut self, rows: (usize, usize)) -> Self {
+        self.tied = Some(rows);
+        self
     }
 }
 
@@ -120,6 +131,15 @@ pub(crate) fn with_point_loads(grid: &Grid, mut external: Vec<f64>) -> Vec<f64> 
         }
     });
     external
+}
+
+/// The sum of this thread's dead loads per radian.
+pub(crate) fn point_loads_total() -> DVec2 {
+    POINT_LOADS.with(|l| {
+        l.borrow()
+            .iter()
+            .fold(DVec2::ZERO, |sum, &(_, force)| sum + force)
+    })
 }
 
 /// Every mirror of a layout: the axis, then the planes.
@@ -397,7 +417,11 @@ pub(crate) fn hoop_stiffness(
 /// is no unknown of its own: every face on a mirror's far side, and for the
 /// component normal to it a face on the mirror.
 pub(crate) fn excluded(layout: &GridLayout, a: usize, i: usize, j: usize) -> bool {
-    mirrors(layout).into_iter().any(|(normal, node, side)| {
+    let tied = layout
+        .revolution
+        .and_then(|r| r.tied)
+        .is_some_and(|(first, last)| (first..=last).contains(&j));
+    tied || mirrors(layout).into_iter().any(|(normal, node, side)| {
         let along = if normal == 0 { i } else { j } as i64 - node as i64;
         along * side < 0 || (a == normal && along == 0)
     })
@@ -409,6 +433,38 @@ pub(crate) fn excluded(layout: &GridLayout, a: usize, i: usize, j: usize) -> boo
 /// passes, so that a corner's ghost, whose image is another mirror's ghost, is
 /// filled.
 pub(crate) fn mirror(layout: &GridLayout, grid: &mut Grid) {
+    mirror_planes(layout, grid);
+    tie(layout, grid);
+}
+
+/// A rigid body's coefficients, a Ritz reduction of the same basis to the one
+/// rigid motion a body of revolution admits, the axial translation: in its rows
+/// every radial face is zero and every axial face one unknown with weight 1. The
+/// partition of unity then gives `u = U e_z` at each of its points, and `F = I` to
+/// round-off. The rows' faces had no unknown of their own (`excluded`).
+fn tie(layout: &GridLayout, grid: &mut Grid) {
+    let Some((first, last)) = layout.revolution.and_then(|r| r.tied) else {
+        return;
+    };
+    let (radial, axial) = (grid.lattices[0], grid.lattices[1]);
+    let held = grid.len;
+    grid.len += 1;
+    grid.axis_of.push(1);
+    grid.wall.push(None);
+    grid.stacked_of.push(axial.start + axial.ni * first);
+    grid.stable_unknown.push(true);
+    for j in first..=last {
+        for i in 0..radial.ni {
+            grid.extension[radial.start + i + radial.ni * j] = Some(Box::default());
+        }
+        for i in 0..axial.ni {
+            grid.extension[axial.start + i + axial.ni * j] = Some(Box::new([(held, 1.0)]));
+        }
+    }
+}
+
+/// The mirrors' faces (`mirror`).
+fn mirror_planes(layout: &GridLayout, grid: &mut Grid) {
     let all = mirrors(layout);
     for _ in 0..2 {
         for &(normal, node, side) in &all {

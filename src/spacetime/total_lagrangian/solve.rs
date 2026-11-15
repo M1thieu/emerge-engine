@@ -70,6 +70,10 @@ pub(crate) struct Solution {
     /// dt D(E_dot)` (`Elastic::viscous_dissipation_over`), at the step's
     /// solution; empty when no solid is viscous.
     pub(crate) dissipated: Vec<f64>,
+    /// The friction's augmentation parameter the solve used
+    /// (`tangential_penalty`); `None` where each contact's own penalty
+    /// served.
+    pub(crate) tangential_penalty: Option<f64>,
 }
 
 /// How the converged step's displacement answers one active multiplier:
@@ -111,6 +115,22 @@ pub(crate) struct Inputs<'a> {
     pub(crate) friction: f64,
     /// Whether the converged solve also returns its `Response`s.
     pub(crate) responses: bool,
+    /// The friction's augmentation parameter held below Alart's bound
+    /// (`tangential_penalty`) instead of each contact's own penalty: set
+    /// for the re-solve of a frictional solve that did not converge.
+    pub(crate) bounded_friction: bool,
+    /// The static mode of the same solve (an initial-condition tool, not a
+    /// law: `settle_total_lagrangian_at_rest`): the inertia's coefficient 0
+    /// and `v = 0`, the stress the law's own at the end state through `F_1`
+    /// (`Elastic::static_stress`) with its matching tangent, so the residual
+    /// is `f_int(u) - f_ext + f_contact(u)`, the balance at rest. Every probe
+    /// path that changes the force outside the law's stress refuses it.
+    pub(crate) statics: bool,
+    /// In the static mode, the axis of a free rigid translation the load has
+    /// no component on (a body on frictionless walls): its neutral motion is
+    /// fixed by a gauge, the body's mass-weighted mean displacement along it
+    /// held at zero (`solve`). `None` everywhere else.
+    pub(crate) gauge: Option<usize>,
 }
 
 /// The band factors a step's solves share across the walls' passes
@@ -134,6 +154,30 @@ pub(crate) struct Factors {
     /// The last responses computed, by contact key and direction: each
     /// next response's GMRES starts from its own (`gmres_from`).
     pub(crate) responses: Vec<(ContactKey, bool, Vec<f64>)>,
+    /// The parts of a solve that depend on the step's start alone
+    /// (`StartParts`), kept over one step's contact passes: `None` outside
+    /// them (nothing kept), `Some(None)` at their start (`step.rs` sets it,
+    /// the first pass's solve fills it), then reused by the later passes.
+    pub(crate) start: Option<Option<StartParts>>,
+}
+
+/// What a solve computes from the step's start alone: the grid velocity
+/// and its right-hand side, the projection's residual, the external force,
+/// the residual scale's inertial and internal terms, and the round-off
+/// floor. The contact passes of one step solve with the same start (`x`,
+/// `v`, `f`, the masses, the solids, `dt`) and change only the contacts,
+/// their multipliers and the friction's bound, which none of these read,
+/// so a later pass reuses them as computed: the same numbers, bit for bit.
+#[derive(Clone)]
+pub(crate) struct StartParts {
+    v_n: Vec<f64>,
+    rhs: Vec<f64>,
+    projection: f64,
+    external: Vec<f64>,
+    inertial: f64,
+    internal: f64,
+    floor: f64,
+    force_round_off: f64,
 }
 
 impl Factors {
@@ -174,11 +218,60 @@ impl Factors {
 /// solve with (none held at the first pass, then the contacts held). With
 /// three, a block at rest evicted and rebuilt two factors a frame
 /// (measured, `hard_frame::probe_rest_factorizations`).
-const JACOBIAN_FACTORS: usize = 6;
+const JACOBIAN_FACTORS: usize = 2 * KLAPPROTH_SUBSTEPS.len();
 
-/// A held particle's penalty in the preconditioner: particle, lattice,
-/// stiffness (`Grid::approximate_jacobian`).
-pub(crate) type Spring = (usize, usize, f64);
+/// The step of a central difference of the forces along a direction of
+/// largest entry `size`, from displacements of largest entry `base`, on a
+/// grid of cell `cell`: `eps^(1/3) (cell + base) / size`, relative to the
+/// displacements' scale (one cell when they are zero).
+/// The relative step `eps^(1/3)` balances the central difference's two
+/// errors (Walter, Numerical Methods and Optimization (2014), Sec. 6.6.1,
+/// eqs. 6.101-6.102: method error O(dx^2), "a compromise between the
+/// rounding and method errors", no value given). Derived here, declared:
+/// with `f` evaluated to a relative rounding error `eps`, the difference
+/// `(f(x + h) - f(x - h)) / 2h` carries a rounding error of about
+/// `eps |f| / h` and a method error `h^2 |f3| / 6` (`f3` the third
+/// derivative); their sum is least at `h^3 = 3 eps |f| / |f3|`, i.e. `h =
+/// eps^(1/3)` times a scale `(3 |f| / |f3|)^(1/3)` of the argument.
+/// Adaptation, declared: that scale is taken as the displacements' own
+/// scale `(cell + base)` (the factor `3^(1/3)` and the ratio `f / f3` are
+/// not known per direction). Where the function is linear (a gap against a
+/// plane) the method error is zero and any step is exact up to rounding.
+pub(crate) fn central_difference_step(cell: f64, base: f64, size: f64) -> f64 {
+    f64::EPSILON.cbrt() * (cell + base) / size
+}
+
+/// A held contact's penalty in the preconditioner
+/// (`Grid::approximate_jacobian`).
+#[derive(Clone, Debug)]
+pub(crate) enum Spring {
+    /// A particle held along one lattice: particle, lattice, stiffness.
+    Ground(usize, usize, f64),
+    /// A body-body condition's penalty on the relative displacement along
+    /// `c`: `stiffness (sum_r c_r . u_r)^2`, its members `(particle, c_r)`
+    /// (the point and the segment's two ends): the true tangent's coupling
+    /// between the two bodies. Kept whole or not at all
+    /// (`Grid::approximate_jacobian`): where the band cannot hold every
+    /// entry, its ground springs (the third field) stand in, as before.
+    Couple(Vec<(usize, DVec2)>, f64, Vec<(usize, usize, f64)>),
+}
+
+/// Two springs are the same factor's springs when they hold the same
+/// particles at the same stiffness: a coupling's direction moves with the
+/// bodies from step to step, and a factor built for a nearby direction is
+/// still a preconditioner (it changes GMRES's iterations, never the
+/// converged answer), so the factor is reused as before.
+impl PartialEq for Spring {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Ground(p, a, k), Self::Ground(q, b, l)) => p == q && a == b && k == l,
+            (Self::Couple(m, k, _), Self::Couple(n, l, _)) => {
+                k == l && m.len() == n.len() && m.iter().zip(n).all(|(x, y)| x.0 == y.0)
+            }
+            _ => false,
+        }
+    }
+}
 
 /// One particle's linearisation at a Newton iterate: its end deformation
 /// `F_{n+1}`, its step stress, and that stress's derivative in `C_{n+1}`
@@ -218,45 +311,160 @@ pub(crate) fn solve(
         body,
         friction,
         responses: wants_responses,
+        bounded_friction,
+        statics,
+        gauge: gauge_axis,
     } = *inputs;
+    assert!(
+        statics || gauge_axis.is_none(),
+        "the gauge belongs to the static mode"
+    );
     let clock = std::time::Instant::now();
     #[cfg(all(test, feature = "experimental"))]
     hooks::begin_solve();
+    // The static mode runs on the law's own stress alone: a probe that
+    // changes the force or the load outside it would be ignored silently,
+    // so each is refused instead.
+    #[cfg(all(test, feature = "experimental"))]
+    assert!(
+        !statics
+            || (grid.hoop.is_none()
+                && hooks::cells().is_none()
+                && hooks::viscosity() == 0.0
+                && !hooks::trapezoid_p()
+                && !hooks::cofactor()
+                && !hooks::split()
+                && !hooks::trapezoid()
+                && hooks::homotopy() == 0
+                && !hooks::lobatto_wanted()
+                && !super::residual_split::on()
+                && body.is_none()),
+        "the static mode refuses the probe paths (hoop, mixed pressures, the viscosity hook, the stress variants, the homotopy, the estimate, manufactured loads)"
+    );
     let n = x.len();
     let eps = settings.epsilon;
-    // The midpoint's inertia, `2 M (u / dt - v_n) / dt`.
-    let inertia = 2.0;
-    // The grid velocity: the consistent-mass projection (eq. 28).
+    // The midpoint's inertia, `2 M (u / dt - v_n) / dt`; none at rest.
+    let inertia = if statics { 0.0 } else { 2.0 };
+    // The grid velocity: the consistent-mass projection (eq. 28); at rest,
+    // zero.
+    // The largest entry, NaN when any is (`f64::max` would drop it and a
+    // broken step would read as converged).
+    let largest = |y: &[f64]| {
+        y.iter().fold(0.0f64, |m, e| {
+            if e.is_nan() || m.is_nan() {
+                f64::NAN
+            } else {
+                m.max(e.abs())
+            }
+        })
+    };
+    // The step's start parts, if a previous pass of this step computed
+    // them (`Factors::start`).
+    let reused: Option<StartParts> = factors.start.as_ref().and_then(Clone::clone);
     let factor = factors
         .mass
         .get_or_insert_with(|| grid.mass_band(mass, eps));
-    let (v_n, rhs) = grid_velocity(grid, (mass, v), eps, factor);
-    let projected = grid.mass_times(&v_n, mass, eps);
-    let projection = (projected
-        .iter()
-        .zip(&rhs)
-        .map(|(a, b)| (a - b).powi(2))
-        .sum::<f64>()
-        / rhs
-            .iter()
-            .map(|b| b * b)
-            .sum::<f64>()
-            .max(f64::MIN_POSITIVE))
-    .sqrt();
-    let external: Vec<f64> = match body {
-        Some(body) => parallel_scatter(grid.len, n, |p, acc| {
-            for (a, component) in body[p].to_array().into_iter().enumerate() {
-                let s = mass[p] * component;
-                grid.visit(p, a, |k, w, _| acc[k] += w * s);
-            }
-        }),
-        None => (0..grid.len)
-            .map(|k| grid.lumped[k] * gravity[grid.axis_of[k]])
-            .collect(),
+    let (v_n, rhs) = match &reused {
+        Some(kept) => (kept.v_n.clone(), kept.rhs.clone()),
+        None if statics => (vec![0.0; grid.len], vec![0.0; grid.len]),
+        None => grid_velocity(grid, (mass, v), eps, factor),
     };
-    // The axisymmetric cases' dead loads.
-    #[cfg(all(test, feature = "experimental"))]
-    let external = super::axisymmetric::with_point_loads(grid, external);
+    // The friction's augmentation parameter: each contact's own penalty,
+    // or, on the re-solve of a solve that did not converge, the bound
+    // (`tangential_penalty`, `Inputs::bounded_friction`).
+    // The bound is inertial (`tangential_penalty`): it has no meaning at
+    // rest, so the static mode never asks for it.
+    assert!(
+        !(statics && bounded_friction),
+        "the static mode takes each contact's own friction penalty (the bound is inertial)"
+    );
+    let tangential = if bounded_friction && friction > 0.0 && !contacts.is_empty() {
+        tangential_penalty(grid, x, planes, contacts, factor, dt, inertia)
+    } else {
+        None
+    };
+    let k_t_of = |c: &Contact| tangential.unwrap_or_else(|| contact_penalty(c, penalty));
+    // `M v_n`, read by the projection's residual and the residual scale's
+    // inertial term.
+    let (projection, inertial) = match &reused {
+        Some(kept) => (kept.projection, kept.inertial),
+        None => {
+            let projected = grid.mass_times(&v_n, mass, eps);
+            let projection = (projected
+                .iter()
+                .zip(&rhs)
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f64>()
+                / rhs
+                    .iter()
+                    .map(|b| b * b)
+                    .sum::<f64>()
+                    .max(f64::MIN_POSITIVE))
+            .sqrt();
+            (projection, largest(&projected))
+        }
+    };
+    let external: Vec<f64> = match &reused {
+        Some(kept) => kept.external.clone(),
+        None => {
+            let external = match body {
+                Some(body) => parallel_scatter(grid.len, n, |p, acc| {
+                    for (a, component) in body[p].to_array().into_iter().enumerate() {
+                        let s = mass[p] * component;
+                        grid.visit(p, a, |k, w, _| acc[k] += w * s);
+                    }
+                }),
+                None => (0..grid.len)
+                    .map(|k| grid.lumped[k] * gravity[grid.axis_of[k]])
+                    .collect(),
+            };
+            // The axisymmetric cases' dead loads.
+            #[cfg(all(test, feature = "experimental"))]
+            let external = super::axisymmetric::with_point_loads(grid, external);
+            external
+        }
+    };
+    // The static mode's gauge (`Inputs::gauge`): along a free translation
+    // the load has no component on, every displaced copy of an equilibrium
+    // is one, and the static Jacobian is singular there; the motion is fixed
+    // by `c(u) = w . u = 0`, `w_k = lumped_k / M` on that axis (the body's
+    // mass-weighted mean displacement: the lumped mass is the particles' mass
+    // carried by the basis, which sums to one there), added as `kappa c(u)
+    // w` to the residual. The internal forces sum to zero along a
+    // translation (the basis's partition of unity) and the load and the
+    // frictionless walls' push have no component on it, so at the solution
+    // the gauge carries no force and the state does not depend on `kappa`:
+    // an iteration parameter, here the sum of the particles' own stiffness
+    // scales `(K + mu) V0 / dx^2`, the springs the preconditioner gets for it.
+    let gauge: Option<(usize, Vec<f64>, f64)> = gauge_axis.map(|a| {
+        let on = |k: usize| grid.axis_of[k] == a && grid.active[k];
+        let total: f64 = (0..grid.len)
+            .filter(|&k| on(k))
+            .map(|k| grid.lumped[k])
+            .sum();
+        let w: Vec<f64> = (0..grid.len)
+            .map(|k| {
+                if on(k) {
+                    grid.lumped[k] / total.max(f64::MIN_POSITIVE)
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let kappa: f64 = (0..n)
+            .filter(|&p| mass[p] > 0.0)
+            .map(|p| (solids[p].bulk + solids[p].mu) * v0[p] / (grid.cell * grid.cell))
+            .sum();
+        (a, w, kappa)
+    });
+    let gauge_force = |y: &[f64], out: &mut [f64]| {
+        if let Some((_, w, kappa)) = &gauge {
+            let c: f64 = w.iter().zip(y).map(|(a, b)| a * b).sum();
+            for (o, wk) in out.iter_mut().zip(w) {
+                *o += kappa * c * wk;
+            }
+        }
+    };
     let f_now: &[DMat2] = f;
     let deformation_at = |u: &[f64], p: usize| -> DMat2 {
         let (gu, gv) = (grid.gradient(u, p, 0), grid.gradient(u, p, 1));
@@ -348,11 +556,18 @@ pub(crate) fn solve(
             let f0 = f_now[p];
             let (c0, c1) = (f0.transpose() * f0, f1.transpose() * f1);
             // The law's step stress and the Kelvin-Voigt dashpot's in
-            // parallel, on the same `F_n+1/2` (`Elastic::step_stress`).
-            let s = solids[p].step_stress(c0, c1, dt);
+            // parallel, on the same `F_n+1/2` (`Elastic::step_stress`); at
+            // rest, the law's own stress at the end state, through `F_1`.
+            let (s, carrier) = if statics {
+                if v0[p] <= 0.0 {
+                    return (DMat2::ZERO, DMat2::ZERO, DMat2::ZERO);
+                }
+                (solids[p].static_stress(c1), f1)
+            } else {
+                // The stress acts through `F_n+1/2`.
+                (solids[p].step_stress(c0, c1, dt), f0 * 0.5 + f1 * 0.5)
+            };
             let law_stress = s;
-            // The stress acts through `F_n+1/2`.
-            let carrier = f0 * 0.5 + f1 * 0.5;
             #[cfg(all(test, feature = "experimental"))]
             let s = match &pressures {
                 Some((cells, pressure)) => solids[p].mixed_stress(
@@ -440,10 +655,11 @@ pub(crate) fn solve(
             } else {
                 0.0
             };
+            let k = contact_penalty(c, penalty);
             let (size, along) = contact_force(
                 (multiplier, tangential),
                 (g, g_t),
-                (contact_penalty(c, penalty), friction),
+                ((k, k_t_of(c)), friction),
                 frozen.map(|set| set[i]),
             );
             if size == 0.0 && along == 0.0 {
@@ -451,20 +667,24 @@ pub(crate) fn solve(
             }
             for share in &shares {
                 let force = share.weight * (size * share.normal + along * share.normal.perp());
-                let mut parts = vec![
-                    (share.spread[0].0, share.spread[0].1 * force),
-                    (share.spread[1].0, share.spread[1].1 * force),
-                    (share.spread[2].0, share.spread[2].1 * force),
-                ];
+                // The spread's three parts, then the friction couple's two
+                // when it acts: a fixed array in the same order (no
+                // allocation per share).
+                let mut parts = [(0usize, DVec2::ZERO); 5];
+                parts[0] = (share.spread[0].0, share.spread[0].1 * force);
+                parts[1] = (share.spread[1].0, share.spread[1].1 * force);
+                parts[2] = (share.spread[2].0, share.spread[2].1 * force);
+                let mut used = 3;
                 if along != 0.0
                     && let Some((first, second, couple)) =
                         friction_couple(grid, x, u, &share.point, share.normal, &share.spread)
                 {
                     let turn = share.weight * couple * along * share.normal;
-                    parts.push((second, turn));
-                    parts.push((first, -turn));
+                    parts[3] = (second, turn);
+                    parts[4] = (first, -turn);
+                    used = 5;
                 }
-                for (r, part) in parts {
+                for &(r, part) in &parts[..used] {
                     for a in 0..2 {
                         if part[a] != 0.0 {
                             grid.visit(r, a, |k, w, _| out[k] += w * part[a]);
@@ -493,6 +713,7 @@ pub(crate) fn solve(
         let mut out = grid.mass_times_unmasked(&accel, mass, eps);
         out.iter_mut().zip(forces(u)).for_each(|(o, i)| *o += i);
         out.iter_mut().zip(&external).for_each(|(o, e)| *o -= e);
+        gauge_force(u, &mut out);
         out
     };
     // The parts' clocks (`Timing`), shared by the closures below.
@@ -511,45 +732,81 @@ pub(crate) fn solve(
         timed(&residual_clock, start);
         out
     };
-    // The largest entry, NaN when any is (`f64::max` would drop it and a
-    // broken step would read as converged).
-    let largest = |y: &[f64]| {
-        y.iter().fold(0.0f64, |m, e| {
-            if e.is_nan() || m.is_nan() {
-                f64::NAN
-            } else {
-                m.max(e.abs())
-            }
-        })
-    };
     // The preconditioner: `2 M_eps / dt^2 + K`, `K` the linear elastic
     // stiffness at the reference shape, factored exactly in band form once
     // per step (`Band`). This engine's choice; the source's solves used
     // PETSc's matrix-free GMRES (their section 4).
     // A pair's penalty couples its two particles; the preconditioner keeps
-    // only each particle's own block of it.
+    // only each particle's own block of it. A body-body condition's penalty
+    // is kept as the coupling the true tangent has, on the relative
+    // displacement along the segment's normal (and, with friction, its
+    // tangent): `k n (u_p - (1 - xi) u_first - xi u_second)`, the segment's
+    // normal and the point's projection `xi` at the step's start positions
+    // (a direction for the preconditioner only, declared). Before, each of
+    // the three particles was held to ground on both axes, the strongest
+    // coupling in the system (the penalty between the bodies) left out:
+    // Saad, Iterative Methods for Sparse Linear Systems (2003), ch. 10, the
+    // preconditioned matrix is near the identity only when the factors'
+    // errors are small; Stueben, A review of algebraic multigrid (2001),
+    // the two-level theorem's comment: the strong couplings are the ones
+    // that matter for convergence.
     let springs: Vec<Spring> = contacts
         .iter()
         .flat_map(|c| -> Vec<Spring> {
-            let k = contact_penalty(c, penalty);
+            let (k, k_t) = (contact_penalty(c, penalty), k_t_of(c));
             c.points
                 .iter()
                 .flat_map(|&(point, weight)| -> Vec<Spring> {
-                    let k = k * weight * weight;
+                    let (k, k_t) = (k * weight * weight, k_t * weight * weight);
                     match point.segment {
-                        Some((first, second)) => [point.particle, first, second]
-                            .into_iter()
-                            .flat_map(|r| [(r, 0, k), (r, 1, k)])
-                            .collect(),
-                        // With friction both components are held.
-                        None if friction > 0.0 => std::iter::once(point.particle)
-                            .chain(point.partner)
-                            .flat_map(|r| [(r, 0, k), (r, 1, k)])
-                            .collect(),
+                        Some((first, second)) => {
+                            let side = x[second] - x[first];
+                            let length = side.length().max(f64::MIN_POSITIVE);
+                            let along = side / length;
+                            let xi = ((x[point.particle] - x[first]).dot(side) / (length * length))
+                                .clamp(0.0, 1.0);
+                            // Without the band's room for the coupling, the
+                            // three particles held to ground on both axes, the
+                            // springs of before; the friction's coupling has
+                            // none (none before).
+                            let ground: Vec<(usize, usize, f64)> = [point.particle, first, second]
+                                .into_iter()
+                                .flat_map(|r| [(r, 0, k), (r, 1, k)])
+                                .collect();
+                            let couple =
+                                |d: DVec2, stiffness: f64, fallback: Vec<(usize, usize, f64)>| {
+                                    Spring::Couple(
+                                        vec![
+                                            (point.particle, d),
+                                            (first, -(1.0 - xi) * d),
+                                            (second, -xi * d),
+                                        ],
+                                        stiffness,
+                                        fallback,
+                                    )
+                                };
+                            let mut held = vec![couple(along.perp(), k, ground)];
+                            if friction > 0.0 {
+                                held.push(couple(along, k_t, Vec::new()));
+                            }
+                            held
+                        }
+                        // With friction both components are held: the
+                        // plane's axis by the normal penalty, the other by
+                        // the tangential one.
+                        None if friction > 0.0 => {
+                            let axis = planes[point.plane].axis;
+                            std::iter::once(point.particle)
+                                .chain(point.partner)
+                                .flat_map(|r| {
+                                    [Spring::Ground(r, axis, k), Spring::Ground(r, 1 - axis, k_t)]
+                                })
+                                .collect()
+                        }
                         None => {
                             let axis = planes[point.plane].axis;
-                            std::iter::once((point.particle, axis, k))
-                                .chain(point.partner.map(|q| (q, axis, k)))
+                            std::iter::once(Spring::Ground(point.particle, axis, k))
+                                .chain(point.partner.map(|q| Spring::Ground(q, axis, k)))
                                 .collect()
                         }
                     }
@@ -557,6 +814,21 @@ pub(crate) fn solve(
                 .collect()
         })
         .collect();
+    // The gauge's banded stand-in in the preconditioner: each particle's own
+    // stiffness scale as a spring along the gauged axis.
+    let springs: Vec<Spring> = match &gauge {
+        Some((a, _, _)) => springs
+            .into_iter()
+            .chain((0..n).filter(|&p| mass[p] > 0.0).map(|p| {
+                Spring::Ground(
+                    p,
+                    *a,
+                    (solids[p].bulk + solids[p].mu) * v0[p] / (grid.cell * grid.cell),
+                )
+            }))
+            .collect(),
+        None => springs,
+    };
     let projected_at = clock.elapsed().as_secs_f64();
     // This system's own factor, kept if a recent step built it: a
     // preconditioner changes the iterations to the solution, never the
@@ -670,9 +942,13 @@ pub(crate) fn solve(
     // large that a step still far from balance read as converged (measured:
     // `u . R` at -5.8e5 against 1.3e4 of kinetic energy change, the energy
     // falling 86 percent in that one step).
-    let scale = (inertia / dt * largest(&grid.mass_times(&v_n, mass, eps)))
+    let internal_start = match &reused {
+        Some(kept) => kept.internal,
+        None => largest(&internal(&vec![0.0; grid.len])),
+    };
+    let scale = (inertia / dt * inertial)
         .max(largest(&external))
-        .max(largest(&internal(&vec![0.0; grid.len])))
+        .max(internal_start)
         .max(f64::MIN_POSITIVE);
     // How small round-off lets the residual get. The stress is computed
     // from `F` and `J`, numbers near one, so it carries an absolute error
@@ -689,20 +965,35 @@ pub(crate) fn solve(
     // configuration's size, since the stress's round-off is relative to
     // `F`, not to the stress; the factor 16 is this engine's margin over
     // the measured floor (declared).
-    let (floor, force_round_off) = {
-        let rows = parallel_scatter(grid.len, n, |p, acc| {
-            let f = f_now[p];
-            let size = (f.x_axis.length_squared() + f.y_axis.length_squared()).sqrt();
-            let stiffness = v0[p] * (solids[p].bulk + solids[p].mu) * size;
-            for a in 0..2 {
-                grid.visit(p, a, |k, _, g| acc[k] += stiffness * g.length());
-            }
-        });
-        (
-            16.0 * f64::EPSILON * largest(&rows),
-            16.0 * f64::EPSILON * rows.iter().sum::<f64>(),
-        )
+    let (floor, force_round_off) = match &reused {
+        Some(kept) => (kept.floor, kept.force_round_off),
+        None => {
+            let rows = parallel_scatter(grid.len, n, |p, acc| {
+                let f = f_now[p];
+                let size = (f.x_axis.length_squared() + f.y_axis.length_squared()).sqrt();
+                let stiffness = v0[p] * (solids[p].bulk + solids[p].mu) * size;
+                for a in 0..2 {
+                    grid.visit(p, a, |k, _, g| acc[k] += stiffness * g.length());
+                }
+            });
+            (
+                16.0 * f64::EPSILON * largest(&rows),
+                16.0 * f64::EPSILON * rows.iter().sum::<f64>(),
+            )
+        }
     };
+    if matches!(factors.start, Some(None)) {
+        factors.start = Some(Some(StartParts {
+            v_n: v_n.clone(),
+            rhs: rhs.clone(),
+            projection,
+            external: external.clone(),
+            inertial,
+            internal: internal_start,
+            floor,
+            force_round_off,
+        }));
+    }
     // Two starts, the better one kept, after Gast et al. 2015 (section 3.1,
     // "we compute both initial guesses and choose the one which produces
     // the smaller value of E"). Adapted: their second start is the
@@ -777,7 +1068,7 @@ pub(crate) fn solve(
                     return vec![0.0; grid.len];
                 }
                 let base = w.iter().fold(0.0f64, |m, e| m.max(e.abs()));
-                let h = 1e-6 * (grid.cell + base) / size;
+                let h = central_difference_step(grid.cell, base, size);
                 let plus: Vec<f64> = w.iter().zip(d).map(|(a, b)| a + h * b).collect();
                 let minus: Vec<f64> = w.iter().zip(d).map(|(a, b)| a - h * b).collect();
                 let scaled: Vec<f64> = d.iter().map(|e| inertia * e / (dt * dt)).collect();
@@ -940,10 +1231,27 @@ pub(crate) fn solve(
                 } else {
                     0.0
                 };
+                let k = contact_penalty(c, penalty);
+                // At the tie, `lambda - k g = 0` (every condition at a
+                // static increment's start: no multiplier yet, no gap), both
+                // sides are elements of `max`'s generalized derivative (Ito
+                // and Kunisch, as below). The step takes it inactive, its
+                // inertia keeping the Jacobian definite; at rest the
+                // stiffness alone is singular on the rigid motions the
+                // touching conditions hold, so the static mode takes it
+                // pressed and sticking (measured: the inactive tie left the
+                // first static solve's GMRES at its cap, the Jacobian 1.6e15
+                // off the residual's differences).
+                if statics && c.multiplier - k * g == 0.0 {
+                    return ContactBranch {
+                        pressed: true,
+                        slip: 0.0,
+                    };
+                }
                 contact_branch(
                     (c.multiplier, c.tangential),
                     (g, g_t),
-                    (contact_penalty(c, penalty), friction),
+                    ((k, k_t_of(c)), friction),
                 )
             })
             .collect()
@@ -1011,6 +1319,15 @@ pub(crate) fn solve(
                         hoop: Some(line.rest),
                     };
                 }
+                if statics {
+                    return Linearised {
+                        f1,
+                        s: law_stress.unwrap_or_else(|| solids[p].static_stress(c1)),
+                        ds: unit.map(|e| solids[p].static_stress_tangent(c1, e)),
+                        #[cfg(all(test, feature = "experimental"))]
+                        hoop: None,
+                    };
+                }
                 Linearised {
                     f1,
                     s: law_stress.unwrap_or_else(|| solids[p].step_stress(c0, c1, dt)),
@@ -1050,8 +1367,13 @@ pub(crate) fn solve(
                 return;
             }
             let ds = t.ds[0] * dc.x_axis.x + t.ds[1] * dc.y_axis.y + t.ds[2] * dc.y_axis.x;
-            // `d(F_n+1/2 S) = 1/2 dF S + F_n+1/2 dS`.
-            let first = 0.5 * df * t.s + 0.5 * (f0 + t.f1) * ds;
+            // `d(F_n+1/2 S) = 1/2 dF S + F_n+1/2 dS`; at rest `d(F_1 S) = dF S +
+            // F_1 dS`.
+            let first = if statics {
+                df * t.s + t.f1 * ds
+            } else {
+                0.5 * df * t.s + 0.5 * (f0 + t.f1) * ds
+            };
             let first = if lagrangian {
                 v0[p] * first
             } else {
@@ -1102,7 +1424,7 @@ pub(crate) fn solve(
             let d_along = if friction <= 0.0 {
                 0.0
             } else if branch.slip == 0.0 {
-                -k * dg_t
+                -k_t_of(c) * dg_t
             } else {
                 branch.slip * friction * d_size
             };
@@ -1130,9 +1452,18 @@ pub(crate) fn solve(
             return vec![0.0; grid.len];
         }
         let base = u.iter().fold(0.0f64, |m, e| m.max(e.abs()));
-        let h = 1e-6 * (grid.cell + base) / size;
-        let plus: Vec<f64> = u.iter().zip(d).map(|(a, b)| a + h * b).collect();
-        let minus: Vec<f64> = u.iter().zip(d).map(|(a, b)| a - h * b).collect();
+        let h = central_difference_step(grid.cell, base, size);
+        // The shifted iterates `u +- h d`, built only where a difference
+        // reads them (the internal force without linearisations, the
+        // segments' push): the exact path with planes only never does.
+        let shifted = std::cell::OnceCell::new();
+        let shifted = || {
+            shifted.get_or_init(|| {
+                let plus: Vec<f64> = u.iter().zip(d).map(|(a, b)| a + h * b).collect();
+                let minus: Vec<f64> = u.iter().zip(d).map(|(a, b)| a - h * b).collect();
+                (plus, minus)
+            })
+        };
         // The mass exactly; the internal force exactly from the
         // linearisations, or by central differences (forward ones, one
         // evaluation fewer, left Newton short of convergence on 4 of 60
@@ -1162,7 +1493,7 @@ pub(crate) fn solve(
                     let size = product.iter().fold(0.0f64, |m, e| m.max(e.abs()));
                     let gap = product
                         .iter()
-                        .zip(internal(&plus).iter().zip(internal(&minus)))
+                        .zip(internal(&shifted().0).iter().zip(internal(&shifted().1)))
                         .fold(0.0f64, |m, (e, (p, q))| {
                             m.max((e - (p - q) / (2.0 * h)).abs())
                         });
@@ -1180,7 +1511,7 @@ pub(crate) fn solve(
             None => {
                 for (o, (p, m)) in out
                     .iter_mut()
-                    .zip(internal(&plus).iter().zip(internal(&minus)))
+                    .zip(internal(&shifted().0).iter().zip(internal(&shifted().1)))
                 {
                     *o += (p - m) / (2.0 * h);
                 }
@@ -1207,8 +1538,8 @@ pub(crate) fn solve(
             let segment_set = only(true);
             if segment_set.iter().any(|b| b.pressed) {
                 let (pp, pm) = (
-                    push_with(&plus, Some(&segment_set), None),
-                    push_with(&minus, Some(&segment_set), None),
+                    push_with(&shifted().0, Some(&segment_set), None),
+                    push_with(&shifted().1, Some(&segment_set), None),
                 );
                 for (o, (p, m)) in out.iter_mut().zip(pp.iter().zip(&pm)) {
                     *o -= (p - m) / (2.0 * h);
@@ -1219,8 +1550,8 @@ pub(crate) fn solve(
             if push_check() {
                 let plane_set = only(false);
                 let (pp, pm) = (
-                    push_with(&plus, Some(&plane_set), None),
-                    push_with(&minus, Some(&plane_set), None),
+                    push_with(&shifted().0, Some(&plane_set), None),
+                    push_with(&shifted().1, Some(&plane_set), None),
                 );
                 let size = exact.iter().fold(0.0f64, |m, e| m.max(e.abs()));
                 let gap = exact
@@ -1236,6 +1567,7 @@ pub(crate) fn solve(
             }
             timed(&push_clock, pushing);
         }
+        gauge_force(d, &mut out);
         #[cfg(all(test, feature = "experimental"))]
         let part = Instant::now();
         for (value, &on) in out.iter_mut().zip(&grid.active) {
@@ -1251,12 +1583,34 @@ pub(crate) fn solve(
     // Newton's best residual so far and the iterations since it improved:
     // five without a new best (a converging step takes two to four) is a
     // stagnation, a residual whose own evaluation noise sits above the
-    // tolerance. Reported, not hidden (`StepReport::stagnated`), never a
-    // hang: the step's equations then hold only to that noise. The one
-    // source measured so far, the discrete gradient's energy difference at
-    // small increments, is removed at its root
+    // tolerance, but only where the best residual reached is within that
+    // noise: the internal force's round-off (`floor`) or a contact push's,
+    // its penalty times its gap's round-off (`8 eps` times the gap's terms,
+    // the bound `contact_allowance` already uses). Above it, Newton goes on
+    // to `max_newton`. Reported, not hidden (`StepReport::stagnated`),
+    // never a hang: the step's equations then hold only to that noise. The
+    // one source measured so far, the discrete gradient's energy difference
+    // at small increments, is removed at its root
     // (`corotated_energy_increment`); this stays as the guard. This
-    // engine's own, declared.
+    // engine's own, declared. A solver exit criterion, no physics: without
+    // the noise test it fired at 1e8 times the tolerance on a contact solve
+    // that ran on converged in 9 to 11 iterations, and the contact passes
+    // then cycled between two multiplier states to their cap (measured, a
+    // sphere on a block). Framing, not proof (convex problems only): an
+    // augmented Lagrangian's inner solve must be accurate against the
+    // multiplier step it feeds (Eckstein and Silva, Math. Program. 141
+    // (2013), eq. 12; Rockafellar's criteria).
+    let noise = |u: &[f64]| -> f64 {
+        contacts.iter().fold(floor, |most, c| {
+            let (_, shares) = contact_geometry(grid, x, planes, u, c);
+            most.max(
+                contact_penalty(c, penalty)
+                    * 8.0
+                    * f64::EPSILON
+                    * contact_round_off_scale(grid, x, planes, u, &shares),
+            )
+        })
+    };
     let (mut best, mut since_best) = (f64::INFINITY, 0u32);
     loop {
         let worst = largest(&r);
@@ -1270,7 +1624,7 @@ pub(crate) fn solve(
             since_best = 0;
         } else {
             since_best += 1;
-            if since_best >= 5 {
+            if since_best >= 5 && best <= noise(&u) {
                 report.stagnated = true;
                 break;
             }
@@ -1370,6 +1724,11 @@ pub(crate) fn solve(
         let mut t = 1.0;
         loop {
             let trial: Vec<f64> = u.iter().zip(&delta).map(|(a, b)| a + t * b).collect();
+            // KNOWN-LIMIT[DISCRETIZATION/OPEN-GAP]: the backtracking's floor
+            // 1e-12 (inadmissible trials) and its acceptance of any step
+            // below 1e-3 are not sourced (not in Walter 2014 nor Coleman
+            // 1984). Removal criterion: a sourced or derived backtracking
+            // rule with the counts identical or explained.
             if !admissible(&trial) {
                 t *= 0.5;
                 if t < 1e-12 {
@@ -1407,6 +1766,35 @@ pub(crate) fn solve(
                 sum + e
             });
     report.force_round_off = force_round_off;
+    // The mirrors' push (`StepReport::mirror_force`): the points' momentum rate
+    // is `sum_k L_k a_k` (the lumped mass is the points' mass carried through
+    // the same weights), so whatever the rows' sum adds to it beyond the loads
+    // on the points is the folding's. The internal force's evaluation here is
+    // a reading, not the solve's: its count is kept out.
+    #[cfg(all(test, feature = "experimental"))]
+    if hoop.is_some() {
+        let counted = evaluations.get();
+        let rows = raw(&u);
+        evaluations.set(counted);
+        let pushed = if contacts.is_empty() {
+            vec![0.0; grid.len]
+        } else {
+            push(&u)
+        };
+        let mut loads = (0..n).fold(DVec2::ZERO, |sum, p| {
+            sum + mass[p] * body.map_or(gravity, |body| body[p])
+        });
+        loads += super::axisymmetric::point_loads_total();
+        let (mut reaction, mut net) = (-loads, DVec2::ZERO);
+        for k in 0..grid.len {
+            let a = grid.axis_of[k];
+            let accel = inertia * (u[k] / dt - v_n[k]) / dt;
+            reaction[a] += grid.lumped[k] * accel - rows[k];
+            net[a] += pushed[k];
+        }
+        report.mirror_force = reaction;
+        report.contact_net_force = net;
+    }
     #[cfg(all(test, feature = "experimental"))]
     if hooks::on() {
         let distance = homotopy_solution.as_ref().map_or(String::new(), |w| {
@@ -1521,7 +1909,8 @@ pub(crate) fn solve(
     report.timing.responses_jacobian = jacobian_clock.get() - jacobian_before_responses;
     report.timing.preconditioner_solve = precondition_clock.get();
     report.timing.preconditioner_build = banded_at - projected_at;
-    let dissipated = if solids.iter().any(Elastic::is_viscous) {
+    // At rest no dashpot works (`statics`).
+    let dissipated = if !statics && solids.iter().any(Elastic::is_viscous) {
         (0..n)
             .map(|p| {
                 if !solids[p].is_viscous() || v0[p] <= 0.0 {
@@ -1575,5 +1964,6 @@ pub(crate) fn solve(
         report,
         responses,
         dissipated,
+        tangential_penalty: tangential,
     }
 }

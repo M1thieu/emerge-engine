@@ -41,6 +41,9 @@ pub(crate) fn step_dirichlet(
         body: Some(body),
         friction: 0.0,
         responses: false,
+        bounded_friction: false,
+        statics: false,
+        gauge: None,
     };
     let mut factors = Factors::default();
     let Solution {

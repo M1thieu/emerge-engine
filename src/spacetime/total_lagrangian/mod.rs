@@ -312,6 +312,17 @@ pub struct StepReport {
     /// sum over unknowns of the stiffness's size there (the residual floor's
     /// terms, `solve`, summed instead of maximised).
     pub force_round_off: f64,
+    /// The mirrors' push per axis, N/m (the axisymmetric path's axis and
+    /// planes, `Revolution`): the folded rows' net force less a free body's.
+    /// Without mirrors the basis's partition of unity makes the unknowns' sums
+    /// of inertia, internal force and load those of the points, so the step's
+    /// momentum change is the loads' impulse plus `dt` times `residual_force`;
+    /// a folded row (a mirror's face zero, its ghost its image's) breaks those
+    /// sums, and their defect is what the mirrors exert. Zero off that path.
+    pub mirror_force: DVec2,
+    /// The walls' and pairs' net push over the unknowns per axis, N/m, from the
+    /// same reading: zero when every pair's two sides push equal and opposite.
+    pub contact_net_force: DVec2,
     /// The most work the contacts' normal forces can do over the step,
     /// `sum_v lambda_v a_v` with `a_v` each condition's tolerance on the
     /// gap it leaves (`step_total_lagrangian_contact`): held in velocity,

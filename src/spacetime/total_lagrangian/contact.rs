@@ -28,6 +28,17 @@ impl Plane {
             ..*self
         }
     }
+
+    /// The same plane for a condition whose start gap is `gap`: one already
+    /// across holds where it is, not pushed back out, so the push does no
+    /// positive work (Laursen and Love, IJNME 53 (2002) eq. 74, the positive part
+    /// of the last gap, and eq. 71, the condition for their impulse to exist).
+    pub(crate) fn at_most_across(self, gap: f64) -> Self {
+        Self {
+            at: self.at + self.inward * gap.min(0.0),
+            ..self
+        }
+    }
 }
 
 /// One point of a contact: a particle held against a wall's plane (or a
@@ -95,6 +106,83 @@ impl Contact {
 /// A contact's augmented-Lagrangian penalty, its points' weighted.
 pub(crate) fn contact_penalty(c: &Contact, penalty: &[f64]) -> f64 {
     c.points.iter().map(|(p, w)| w * penalty[p.particle]).sum()
+}
+
+/// The friction's augmentation parameter `k_T` for one solve, shared by its
+/// contacts: `1 / max_i sum_j |W_ij|`, `W = (dt^2 / 2) B M_eps^-1 B^T`, `B`
+/// the contacts' tangential rows (`g_T = B u`). `None` when a row reaches
+/// an unknown without mass (no inertia bounds the step there).
+///
+/// Why: with a fixed multiplier, the solve's friction term has slope
+/// `A + k_T B^T B` sticking and `A` slipping (`A` the step's operator
+/// without contacts, `2 M_eps / dt^2 + K`). Alart, J. Math. Pures Appl. 76
+/// (1997), Thm 6 and eq. 57: a generalized Newton on such a function
+/// converges if its slopes stay within a ratio of 2, and otherwise cycles
+/// between the two slip regions when the solution sticks (his Fig. 5);
+/// eq. 59 carries the bound to `n` unknowns through the Uzawa contraction,
+/// `r < 2 / lambda_max(B A^-1 B^T)`. Adaptation, declared: on our nested
+/// form (the multipliers fixed inside a solve) the 1-unknown condition
+/// reads `k_T < a` (slopes `a + k_T` and `a`), so `k_T lambda_max(B A^-1
+/// B^T) < 1` is asked. With `K` positive semidefinite, `A >= 2 M_eps /
+/// dt^2`, so `B A^-1 B^T <= W`, and Gershgorin bounds `lambda_max(W)` by
+/// its largest absolute row sum: the value returned meets both bounds. A
+/// material modulus as `k_T` broke them by 6e3 to 2e4 on a block at rest
+/// on a Coulomb floor (measured), every Newton step of a fresh contact's
+/// solve then crossing the stick region.
+pub(crate) fn tangential_penalty(
+    grid: &Grid,
+    x: &[DVec2],
+    planes: &[Plane],
+    contacts: &[Contact],
+    mass: &Band,
+    dt: f64,
+    inertia: f64,
+) -> Option<f64> {
+    let zero = vec![0.0; grid.len];
+    let massive = grid.massive();
+    let mut rows = Vec::with_capacity(contacts.len());
+    for c in contacts {
+        let (_, shares) = contact_geometry(grid, x, planes, &zero, c);
+        let mut row = vec![0.0; grid.len];
+        for share in &shares {
+            let tangent = share.normal.perp();
+            for &(r, weight) in &share.spread {
+                if weight == 0.0 {
+                    continue;
+                }
+                for a in 0..2 {
+                    let part = share.weight * weight * tangent[a];
+                    if part != 0.0 {
+                        grid.visit(r, a, |k, w, _| row[k] += w * part);
+                    }
+                }
+            }
+        }
+        for (k, value) in row.iter_mut().enumerate() {
+            if !grid.active[k] {
+                *value = 0.0;
+            } else if !massive[k] && *value != 0.0 {
+                return None;
+            }
+        }
+        rows.push(row);
+    }
+    let solved: Vec<Vec<f64>> = rows.iter().map(|row| mass.solve(row)).collect();
+    let scale = dt * dt / inertia;
+    let w: Vec<Vec<f64>> = rows
+        .iter()
+        .map(|row| {
+            solved
+                .iter()
+                .map(|z| scale * row.iter().zip(z).map(|(p, q)| p * q).sum::<f64>())
+                .collect()
+        })
+        .collect();
+    let largest = w
+        .iter()
+        .map(|row| row.iter().map(|e| e.abs()).sum::<f64>())
+        .fold(0.0f64, f64::max);
+    (largest > 0.0).then(|| 1.0 / largest)
 }
 
 /// A contact's tolerance on the gap it leaves at the step's end: a
@@ -343,6 +431,41 @@ pub(crate) fn friction_motion(
     }
 }
 
+/// The line a point's nodal normal is square to, from its previous neighbour to
+/// its next, at the positions `at`. On a body of revolution a point on the axis has
+/// the axis on one side and, by symmetry, its other neighbour's mirror image there
+/// as its neighbour, so the line runs square to the axis and the normal lies along
+/// it (derived here).
+#[cfg(all(test, feature = "experimental"))]
+pub(crate) fn nodal_line(
+    grid: &Grid,
+    at: impl Fn(usize) -> DVec2,
+    point: usize,
+    (previous, next): (usize, usize),
+) -> DVec2 {
+    if let Some(hoop) = grid.hoop.as_ref().filter(|h| h.radii[point] <= 0.0) {
+        if hoop.radii[previous] > 0.0 {
+            return DVec2::new(-2.0 * (at(previous).x - hoop.axis_x), 0.0);
+        }
+        if hoop.radii[next] > 0.0 {
+            return DVec2::new(2.0 * (at(next).x - hoop.axis_x), 0.0);
+        }
+    }
+    at(next) - at(previous)
+}
+
+/// The line a point's nodal normal is square to, from its previous neighbour to
+/// its next, at the positions `at`.
+#[cfg(not(all(test, feature = "experimental")))]
+pub(crate) fn nodal_line(
+    _: &Grid,
+    at: impl Fn(usize) -> DVec2,
+    _: usize,
+    (previous, next): (usize, usize),
+) -> DVec2 {
+    at(next) - at(previous)
+}
+
 /// A contact point's gap, its normal and how its push spreads over the
 /// particles (particle, weight), for the displacement `u` of the step:
 /// - against a plane, or a partner across it, the plane's own gap and
@@ -379,7 +502,7 @@ pub(crate) fn point_geometry(
             let length = side.length().max(f64::MIN_POSITIVE);
             let (xi, normal) = match c.nodal {
                 Some((previous, next)) => {
-                    let along = middle(next) - middle(previous);
+                    let along = nodal_line(grid, middle, c.particle, (previous, next));
                     let normal =
                         -DVec2::new(along.y, -along.x) / along.length().max(f64::MIN_POSITIVE);
                     let denominator = normal.perp_dot(side);

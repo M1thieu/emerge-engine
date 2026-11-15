@@ -14,11 +14,35 @@ use crate::matter::materials::relaxation::ViscoelasticRecord;
 use crate::{CorotatedMaterial, FromSI, SimConfig};
 use glam::IVec2;
 
+/// How a test's body comes to the state its measurement starts from. The
+/// list is open: a body arriving tilted, on a slope, in a hole, having passed
+/// through or dropped from a height are further starts, not built yet
+/// (registered with the existing ones).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Start {
+    /// At rest under its weight, from the static equilibrium
+    /// (`settle_total_lagrangian_at_rest`): a block that has been resting.
+    Settled,
+    /// Placed touching the floor unstrained, then released and stepped
+    /// until it holds a contact: a block set down abruptly, its release
+    /// transient included.
+    SpawnDrop,
+}
+
+/// The starts every damped-rest gate runs from.
+const STARTS: [Start; 2] = [Start::Settled, Start::SpawnDrop];
+
 /// A Plasticine block `height` cells high (16 cells wide), cell `dx`, on
-/// the floor, placed at its resting compression (`rest::Rest::settle`) with
-/// `kick` of the loaded mode's offset as its rate; modal rest on or off.
-fn settled_plasticine(dx: f32, height: i32, kick: f64, modal: bool) -> Simulation {
-    settled_plasticine_at(dx, height, kick, (modal, 1e-2))
+/// the floor, brought to its start (`Start`), then placed at its resting
+/// compression (`rest::Rest::settle`) with `kick` of the loaded mode's offset
+/// as its rate; modal rest on or off.
+fn settled_plasticine(
+    dx: f32,
+    height: i32,
+    kick: f64,
+    (modal, start): (bool, Start),
+) -> Simulation {
+    settled_plasticine_at(dx, height, kick, (modal, 1e-2), start)
 }
 
 /// The same at step tolerance `tolerance`.
@@ -27,9 +51,10 @@ fn settled_plasticine_at(
     height: i32,
     kick: f64,
     (modal, tolerance): (bool, f64),
+    start: Start,
 ) -> Simulation {
-    settled_on(dx, height, kick, (modal, tolerance), 0.0).unwrap_or_else(|beyond| {
-        panic!("the block does not start a rest (beyond the limit: {beyond})")
+    settled_on(dx, height, kick, (modal, tolerance), 0.0, start).unwrap_or_else(|beyond| {
+        panic!("the block ({start:?}) does not start a rest (beyond the limit: {beyond})")
     })
 }
 
@@ -42,6 +67,7 @@ fn settled_on(
     kick: f64,
     (modal, tolerance): (bool, f64),
     friction: f32,
+    start: Start,
 ) -> Result<Simulation, bool> {
     let record = ViscoelasticRecord::plasticine_crandall_1970_fresh();
     let mut config = SimConfig::earth(64, dx, 1.0 / 60.0);
@@ -66,13 +92,23 @@ fn settled_on(
             .material(id)
             .mass_from(&record.relaxed, &config),
     );
-    // Stepped 30 frames: spawned on the floor, it first chatters, and its
-    // own damping settles it; then until its last step holds a contact.
-    for k in 0..60 {
-        sim.step();
-        let state = sim.total_lagrangian.as_ref().expect("on the path");
-        if k >= 30 && state.cache.as_ref().is_some_and(|c| !c.contacts.is_empty()) {
-            break;
+    match start {
+        // At rest from the static equilibrium: no frame stepped before.
+        Start::Settled => {
+            sim.settle_total_lagrangian_at_rest()
+                .unwrap_or_else(|refused| panic!("the block settles: {refused:?}"));
+        }
+        // Stepped 30 frames: spawned on the floor, it first chatters, and
+        // its own damping settles it; then until its last step holds a
+        // contact.
+        Start::SpawnDrop => {
+            for k in 0..60 {
+                sim.step();
+                let state = sim.total_lagrangian.as_ref().expect("on the path");
+                if k >= 30 && state.cache.as_ref().is_some_and(|c| !c.contacts.is_empty()) {
+                    break;
+                }
+            }
         }
     }
     let (planes, walls_friction) = sim.total_lagrangian_walls();
@@ -186,9 +222,15 @@ fn check_ledger_since(name: &str, start: f64, frames: &[(TotalLagrangianFrame, V
 /// stepped run (positions, energy plus heat) is reported.
 #[test]
 fn a_damped_block_rests_by_its_constrained_modes() {
+    for start in STARTS {
+        a_damped_block_rests_from(start);
+    }
+}
+
+fn a_damped_block_rests_from(start: Start) {
     const FRAMES: usize = 30;
-    let (base, rested, _) = run(settled_plasticine(0.0025, 2, 0.0, true), FRAMES);
-    let (_, stepped, _) = run(settled_plasticine(0.0025, 2, 0.0, false), FRAMES);
+    let (base, rested, _) = run(settled_plasticine(0.0025, 2, 0.0, (true, start)), FRAMES);
+    let (_, stepped, _) = run(settled_plasticine(0.0025, 2, 0.0, (false, start)), FRAMES);
     let last = rested.last().expect("frames").0;
     let (rest_frames, hand_backs, refused) = (
         last.modal_rest_frames - base.modal_rest_frames,
@@ -203,7 +245,7 @@ fn a_damped_block_rests_by_its_constrained_modes() {
         energy = energy.max((fr.energy + fr.heat - fs.energy - fs.heat).abs());
     }
     println!(
-        "damped rest, kick 0: {} rest frames of {FRAMES}, {} hand-backs, {} refused, {} checks failed; against stepped: positions at most {largest:.3e} m apart, energy plus heat at most {energy:.3e} J/m apart; heat {:.3e} (rested) {:.3e} (stepped) J/m",
+        "damped rest ({start:?}), kick 0: {} rest frames of {FRAMES}, {} hand-backs, {} refused, {} checks failed; against stepped: positions at most {largest:.3e} m apart, energy plus heat at most {energy:.3e} J/m apart; heat {:.3e} (rested) {:.3e} (stepped) J/m",
         rest_frames,
         hand_backs,
         refused,
@@ -223,8 +265,8 @@ fn a_damped_block_rests_by_its_constrained_modes() {
 /// The kicked block (0.1 of the loaded offset): its first rest frame, and
 /// the most damped mode's state over it (`Rest::damped_modes`); the heat it
 /// made, J/m, and the particles' positions at its end.
-fn kicked_rest() -> (f64, Vec<DVec2>, DampedModes, Frames) {
-    let (base, rested, modes) = run(settled_plasticine(0.0025, 2, 0.1, true), 6);
+fn kicked_rest(start: Start) -> (f64, Vec<DVec2>, DampedModes, Frames) {
+    let (base, rested, modes) = run(settled_plasticine(0.0025, 2, 0.1, (true, start)), 6);
     assert!(rested[0].0.modal_rest, "the first frame rests");
     (
         rested[0].0.heat - base.heat,
@@ -256,7 +298,13 @@ fn kicked_rest() -> (f64, Vec<DVec2>, DampedModes, Frames) {
 /// `probe_plasticine_block_drop`).
 #[test]
 fn a_kicked_damped_block_rests_and_its_kick_becomes_heat() {
-    let (h_rest, x_rest, (modes, memory), rested) = kicked_rest();
+    for start in STARTS {
+        a_kicked_damped_block_rests_from(start);
+    }
+}
+
+fn a_kicked_damped_block_rests_from(start: Start) {
+    let (h_rest, x_rest, (modes, memory), rested) = kicked_rest(start);
     let energy = |y: &[f64]| 0.5 * y.iter().map(|e| e * e).sum::<f64>();
     let (omega, y0, y1) = modes
         .iter()
@@ -266,7 +314,7 @@ fn a_kicked_damped_block_rests_and_its_kick_becomes_heat() {
     let (lost, lost_exact) = (energy(y0) - energy(y1), energy(y0) - energy(&exact));
     // The resolved reference: settled as the rest's run, then 100 frames of
     // 1/6000 s.
-    let mut sim = settled_plasticine(0.0025, 2, 0.1, false);
+    let mut sim = settled_plasticine(0.0025, 2, 0.1, (false, start));
     sim.config.dt = 1.0 / 6000.0;
     let base = sim.total_lagrangian_frame().expect("on the path").heat;
     let (mut steps, mut fine) = (0u32, None);
@@ -285,7 +333,7 @@ fn a_kicked_damped_block_rests_and_its_kick_becomes_heat() {
         .fold(0.0f64, f64::max);
     let period = std::f64::consts::TAU / omega;
     println!(
-        "kicked damped rest: the most damped mode (omega {omega:.4e} rad/s) lost {lost:.6e} J/m against the exact {lost_exact:.6e} ({:.6}); the rest's heat {h_rest:.4e} J/m against the resolved step's {h_fine:.4e} ({:.4}), {steps} steps over 1/60 s ({:.1} per period of that mode); positions at most {apart:.3e} m apart",
+        "kicked damped rest ({start:?}): the most damped mode (omega {omega:.4e} rad/s) lost {lost:.6e} J/m against the exact {lost_exact:.6e} ({:.6}); the rest's heat {h_rest:.4e} J/m against the resolved step's {h_fine:.4e} ({:.4}), {steps} steps over 1/60 s ({:.1} per period of that mode); positions at most {apart:.3e} m apart",
         lost / lost_exact,
         h_rest / h_fine,
         f64::from(steps) * period * 60.0
@@ -310,8 +358,11 @@ fn a_kicked_damped_block_rests_and_its_kick_becomes_heat() {
 #[test]
 #[ignore = "fails under the tolerance-scale gap: the frame-rate step does not resolve the kicked mode"]
 fn a_kicked_damped_block_rests_against_the_frame_rate_step() {
-    let (h_rest, _, _, _) = kicked_rest();
-    let (base, stepped, _) = run(settled_plasticine(0.0025, 2, 0.1, false), 1);
+    let (h_rest, _, _, _) = kicked_rest(Start::SpawnDrop);
+    let (base, stepped, _) = run(
+        settled_plasticine(0.0025, 2, 0.1, (false, Start::SpawnDrop)),
+        1,
+    );
     let h_step = stepped[0].0.heat - base.heat;
     println!("rest heat {h_rest:.4e} J/m against the frame-rate step's {h_step:.4e}");
     assert!(
@@ -325,6 +376,12 @@ fn a_kicked_damped_block_rests_against_the_frame_rate_step() {
 /// each refusal counted.
 #[test]
 fn an_ordinary_plasticine_block_at_rest_is_refused_and_counted() {
+    for start in STARTS {
+        an_ordinary_plasticine_block_is_refused_from(start);
+    }
+}
+
+fn an_ordinary_plasticine_block_is_refused_from(start: Start) {
     let record = ViscoelasticRecord::plasticine_crandall_1970_fresh();
     let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
     config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-2).with_modal_rest());
@@ -341,12 +398,16 @@ fn an_ordinary_plasticine_block_at_rest_is_refused_and_counted() {
             .material(id)
             .mass_from(&record.relaxed, &config),
     );
+    if start == Start::Settled {
+        sim.settle_total_lagrangian_at_rest()
+            .unwrap_or_else(|refused| panic!("the E1 block settles: {refused:?}"));
+    }
     for _ in 0..8 {
         sim.step();
     }
     let f = sim.total_lagrangian_frame().expect("on the path");
     println!(
-        "E1 Plasticine block at rest: {} rest frames, {} refused",
+        "E1 Plasticine block at rest ({start:?}): {} rest frames, {} refused",
         f.modal_rest_frames, f.modal_rest_refused
     );
     assert_eq!(f.modal_rest_frames, 0);
@@ -361,10 +422,16 @@ fn an_ordinary_plasticine_block_at_rest_is_refused_and_counted() {
 #[test]
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
 fn probe_kicked_rest_heat_against_the_step_tolerance() {
-    let (base, rested, _) = run(settled_plasticine(0.0025, 2, 0.1, true), 1);
+    let (base, rested, _) = run(
+        settled_plasticine(0.0025, 2, 0.1, (true, Start::SpawnDrop)),
+        1,
+    );
     println!("rest: heat {:.4e} J/m", rested[0].0.heat - base.heat);
     for tolerance in [1e-2, 1e-3, 1e-4] {
-        let (base, stepped, _) = run(settled_plasticine_at(0.0025, 2, 0.1, (false, tolerance)), 1);
+        let (base, stepped, _) = run(
+            settled_plasticine_at(0.0025, 2, 0.1, (false, tolerance), Start::SpawnDrop),
+            1,
+        );
         println!(
             "stepped at {tolerance:.0e}: heat {:.4e} J/m in {} steps ({} rejected)",
             stepped[0].0.heat - base.heat,
@@ -383,14 +450,14 @@ fn probe_kicked_rest_heat_against_the_step_tolerance() {
 #[test]
 fn a_damped_block_rests_on_a_coulomb_floor_by_its_constrained_modes() {
     const FRAMES: usize = 30;
-    let rested_scene =
-        settled_on(0.0025, 2, 0.0, (true, 1e-2), 1.0).expect("a rest on the Coulomb floor");
+    let rested_scene = settled_on(0.0025, 2, 0.0, (true, 1e-2), 1.0, Start::SpawnDrop)
+        .expect("a rest on the Coulomb floor");
     let clock = std::time::Instant::now();
     let (base, rested, _) = run(rested_scene, FRAMES);
     let rested_s = clock.elapsed().as_secs_f64();
     let clock = std::time::Instant::now();
     let (_, stepped, _) = run(
-        settled_on(0.0025, 2, 0.0, (false, 1e-2), 1.0).expect("the stepped twin"),
+        settled_on(0.0025, 2, 0.0, (false, 1e-2), 1.0, Start::SpawnDrop).expect("the stepped twin"),
         FRAMES,
     );
     let stepped_s = clock.elapsed().as_secs_f64();
@@ -430,7 +497,8 @@ fn a_damped_block_rests_on_a_coulomb_floor_by_its_constrained_modes() {
 /// reported).
 #[test]
 fn a_sticking_rest_keeps_its_held_rows_and_its_cone() {
-    let sim = settled_on(0.0025, 2, 0.0, (true, 1e-2), 1.0).expect("a rest on the Coulomb floor");
+    let sim = settled_on(0.0025, 2, 0.0, (true, 1e-2), 1.0, Start::SpawnDrop)
+        .expect("a rest on the Coulomb floor");
     let state = sim.total_lagrangian.as_ref().expect("on the path");
     let config = sim.config();
     let (planes, friction) = sim.total_lagrangian_walls();
@@ -460,7 +528,7 @@ fn a_sticking_rest_keeps_its_held_rows_and_its_cone() {
 #[test]
 fn a_floor_that_cannot_grip_starts_no_rest() {
     assert!(matches!(
-        settled_on(0.0025, 2, 0.0, (true, 1e-2), 1e-9),
+        settled_on(0.0025, 2, 0.0, (true, 1e-2), 1e-9, Start::SpawnDrop),
         Err(false)
     ));
 }
@@ -473,7 +541,7 @@ fn a_floor_that_cannot_grip_starts_no_rest() {
 fn probe_coulomb_floor_settled_ledger() {
     for mu in [0.3f32, 1.0] {
         for modal in [false, true] {
-            let Ok(sim) = settled_on(0.0025, 2, 0.0, (modal, 1e-2), mu) else {
+            let Ok(sim) = settled_on(0.0025, 2, 0.0, (modal, 1e-2), mu, Start::SpawnDrop) else {
                 println!("mu {mu}, modal {modal}: the settling rest did not start");
                 continue;
             };

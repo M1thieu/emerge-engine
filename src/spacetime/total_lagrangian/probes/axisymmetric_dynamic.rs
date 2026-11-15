@@ -25,29 +25,29 @@ use super::{Layout, bisect, lame};
 use crate::matter::materials::solid::neo_hookean::neo_hookean_second_pk_axisymmetric;
 
 /// Columns and rows of grid below the axis and the base, and beyond the body.
-const MARGIN: usize = 4;
+pub(super) const MARGIN: usize = 4;
 
 /// The nearest cell width the grid holds exactly (its layout's `f32`), so that
 /// the points' positions and the grid's nodes share one length.
-fn cell(h: f64) -> f64 {
+pub(super) fn cell(h: f64) -> f64 {
     f64::from(h as f32)
 }
 
-struct Body {
-    layout: GridLayout,
-    reference: Vec<DVec2>,
-    radii: Vec<f64>,
-    v0: Vec<f64>,
-    mass: Vec<f64>,
+pub(super) struct Body {
+    pub(super) layout: GridLayout,
+    pub(super) reference: Vec<DVec2>,
+    pub(super) radii: Vec<f64>,
+    pub(super) v0: Vec<f64>,
+    pub(super) mass: Vec<f64>,
     /// Points with mass; the rest are the massless load and reading points.
-    massive: usize,
+    pub(super) massive: usize,
     h: f64,
 }
 
 impl Body {
     /// A cylinder `nr` by `nz` cells of `h` on the axis and the base, of density
     /// `rho`, with `extra` massless points `(R, Z)` after the massive ones.
-    fn new((nr, nz, h, rho): (usize, usize, f64, f64), extra: &[(f64, f64)]) -> Self {
+    pub(super) fn new((nr, nz, h, rho): (usize, usize, f64, f64), extra: &[(f64, f64)]) -> Self {
         let origin = MARGIN as f64 * h;
         let mut body = Body {
             layout: GridLayout::new(2 * MARGIN + nr + 2, 2 * MARGIN + nz + 2, h as f32),
@@ -229,7 +229,7 @@ impl<'a> Stepper<'a> {
 }
 
 /// The stored energy per radian of `(x, f)`.
-fn stored_energy(body: &Body, solids: &[Elastic], x: &[DVec2], f: &[DMat2]) -> f64 {
+pub(super) fn stored_energy(body: &Body, solids: &[Elastic], x: &[DVec2], f: &[DMat2]) -> f64 {
     (0..body.massive)
         .map(|p| body.v0[p] * ax::energy_with_stretch(&solids[p], f[p], body.f33(x, p)))
         .sum()
@@ -600,7 +600,11 @@ fn the_hoop_reaches_the_controllers_tries_at_any_thread_count() {
 /// A cylinder's outline in the meridian plane, counter-clockwise, one point every
 /// half cell (`spawn_outline`), from the bottom on the axis, as `(R, Z)` from the
 /// base; its side on the axis weighs nothing. And its corners' indices.
-fn cylinder_outline(across: usize, along: usize, h: f64) -> (Vec<(f64, f64)>, Vec<usize>) {
+pub(super) fn cylinder_outline(
+    across: usize,
+    along: usize,
+    h: f64,
+) -> (Vec<(f64, f64)>, Vec<usize>) {
     let (radius, length) = (across as f64 * h, along as f64 * h);
     let sides = [
         ((0.0, 0.0), (radius, 0.0), 2 * across),
@@ -621,32 +625,32 @@ fn cylinder_outline(across: usize, along: usize, h: f64) -> (Vec<(f64, f64)>, Ve
 }
 
 /// What a rod's impact on a wall gave.
-struct RodImpact {
+pub(super) struct RodImpact {
     /// Contact time over `2 L / c0`, minus one.
-    contact_error: f64,
+    pub(super) contact_error: f64,
     /// Touch time against the free flight's, in `L / c0`.
-    touch_error: f64,
+    pub(super) touch_error: f64,
     /// Axial momentum after the contact over the start's, opposed (exact: 1).
-    rebound: f64,
+    pub(super) rebound: f64,
     /// The largest energy imbalance over the start's energy, its bound the
     /// steps' own residual and contact work over the same.
-    ledger: f64,
-    ledger_bound: f64,
+    pub(super) ledger: f64,
+    pub(super) ledger_bound: f64,
     /// The largest axial momentum imbalance against the walls' impulses, over
     /// the start's momentum.
-    momentum: f64,
+    pub(super) momentum: f64,
     /// The radial momentum's largest size over the axial start's: no wall
     /// pushes radially, and the axis's mirror holds it at zero by symmetry
     /// only in the sum over a whole ring, which here is its own measure.
-    steps: usize,
-    solves: u32,
-    rejected: u32,
-    lowest_gap: f64,
+    pub(super) steps: usize,
+    pub(super) solves: u32,
+    pub(super) rejected: u32,
+    pub(super) lowest_gap: f64,
 }
 
 /// A rod of `cells` by `cells_across` falling on a frictionless floor at the strain
 /// `v0 / c0`, through the controller at tolerance `tolerance`, forecast on.
-fn rod_on_a_wall(
+pub(super) fn rod_on_a_wall(
     (cells_across, cells, nu): (usize, usize, f64),
     (strain, tolerance): (f64, f64),
 ) -> RodImpact {

@@ -343,6 +343,11 @@ pub(crate) struct Rest {
     /// rate `q'(0) = Phi^T M v_0`.
     forcing: Vec<f64>,
     rate: Vec<f64>,
+    /// Per mode, the load's forcing from the unstrained body, `Phi^T f`:
+    /// its static deflection `Phi^T f / omega^2` sizes the probes' kick
+    /// (`settle`), whatever state the rest starts from.
+    #[cfg(all(test, feature = "experimental"))]
+    load: Vec<f64>,
     /// Per held condition, its multiplier at the start.
     multiplier: Vec<f64>,
     /// The other contact points against each wall: (point, plane index,
@@ -410,6 +415,8 @@ impl Rest {
         let mv0 = times(&basis.m, (n, n), &v0, 1);
         let residual: Vec<f64> = load.iter().zip(&ku0).map(|(f, ku)| f - ku).collect();
         let forcing: Vec<f64> = basis.columns.iter().map(|c| dot(c, &residual)).collect();
+        #[cfg(all(test, feature = "experimental"))]
+        let load_forcing: Vec<f64> = basis.columns.iter().map(|c| dot(c, &load)).collect();
         let rate: Vec<f64> = basis.columns.iter().map(|c| dot(c, &mv0)).collect();
         let mut start_force: Vec<f64> = ku0.iter().zip(&load).map(|(ku, f)| ku - f).collect();
         // The branches' linearised force per mechanism on the unknowns,
@@ -552,6 +559,8 @@ impl Rest {
             start_at,
             start_gradients,
             forcing,
+            #[cfg(all(test, feature = "experimental"))]
+            load: load_forcing,
             rate,
             multiplier,
             free,
@@ -678,13 +687,24 @@ impl Rest {
                 self.forcing[i] / (w * w)
             }
         };
+        // The kick is sized on each mode's static deflection from the
+        // unstrained body, `Phi^T f / omega^2`, not on the offset left from
+        // the start (which is zero for a start already at rest).
+        let deflection = |i: usize| {
+            let w = self.basis.omega[i];
+            if w == 0.0 {
+                0.0
+            } else {
+                self.load[i] / (w * w)
+            }
+        };
         let loaded = (0..self.basis.omega.len())
-            .max_by(|&i, &j| offset(i).abs().total_cmp(&offset(j).abs()))
+            .max_by(|&i, &j| deflection(i).abs().total_cmp(&deflection(j).abs()))
             .unwrap_or(0);
         let coordinates: Vec<(f64, f64)> = (0..self.basis.omega.len())
             .map(|i| {
                 let rate = if i == loaded {
-                    kick * offset(i).abs() * self.basis.omega[i]
+                    kick * deflection(i).abs() * self.basis.omega[i]
                 } else {
                     0.0
                 };

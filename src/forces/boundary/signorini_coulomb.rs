@@ -20,7 +20,10 @@
 //! The functions below state both laws as one projection that a solver can
 //! iterate on: the forces are the trial values `lambda - k g` (the last
 //! multipliers less a penalty times the gaps), clamped onto what the law
-//! allows. At the solution the clamp holds exactly the conditions above.
+//! allows. At the solution the clamp holds exactly the conditions above,
+//! whatever the penalties. The normal and the tangential penalty are two
+//! parameters (`k_N`, `k_T`): Simo and Laursen, Comput. Struct. 42 (1992),
+//! eqs. 3.9.1 and 3.9.3 (`epsilon_N`, `epsilon_T`), 3.16-3.19.
 //! Source: Hueber, Stadler and Wohlmuth, SIAM J. Sci. Comput. 30 (2008),
 //! eq. 3.14 (the tangential projection) and sec. 7, eq. 7.1 (Coulomb's
 //! bound taken from the normal force of the same iterate). Adaptation:
@@ -42,19 +45,20 @@ pub struct ContactBranch {
 /// The normal and tangential forces of one contact. `multipliers` are the
 /// last normal and tangential forces `(lambda_N, lambda_T)`, `gaps` the
 /// normal and tangential relative displacements over the step `(g_N,
-/// g_T)`, `k` the penalty and `friction` Coulomb's coefficient `mu`.
-/// Normal: `N = max(0, lambda_N - k g_N)`. Tangential: `lambda_T - k g_T`
+/// g_T)`, `(k, k_t)` the normal and tangential penalties and `friction`
+/// Coulomb's coefficient `mu`.
+/// Normal: `N = max(0, lambda_N - k g_N)`. Tangential: `lambda_T - k_t g_T`
 /// clamped onto `[-mu N, mu N]`. With `frozen`, the same with the branch
 /// held (each clamp replaced by the side it took), a smooth function of
 /// the gaps.
 pub fn contact_force(
     (normal_multiplier, tangential_multiplier): (f64, f64),
     (normal_gap, tangential_gap): (f64, f64),
-    (k, friction): (f64, f64),
+    ((k, k_t), friction): ((f64, f64), f64),
     frozen: Option<ContactBranch>,
 ) -> (f64, f64) {
     let normal = normal_multiplier - k * normal_gap;
-    let trial = tangential_multiplier - k * tangential_gap;
+    let trial = tangential_multiplier - k_t * tangential_gap;
     match frozen {
         None => {
             let normal = normal.max(0.0);
@@ -70,10 +74,10 @@ pub fn contact_force(
 pub fn contact_branch(
     (normal_multiplier, tangential_multiplier): (f64, f64),
     (normal_gap, tangential_gap): (f64, f64),
-    (k, friction): (f64, f64),
+    ((k, k_t), friction): ((f64, f64), f64),
 ) -> ContactBranch {
     let normal = normal_multiplier - k * normal_gap;
-    let trial = tangential_multiplier - k * tangential_gap;
+    let trial = tangential_multiplier - k_t * tangential_gap;
     ContactBranch {
         pressed: normal > 0.0,
         slip: if trial.abs() < friction * normal {
@@ -92,21 +96,21 @@ mod tests {
     fn a_contact_pushes_but_never_pulls() {
         // Surfaces moving apart over the step (positive gap): no force.
         assert_eq!(
-            contact_force((0.0, 0.0), (0.5, 0.0), (10.0, 0.3), None),
+            contact_force((0.0, 0.0), (0.5, 0.0), ((10.0, 10.0), 0.3), None),
             (0.0, 0.0)
         );
         // Moving into each other: a push.
-        let (normal, _) = contact_force((0.0, 0.0), (-0.5, 0.0), (10.0, 0.3), None);
+        let (normal, _) = contact_force((0.0, 0.0), (-0.5, 0.0), ((10.0, 10.0), 0.3), None);
         assert_eq!(normal, 5.0);
     }
 
     #[test]
     fn friction_sticks_inside_the_cone_and_slides_on_it() {
         // A small tangential pull is held in full: sticking.
-        let (normal, along) = contact_force((10.0, 0.0), (0.0, 0.1), (10.0, 0.3), None);
+        let (normal, along) = contact_force((10.0, 0.0), (0.0, 0.1), ((10.0, 10.0), 0.3), None);
         assert_eq!((normal, along), (10.0, -1.0));
         // A large one is capped at mu N, against the slide: sliding.
-        let (normal, along) = contact_force((10.0, 0.0), (0.0, 1.0), (10.0, 0.3), None);
+        let (normal, along) = contact_force((10.0, 0.0), (0.0, 1.0), ((10.0, 10.0), 0.3), None);
         assert_eq!(normal, 10.0);
         assert!((along + 3.0).abs() < 1e-12);
     }
@@ -120,10 +124,10 @@ mod tests {
             ((0.0, 0.0), (0.5, 0.0)),
         ];
         for (multipliers, gaps) in cases {
-            let branch = contact_branch(multipliers, gaps, (10.0, 0.3));
+            let branch = contact_branch(multipliers, gaps, ((10.0, 10.0), 0.3));
             assert_eq!(
-                contact_force(multipliers, gaps, (10.0, 0.3), Some(branch)),
-                contact_force(multipliers, gaps, (10.0, 0.3), None),
+                contact_force(multipliers, gaps, ((10.0, 10.0), 0.3), Some(branch)),
+                contact_force(multipliers, gaps, ((10.0, 10.0), 0.3), None),
             );
         }
     }
@@ -133,7 +137,7 @@ mod tests {
         // The tangential force times the slide is never positive, sticking
         // or sliding, whichever way the slide goes.
         for slide in [-2.0, -0.5, -0.01, 0.0, 0.01, 0.5, 2.0] {
-            let (_, along) = contact_force((10.0, 0.0), (0.0, slide), (10.0, 0.3), None);
+            let (_, along) = contact_force((10.0, 0.0), (0.0, slide), ((10.0, 10.0), 0.3), None);
             assert!(along * slide <= 0.0, "slide {slide}: force {along}");
         }
     }
