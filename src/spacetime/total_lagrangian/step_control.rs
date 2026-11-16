@@ -757,12 +757,104 @@ pub fn controlled_step(
             } else {
                 (norm(&difference) / divisor, 2.0)
             };
+            // A step longer than a contact between two bodies steps over it:
+            // both tries then replace the contact's duration by the step and
+            // miss its dissipation alike, an error of order one no difference
+            // of the tries can see (the doubling estimate compares two points
+            // of the same plateau). So on a step where a body pair starts
+            // touching, the step is held to the contact's own time scale,
+            // `omega_c h <= 1`, `omega_c = pi / tau`, `tau = 2 L / c_u`: the
+            // time a wave takes to cross the shorter body along the pair's
+            // line and back (d'Alembert; Doyen, Ern and Piperno 2011 eqs.
+            // 26-27 for the equal bars), `c_u` the fastest unrelaxed P-wave
+            // speed of the scene's solids. Within that range the step's own
+            // error estimate resolves the contact.
+            // Adaptation, declared: `omega_c h <= 1` is the range in which
+            // the midpoint step's dissipation error expands at second order
+            // (its factor lies between cos^2 and sinc^2 of `omega h / 2`),
+            // not an accuracy target; `tau` is exact for slender elastic
+            // bars and an order-one estimate for stubby bodies; the pair's
+            // line joins the two outlines' centroids. Removal criterion: a
+            // sharper `tau` (the shorter body's lowest longitudinal mode
+            // along the actual contact normal) and a cap on the contact's
+            // part of the step only, measured to remove the extra steps the
+            // cap costs at fine tolerance (+4 to +11 % on the bars below).
+            // Measured: two damped Plasticine blocks (law value 0.252 of the
+            // striker's speed kept) gave 0.004 at tolerances 1e-1 and 1e-2
+            // without it, the whole impact inside one 1/60 s step, and
+            // 0.264, 0.251, 0.252 at 1e-1, 1e-2, 1e-3 with it; two bars at a
+            // 5 mm cell (law value 0.177, converged in the cell) gave 0.211
+            // at 1e-1 without it and 0.178, 0.176, 0.177 with it.
+            let pairs_held = |s: &State| -> Vec<(usize, usize)> {
+                s.cache.as_ref().map_or(Vec::new(), |c| {
+                    let owner: Vec<usize> = c
+                        .traces
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(o, trace)| std::iter::repeat_n(o, trace.functions.len()))
+                        .collect();
+                    let mut pairs: Vec<(usize, usize)> = c
+                        .contacts
+                        .iter()
+                        .filter(|contact| contact.multiplier > 0.0 && contact.key.0 == 4)
+                        .filter_map(|contact| owner.get(contact.key.1).map(|&o| (o, contact.key.2)))
+                        .collect();
+                    pairs.sort_unstable();
+                    pairs.dedup();
+                    pairs
+                })
+            };
+            let before = pairs_held(&start);
+            let mut arriving: Vec<(usize, usize)> = pairs_held(&whole)
+                .into_iter()
+                .chain(pairs_held(&halves))
+                .filter(|pair| !before.contains(pair))
+                .collect();
+            arriving.sort_unstable();
+            arriving.dedup();
+            let contact_scale = if arriving.is_empty() {
+                None
+            } else {
+                let c_u = (0..start.solids.len())
+                    .filter(|&p| mass[p] > 0.0 && v0[p] > 0.0)
+                    .map(|p| (start.solids[p].unrelaxed_p_modulus() * v0[p] / mass[p]).sqrt())
+                    .fold(0.0f64, f64::max);
+                let extent = |o: usize, n: DVec2| -> f64 {
+                    let along = set.outlines[o].iter().map(|&q| start.x[q].dot(n));
+                    let (lo, hi) = along.fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), a| {
+                        (lo.min(a), hi.max(a))
+                    });
+                    hi - lo
+                };
+                let centroid = |o: usize| -> DVec2 {
+                    let points = &set.outlines[o];
+                    points.iter().map(|&q| start.x[q]).sum::<DVec2>() / points.len().max(1) as f64
+                };
+                arriving
+                    .iter()
+                    .filter(|&&(a, b)| a < set.outlines.len() && b < set.outlines.len())
+                    .map(|&(a, b)| {
+                        let n = (centroid(b) - centroid(a)).normalize_or_zero();
+                        let shorter = extent(a, n).min(extent(b, n));
+                        2.0 * shorter / c_u.max(f64::MIN_POSITIVE)
+                    })
+                    .reduce(f64::min)
+            };
+            let longest = contact_scale.map(|tau| tau / std::f64::consts::PI);
+            let error = match longest {
+                Some(limit) if dt > limit && dt > floor => f64::INFINITY,
+                _ => error,
+            };
             let relative = error / (control.safety * target).max(f64::MIN_POSITIVE);
             // Eqs. 64 and 66.
             let ratio = (1.0 / relative.max(f64::MIN_POSITIVE))
                 .powf(1.0 / (order + 1.0))
                 .clamp(0.5, 5.0);
-            let next = (ratio * dt).clamp(floor, control.largest);
+            // Refused by the contact's scale, the retry takes that scale.
+            let next = match longest {
+                Some(limit) if dt > limit => limit.max(floor),
+                _ => (ratio * dt).clamp(floor, control.largest),
+            };
             let at_floor = error > target && dt <= floor;
             #[cfg(all(test, feature = "experimental"))]
             if std::env::var_os("EMERGE_PROBE_CONTROL_TRACE").is_some() || hooks::control_trace() {

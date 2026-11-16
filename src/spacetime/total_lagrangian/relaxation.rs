@@ -131,6 +131,16 @@ impl Relaxation {
         self.count == 0
     }
 
+    /// `1 + sum kappa_p`: the P-wave modulus's unrelaxed over relaxed ratio,
+    /// the instantaneous stiffness a fast event meets (every branch adding
+    /// its weight before it relaxes).
+    pub(crate) fn unrelaxed_p_ratio(&self) -> f64 {
+        1.0 + self.mechanisms[..self.count]
+            .iter()
+            .map(|m| m.kappa_p)
+            .sum::<f64>()
+    }
+
     /// The mechanisms and the strain limit, when every mechanism weighs the
     /// shear and the P wave alike (`kappa_shear == kappa_p`): a proportional
     /// record, whose part weights are then `(kappa, kappa)` on any law, so

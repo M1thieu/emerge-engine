@@ -206,6 +206,13 @@ impl Elastic {
         self.shear_viscosity != 0.0 || self.bulk_viscosity != 0.0
     }
 
+    /// The unrelaxed P-wave modulus, `(lambda + 2 mu) (1 + sum kappa_p)`:
+    /// the stiffness a fast event meets.
+    pub(crate) fn unrelaxed_p_modulus(&self) -> f64 {
+        let (lambda, mu) = self.lame();
+        (lambda + 2.0 * mu) * self.relaxation.unrelaxed_p_ratio()
+    }
+
     /// Whether the solid has relaxation branches.
     pub(crate) fn is_relaxing(&self) -> bool {
         !self.relaxation.is_empty()
