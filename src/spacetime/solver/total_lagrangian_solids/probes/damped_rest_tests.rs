@@ -102,8 +102,25 @@ fn settled_on(
         // its own damping settles it; then until its last step holds a
         // contact.
         Start::SpawnDrop => {
+            // The drop's own ledger, frame by frame (`check_ledger`'s bar):
+            // a rest flown during the drop keeps its linearisation's energy
+            // change in the balance, within its own allowance.
+            let mut allowed = 0.0;
             for k in 0..60 {
                 sim.step();
+                let f = sim.total_lagrangian_frame().expect("on the path");
+                allowed += f.residual_work + f.contact_work_bound + f.modal_energy_change.abs();
+                let round_off = f64::EPSILON
+                    * sim.total_lagrangian.as_ref().map_or(0, |s| s.particles) as f64
+                    * (f.parts.iter().map(|e| e.abs()).sum::<f64>()
+                        + f.heat.abs()
+                        + f.start_energy.abs());
+                assert!(
+                    f.balance.abs() <= allowed + round_off,
+                    "the drop, frame {k}: balance {:e} beyond {:e}",
+                    f.balance,
+                    allowed + round_off
+                );
                 let state = sim.total_lagrangian.as_ref().expect("on the path");
                 if k >= 30 && state.cache.as_ref().is_some_and(|c| !c.contacts.is_empty()) {
                     break;
@@ -253,7 +270,8 @@ fn a_damped_block_rests_from(start: Start) {
         last.heat,
         stepped.last().expect("frames").0.heat
     );
-    check_ledger("damped rest", &rested);
+    // From the start's balance: the drop's is checked on its own.
+    check_ledger_since("damped rest", base.balance, &rested);
     assert_eq!((refused, hand_backs), (0, 0));
     assert_eq!(last.modal_check_failed, 0);
     assert!(

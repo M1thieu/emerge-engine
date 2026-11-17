@@ -1,35 +1,55 @@
 //! A solid's relaxation branches (`materials::relaxation`) on the step: each
-//! mechanism's Maxwell branch on each part of the corotated law, advanced by
-//! Liu and Guan's second-order update with its energy-consistent stress
-//! (arXiv 2305.15812, sec. 4.2, eqs. 4.23-4.26, Lemma 4, Props. 3-4, read).
+//! mechanism's Maxwell branch on each part of the corotated law, its
+//! internal variable advanced by the exponential recurrence of Taylor,
+//! Pister and Goudreau (1970), as given by Simo and Hughes (Computational
+//! Inelasticity, 1998, sec. 10.3.2, eq. 10.3.16, read), with an
+//! energy-consistent step stress.
 //!
 //! Per branch of modulus `mu_b` and viscosity `eta_b` on a part whose second
 //! Piola-Kirchhoff stress is `S_P(C)` (`corotated_second_pk` with that
 //! part's modulus alone), with the internal strain held as `E = Gamma - I`:
 //! - the conjugate `Q(C, E) = S_P(C) - mu_b E` and the branch energy
-//!   `Ups = |Q|^2 / (4 mu_b)` (their eq. 2.2 with `S_0 = 0`: the body starts
-//!   unstrained, `C = I`, `Gamma = I`);
-//! - the update (their eq. 4.23): `eta_b dE / dt = (S_P(C_n) + S_P(C_n+1)) /
-//!   2 - mu_b E_{n+1/2}`, closed form, no local Newton;
-//! - the step's stress (eqs. 4.25-4.26): `S_neq(C_{n+1/2}, E_{n+1/2}) + [Ups(C_n+1,
-//!   E_{n+1/2}) - Ups(C_n, E_{n+1/2}) - S_neq : Z] Z / |Z|^2`, `Z = dC / 2`, with
-//!   `S_neq = (1 / mu_b) dS_P/dC [Q]` (eq. 2.8);
-//! - so over the step, exactly (their Lemma 4 and Prop. 3): `Z : S = Ups(C_n+1,
-//!   E_n+1) - Ups(C_n, E_n) + eta_b |dE|^2 / (2 dt)`, the last term the heat,
-//!   never negative.
+//!   `Ups = |Q|^2 / (4 mu_b)` (Liu and Guan, arXiv 2305.15812, eq. 2.2 with
+//!   `S_0 = 0`: the body starts unstrained, `C = I`, `Gamma = I`);
+//! - the flow `eta_b dE/dt = Q`, so `Q' + theta Q = S_P'`, `theta = mu_b /
+//!   eta_b`; with `S_P` linear in time over the step it is solved exactly
+//!   (Simo and Hughes eq. 10.3.16): `Q_n+1 = e^(-h) Q_n + (1 - e^(-h)) / h
+//!   dS`, `h = theta dt`, `dS = S_P(C_n+1) - S_P(C_n)`. Its eigenvalue is
+//!   exactly `e^(-h)` at every step length: a branch faster than the step
+//!   relaxes, a mode faster than the step is damped as the branch damps it
+//!   (the midpoint's `(1 - h/2)/(1 + h/2)` tends to -1 and kept such modes
+//!   flipping, measured: a set-down block rang 150 times longer than its
+//!   record's damping);
+//! - the heat, that path's exact dissipation `eta_b int |dE/dt|^2 dt`, never
+//!   negative;
+//! - the step's stress: the branch force at the step's mean conjugate
+//!   `Q_bar = phi1 Q_n + phi2 dS` (`phi1 = (1 - e^(-h)) / h`, `phi2 = (1 -
+//!   phi1) / h`, the mean of the exact `Q(t)`), `S_neq = (1 / mu_b)
+//!   dS_P/dC [Q_bar]` at `C_n+1/2` (Liu and Guan's eq. 2.8 form), projected
+//!   along `Z = dC / 2` so that `Z : S = Ups(C_n+1, E_n+1) - Ups(C_n, E_n) +
+//!   heat` exactly (the discrete-gradient structure of their eqs.
+//!   4.25-4.26).
 //!
 //! Adaptations, declared:
+//! - the step stress is derived here, not taken from a source: Simo and
+//!   Hughes give the recurrence, Liu and Guan the energy-consistent form for
+//!   the midpoint update; no read source pairs the exponential recurrence
+//!   with a discrete-gradient stress (Muller, Gross and Betsch 2009 and Gross
+//!   and Betsch 2005 keep a midpoint or time-finite-element evolution).
+//!   `Q_bar` is the exact mean force in the linear limit; at finite strain
+//!   the chord's error is second order in smooth motion. Measured: the
+//!   Zener gates (`tests/zener_*`) against the exact solution, and the impact
+//!   bench converging monotonically in the steps (light_on_heavy: 0.76,
+//!   0.13, 0.12, 0.007 % at 86, 185, 370, 1179 steps);
 //! - theirs is three-dimensional, incompressible and isochoric (`C~`); here
 //!   the plane strain `C` itself, each part of the compressible corotated law
-//!   carrying its own branches. Their identities are algebraic in `S_P`,
-//!   `Q` and `Gamma` and hold as written; the gates measure the result against
-//!   an exact Zener solution (`tests/zener_*`);
+//!   carrying its own branches;
 //! - the energy difference in the quotient is formed from the increment
 //!   `S_P(C_n+1) - S_P(C_n)` (`corotated_second_pk_increment`), so its
 //!   round-off is relative to the change, as for the elastic law
 //!   (`Elastic::algorithmic_stress`); and the quotient is formed above this
-//!   engine's own `|dC|^2 > 1e-28`, not their absolute `|Z| > 1e-10`
-//!   (their sec. 6, item 6).
+//!   engine's own `|dC|^2 > 1e-28` (Liu and Guan's sec. 6, item 6, uses `|Z|
+//!   > 1e-10`).
 
 use super::*;
 use crate::matter::materials::relaxation::{
@@ -274,7 +294,6 @@ impl Relaxation {
             (
                 corotated_second_pk(c0, l, m),
                 corotated_second_pk(c1, l, m),
-                corotated_second_pk(mid, l, m),
                 corotated_second_pk_increment(c0, c1, l, m),
             )
         };
@@ -286,21 +305,12 @@ impl Relaxation {
             .flat_map(|pair| (0..2).filter_map(move |k| pair[k].as_ref().map(|b| (b, k))))
             .map(|(b, k)| {
                 let (l, m) = parts[k];
-                let mu_b = b.branch.modulus;
-                let (s0, s1, s_mid, ds) = formed[k].expect("formed for each part a branch is on");
+                let (s0, s1, ds) = formed[k].expect("formed for each part a branch is on");
                 #[cfg(all(test, feature = "experimental"))]
                 if let Some(update) = branch_update::active() {
                     return branch_update::stress(b, (s0, s1), (c0, c1, dt), (l, m), update);
                 }
-                let half = b.strain + 0.5 * strain_change(b, s0, s1, dt);
-                let q_mid = s_mid - half * mu_b;
-                let s_neq = corotated_second_pk_tangent(mid, q_mid, l, m) * mu_b.recip();
-                if 4.0 * norm2 <= 1e-28 {
-                    return s_neq;
-                }
-                // Ups(C_n+1, E_half) - Ups(C_n, E_half) from the increment.
-                let change = colon(ds, s0 + s1 - half * (2.0 * mu_b)) / (4.0 * mu_b);
-                s_neq + z * ((change - colon(s_neq, z)) / norm2)
+                branch_step_stress(b, (s0, s1, ds), (mid, z, norm2), dt, (l, m))
             })
             .fold(DMat2::ZERO, |sum, s| sum + s)
     }
@@ -350,9 +360,9 @@ impl Relaxation {
                     b.strain = end;
                     continue;
                 }
-                let change = strain_change(b, s0, s1, dt);
-                heat += b.branch.viscosity * colon(change, change) / (2.0 * dt);
-                b.strain += change;
+                let (end, made) = exponential_step(b, (s0, s1), dt);
+                heat += made;
+                b.strain = end;
             }
         }
         let green = (c1 - DMat2::IDENTITY) * 0.5;
@@ -368,11 +378,121 @@ impl Relaxation {
     }
 }
 
-/// `E_{n+1} - E_n` by Liu and Guan's eq. 4.23 solved for it: `(eta_b / dt +
-/// mu_b / 2) dE = (S_P(C_n) + S_P(C_n+1)) / 2 - mu_b E_n`.
-fn strain_change(b: &BranchState, s0: DMat2, s1: DMat2, dt: f64) -> DMat2 {
-    let Branch { modulus, viscosity } = b.branch;
-    ((s0 + s1) * 0.5 - b.strain * modulus) * (viscosity / dt + 0.5 * modulus).recip()
+/// The branch over a step of length `dt` from `S_P(C_n) = s0` to
+/// `S_P(C_n+1) = s1`, `S_P` linear in time over the step, solved exactly
+/// (Simo and Hughes 1998, eq. 10.3.16): returns `E_n+1` and the step's heat.
+/// With `h = theta dt` and the target `E* = S_P / mu_b`,
+/// `E_n+1 = e^(-h) E_n + (1 - e^(-h)) E*_n + (1 - (1 - e^(-h)) / h)
+/// (E*_n+1 - E*_n)`; the heat is `mu_b / 2 int_0^h |e(s)|^2 ds` (`s` in units
+/// of `1 / theta`), with the lag behind the target
+/// `e(s) = (E_n - E*_n) e^(-s) + (E*_n+1 - E*_n) expm1(-s) / h`, in closed
+/// form above `h = 0.1` and by 6-point Gauss-Legendre below (no
+/// cancellation).
+fn exponential_step(b: &BranchState, (s0, s1): (DMat2, DMat2), dt: f64) -> (DMat2, f64) {
+    let Branch {
+        modulus: mu,
+        viscosity: eta,
+    } = b.branch;
+    let h = dt * mu / eta;
+    let (target0, target1) = (s0 * mu.recip(), s1 * mu.recip());
+    let e0 = b.strain;
+    let decay = (-h).exp();
+    let rise = target1 - target0;
+    // `1 - (1 - e^-h) / h`, the lag behind a moving target.
+    let lag = 1.0 + (-h).exp_m1() / h;
+    let e1 = e0 * decay + target0 * (1.0 - decay) + rise * lag;
+    let e00 = e0 - target0;
+    let heat = if h > 0.1 {
+        // Closed form with `u = e00 + rise / h`, `v = rise / h`.
+        let v = rise * h.recip();
+        let u = e00 + v;
+        0.5 * mu
+            * (0.5 * colon(u, u) * (1.0 - decay * decay) - 2.0 * colon(u, v) * (1.0 - decay)
+                + colon(v, v) * h)
+    } else {
+        let integral: f64 = GAUSS_NODES
+            .iter()
+            .zip(GAUSS_WEIGHTS)
+            .map(|(&x, w)| {
+                let s = 0.5 * h * (x + 1.0);
+                let e = e00 * (-s).exp() + rise * ((-s).exp_m1() / h);
+                w * colon(e, e)
+            })
+            .sum::<f64>()
+            * 0.5
+            * h;
+        0.5 * mu * integral
+    };
+    (e1, heat)
+}
+
+/// 6-point Gauss-Legendre nodes and weights on `[-1, 1]`.
+const GAUSS_NODES: [f64; 6] = [
+    -0.932_469_514_203_152,
+    -0.661_209_386_466_265,
+    -0.238_619_186_083_197,
+    0.238_619_186_083_197,
+    0.661_209_386_466_265,
+    0.932_469_514_203_152,
+];
+const GAUSS_WEIGHTS: [f64; 6] = [
+    0.171_324_492_379_170,
+    0.360_761_573_048_139,
+    0.467_913_934_572_691,
+    0.467_913_934_572_691,
+    0.360_761_573_048_139,
+    0.171_324_492_379_170,
+];
+
+/// `(phi1, phi2)`: `(1 - e^-h) / h` and
+/// `(1 - phi1) / h = int_0^1 s e^(-h (1 - s)) ds`, the weights of the step's
+/// mean conjugate `Q_bar = phi1 Q_n + phi2 dS`; by their closed forms above
+/// `h = 0.1`, by Gauss-Legendre below.
+fn mean_weights(h: f64) -> (f64, f64) {
+    if h > 0.1 {
+        let phi1 = -(-h).exp_m1() / h;
+        (phi1, (1.0 - phi1) / h)
+    } else {
+        GAUSS_NODES
+            .iter()
+            .zip(GAUSS_WEIGHTS)
+            .fold((0.0, 0.0), |(p1, p2), (&x, w)| {
+                let s = 0.5 * (x + 1.0);
+                let decay = (-h * (1.0 - s)).exp();
+                (p1 + 0.5 * w * decay, p2 + 0.5 * w * s * decay)
+            })
+    }
+}
+
+/// `Ups(C, E2) - Ups(C, E1)` at the part stress `s = S_P(C)`, from the change.
+fn ups_change(s: DMat2, (e1, e2): (DMat2, DMat2), mu: f64) -> f64 {
+    colon(e1 - e2, s * 2.0 - (e1 + e2) * mu) / 4.0
+}
+
+/// One branch's step stress (the module's header): the force at `Q_bar`
+/// at the midpoint `mid`, projected along `z` (`norm2 = |z|^2`) so that `Z :
+/// S` is `Ups`'s change over the step plus the exponential step's heat.
+fn branch_step_stress(
+    b: &BranchState,
+    (s0, s1, ds): (DMat2, DMat2, DMat2),
+    (mid, z, norm2): (DMat2, DMat2, f64),
+    dt: f64,
+    (l, m): (f64, f64),
+) -> DMat2 {
+    let mu_b = b.branch.modulus;
+    let (phi1, phi2) = mean_weights(dt * mu_b / b.branch.viscosity);
+    let q_bar = (s0 - b.strain * mu_b) * phi1 + (s1 - s0) * phi2;
+    let s_neq = corotated_second_pk_tangent(mid, q_bar, l, m) * mu_b.recip();
+    if 4.0 * norm2 <= 1e-28 {
+        return s_neq;
+    }
+    let (e1, heat) = exponential_step(b, (s0, s1), dt);
+    // `Ups(C_n+1, E_n+1) - Ups(C_n, E_n+1)` from the increment, plus
+    // `Ups(C_n, E_n+1) - Ups(C_n, E_n)`, plus the heat.
+    let work = colon(ds, s0 + s1 - e1 * (2.0 * mu_b)) / (4.0 * mu_b)
+        + ups_change(s0, (b.strain, e1), mu_b)
+        + heat;
+    s_neq + z * ((work - colon(s_neq, z)) / norm2)
 }
 
 fn colon(a: DMat2, b: DMat2) -> f64 {
@@ -427,7 +547,7 @@ mod tests {
 
     /// `carried` against the step itself in the linear limit: a strain
     /// history `eps(t) = eps_a sin(omega t)` of size 1e-7 from rest over one
-    /// frame, stepped by Liu and Guan's update in 20000 steps, and carried
+    /// frame, stepped by the exponential update in 20000 steps, and carried
     /// at once with the memory strain `kappa int e^(-theta (T - t)) eps'(t)
     /// dt` in closed form. Criteria fixed before measuring: each branch's
     /// internal strain within 1e-5 of the stepped one's size (the steps'
@@ -516,10 +636,11 @@ mod tests {
         );
     }
 
-    /// Liu and Guan's energy identity (their Lemma 4 with eqs. 4.25-4.26) on
-    /// every branch: the step's stress contracted with `Z` is the branches'
-    /// energy change plus the heat, to round-off, on large and small steps,
-    /// from a strained state with strained branches.
+    /// The energy identity the step stress is built to (the module's header,
+    /// after Liu and Guan's Lemma 4 with eqs. 4.25-4.26) on every branch: the
+    /// step's stress contracted with `Z` is the branches' energy change plus
+    /// the heat, to round-off, on large and small steps, from a strained state
+    /// with strained branches.
     #[test]
     fn the_step_stress_carries_the_energy_change_and_the_heat_exactly() {
         let moduli = (2.0e6, 1.3e6);
@@ -547,8 +668,7 @@ mod tests {
     }
 
     /// The step stress as each branch formed its part's stresses itself (the
-    /// earlier form): the oracle the shared form
-    /// must match bit for bit.
+    /// earlier form): the oracle the shared form must match bit for bit.
     fn step_stress_per_branch(
         r: &Relaxation,
         c0: DMat2,
@@ -561,20 +681,12 @@ mod tests {
         let mid = 0.5 * (c0 + c1);
         r.each(moduli)
             .map(|(b, (l, m))| {
-                let (mu_b, s0, s1) = (
-                    b.branch.modulus,
+                let (s0, s1, ds) = (
                     corotated_second_pk(c0, l, m),
                     corotated_second_pk(c1, l, m),
+                    corotated_second_pk_increment(c0, c1, l, m),
                 );
-                let half = b.strain + 0.5 * strain_change(b, s0, s1, dt);
-                let q_mid = corotated_second_pk(mid, l, m) - half * mu_b;
-                let s_neq = corotated_second_pk_tangent(mid, q_mid, l, m) * mu_b.recip();
-                if 4.0 * norm2 <= 1e-28 {
-                    return s_neq;
-                }
-                let ds = corotated_second_pk_increment(c0, c1, l, m);
-                let change = colon(ds, s0 + s1 - half * (2.0 * mu_b)) / (4.0 * mu_b);
-                s_neq + z * ((change - colon(s_neq, z)) / norm2)
+                branch_step_stress(b, (s0, s1, ds), (mid, z, norm2), dt, (l, m))
             })
             .fold(DMat2::ZERO, |sum, s| sum + s)
     }
