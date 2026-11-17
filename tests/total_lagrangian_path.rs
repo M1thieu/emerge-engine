@@ -17,6 +17,7 @@ use emerge::boundary::FrictionBoundary;
 use emerge::fields::LinearDragField;
 use emerge::materials::physical_props::Elastic;
 use emerge::spacetime::solver::total_lagrangian_solids::TotalLagrangianConfig;
+use emerge::thermodynamics::{ThermalConfig, ThermalDiffusion};
 use emerge::{
     CorotatedMaterial, DuctileProps, FromSI, SimConfig, Simulation, SpawnRegion, VonMisesMaterial,
 };
@@ -786,6 +787,35 @@ fn the_path_refuses_force_fields_it_does_not_carry() {
         1.0,
         LinearDragField::ALL_MATERIALS,
     )));
+    sim.step();
+}
+
+#[test]
+#[should_panic(expected = "does not support phase rules")]
+fn the_path_refuses_phase_rules_it_does_not_carry() {
+    let mut sim = scene(config(1e-1), 0.0);
+    sim.add_phase_rule(|_| None);
+    sim.step();
+}
+
+#[test]
+#[should_panic(expected = "does not support thermal or scalar diffusion")]
+fn the_path_refuses_heat_conduction_it_does_not_carry() {
+    let config = config(1e-1);
+    let mut sim = scene(config, 0.0);
+    sim.set_thermal(ThermalDiffusion::new(
+        ThermalConfig::default(),
+        config.grid_res,
+    ));
+    sim.step();
+}
+
+#[test]
+#[should_panic(expected = "does not support muscle activation")]
+fn the_path_refuses_a_muscle_activation_it_would_ignore() {
+    let mut sim = scene(config(1e-1), 0.0);
+    sim.step();
+    sim.particles_mut().activation[0] = 0.5;
     sim.step();
 }
 

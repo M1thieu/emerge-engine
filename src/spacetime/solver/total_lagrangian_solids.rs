@@ -236,6 +236,10 @@ impl Simulation {
         if self.config.sleep_threshold > 0.0 {
             refuse("sleeping particles");
         }
+        // Checked every frame: a host writes activations while the run goes.
+        if self.particles.activation.iter().any(|&a| a != 0.0) {
+            refuse("muscle activation (no active stress on this path)");
+        }
         if self.boundaries.iter().any(|b| b.domain_walls().is_none()) {
             refuse(
                 "this boundary (only slip and Coulomb friction domain walls have a contact form)",
