@@ -921,3 +921,65 @@ fn probe_coulomb_slide_travel_and_heat() {
         }
     });
 }
+
+/// The spinning corner landing of `tests/corner_landing.rs` (Plasticine,
+/// the live window's scene), `EMERGE_PROBE_CORNER_FRAMES` frames after the
+/// spin (default 10), each frame's kept and refused steps printed; with
+/// `EMERGE_PROBE_CONTROL_TRACE` every try. A probe: what the refusals at an
+/// impact are made of.
+#[test]
+#[ignore = "diagnostic probe: run with --ignored --nocapture"]
+fn probe_corner_landing_refusals() {
+    super::cap::capped("probe_corner_landing_refusals", 3600, || {
+        let across = 2;
+        let cell_m = 0.04 / across as f32;
+        let mut config = SimConfig::earth(10 * across as usize, cell_m, 1.0 / 60.0);
+        let mut path = TotalLagrangianConfig::new(1e-2);
+        path.settings.forecast_activation = true;
+        config.total_lagrangian = Some(path.with_subframe_handoff());
+        let mut sim = Simulation::empty(config);
+        let record =
+            crate::materials::relaxation::ViscoelasticRecord::plasticine_crandall_1970_fresh();
+        let mut material = CorotatedMaterial::from_physical(&record.relaxed, &config);
+        material.relaxation = Some(record.spectrum);
+        let id = sim.register_material(Box::new(material)).0;
+        let floor = config.boundary_thickness as f32;
+        let _ = sim.add_body(
+            SpawnRegion::for_sim(&config)
+                .box_of(IVec2::new(2 * across, across))
+                .at(Vec2::new(5.0 * across as f32, floor + 5.0))
+                .spacing(0.5)
+                .material(id)
+                .mass_from(&record.relaxed, &config),
+        );
+        sim.step();
+        let omega = 4.0 * std::f64::consts::TAU;
+        let p = sim.particles();
+        let mass: f64 = p.mass.iter().map(|&m| f64::from(m)).sum();
+        let centre =
+            p.x.iter()
+                .zip(&p.mass)
+                .fold(DVec2::ZERO, |c, (x, &m)| c + x.as_dvec2() * f64::from(m))
+                / mass;
+        let arms: Vec<DVec2> =
+            p.x.iter()
+                .map(|x| (x.as_dvec2() - centre) * f64::from(cell_m))
+                .collect();
+        for (i, r) in arms.iter().enumerate() {
+            sim.kick_total_lagrangian_particles(&[i], omega * r.perp());
+        }
+        let frames: usize = std::env::var("EMERGE_PROBE_CORNER_FRAMES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10);
+        for frame in 0..frames {
+            println!("FRAME {frame}");
+            sim.step();
+            let f = sim.total_lagrangian_frame().expect("on");
+            println!(
+                "FRAME {frame} done: kept {}, refused {} (unconverged {}), reaching {}",
+                f.steps, f.rejected, f.rejected_unconverged, f.reaching
+            );
+        }
+    });
+}

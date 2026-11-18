@@ -26,13 +26,17 @@ pub struct TotalLagrangianFrame {
     /// `start_energy`, whose gravity part is measured from the grid's
     /// corner.
     pub tolerance_energy: f64,
-    /// `energy + heat - start_energy - active_total`: zero when every joule
-    /// is accounted for.
+    /// `energy + heat - start_energy - active_total - external_total`: zero
+    /// when every joule is accounted for.
     pub balance: f64,
     /// The work the active muscle fibers did, this frame and since the
     /// start, J/m: energy put in, which the balance adds to the start.
     pub active_work: f64,
     pub active_total: f64,
+    /// The work of the impulses given from outside since the start
+    /// (`Simulation::kick_total_lagrangian_body`), J/m: energy put in, as
+    /// the muscles'.
+    pub external_total: f64,
     /// This frame's work of the friction and of the contacts' normal push
     /// (the steps' own accounts, to compare with the heat deposited and the
     /// energy's change).

@@ -1011,6 +1011,32 @@ fn setae_let_a_block_slide_further_along_their_axis() {
     }
 }
 
+/// A block thrown from outside mid-run, up and sideways
+/// (`Simulation::kick_total_lagrangian_body`): the kick's work is booked as
+/// energy put in, so every frame's balance still closes within the solves'
+/// bound (`run`), through the throw, the flight and the landing.
+#[test]
+fn a_thrown_block_keeps_its_ledger_closed() {
+    let config = config(1e-1);
+    let mut sim = Simulation::empty(config);
+    let id = sim
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
+        .0;
+    let tag = sim.add_body(block(&config, id, (8, 4), RES as f32 * 0.5, 1.0));
+    let _ = run(&mut sim, 10);
+    sim.kick_total_lagrangian_body(tag, DVec2::new(0.3, 0.6));
+    let (worst, _) = run(&mut sim, 40);
+    let frame = sim.total_lagrangian_frame().expect("the path is on");
+    println!(
+        "thrown block: work of the throw {:.6e} J/m, worst balance {worst:.2e} of the weight scale",
+        frame.external_total
+    );
+    assert!(frame.external_total > 0.0, "the throw put no energy in");
+}
+
 /// A block of the measured plasticine carrying a muscle fiber along x,
 /// resting on a frictionless floor, its fiber activated at 0.4: the fiber
 /// pulls, the block shortens along it, and every joule is accounted for,

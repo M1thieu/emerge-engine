@@ -22,7 +22,18 @@
 //!
 //! What is drawn: each particle's reference cell pushed by its deformation
 //! gradient, the floor as a line, one neutral tint (no colour encodes a
-//! quantity; the clay has no measured optical record).
+//! quantity; Plasticine has no measured optical record).
+//!
+//! The mouse holds the material. Left button: the particle nearest the
+//! cursor follows the hand while the button is held, and the rest of the
+//! block follows through its own stiffness (it stretches where it is
+//! pulled). Right button: the whole block follows. Release, and what was
+//! held keeps the hand's last velocity, so a quick move and a release
+//! throws it. Each frame what is held is given the velocity that brings it
+//! to the cursor over that frame, an impulse from outside
+//! (`Simulation::kick_total_lagrangian_particles`) whose work the energy
+//! ledger books as energy put in. Nothing else is tuned: the hand's
+//! velocity is the cursor's displacement over one frame.
 //!
 //!   cargo run --release --example tl_window_lawful --features render
 //!   cargo run --release --example tl_window_lawful --features render -- --smoke 60
@@ -45,9 +56,9 @@ use emerge::spacetime::solver::total_lagrangian_solids::{
     TotalLagrangianConfig, TotalLagrangianFrame,
 };
 use emerge::{CorotatedMaterial, FromSI, Particle, SimConfig, Simulation, SpawnRegion};
-use glam::{IVec2, Vec2};
+use glam::{DVec2, IVec2, Vec2};
 use winit::application::ApplicationHandler;
-use winit::event::{KeyEvent, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
@@ -60,11 +71,14 @@ const DROP_M: f32 = 0.10;
 const FRAME_S: f32 = 1.0 / 60.0;
 /// The step tolerance (measured: converged between 1e-2 and 1e-3).
 const TOLERANCE: f64 = 1e-2;
+/// The particles' spacing, cells.
+const SPACING: f32 = 0.5;
 /// The renderer's grey palette entry: the only neutral one.
 const NEUTRAL_ID: u32 = 14;
 
-/// The scene: the block, its bottom `DROP_M` above the floor.
-fn scene() -> Simulation {
+/// The scene: the block, its bottom `DROP_M` above the floor, and the
+/// block's tag.
+fn scene() -> (Simulation, u32) {
     let cell_m = THICKNESS_M / ACROSS as f32;
     let mut config = SimConfig::earth(10 * ACROSS as usize, cell_m, FRAME_S);
     let mut path = TotalLagrangianConfig::new(TOLERANCE);
@@ -77,18 +91,18 @@ fn scene() -> Simulation {
     let id = sim.register_material(Box::new(material)).0;
     let floor = config.boundary_thickness as f32;
     let lift = DROP_M / cell_m;
-    let _ = sim.add_body(
+    let tag = sim.add_body(
         SpawnRegion::for_sim(&config)
             .box_of(IVec2::new(2 * ACROSS, ACROSS))
             .at(Vec2::new(
                 5.0 * ACROSS as f32,
                 floor + lift + ACROSS as f32 / 2.0,
             ))
-            .spacing(0.5)
+            .spacing(SPACING)
             .material(id)
             .mass_from(&record.relaxed, &config),
     );
-    sim
+    (sim, tag)
 }
 
 /// The mass-weighted centroid height above the floor, m.
@@ -113,29 +127,67 @@ struct Snapshot {
 enum Command {
     Pause(bool),
     Reset,
+    /// The hand: while held, what it holds and the grid point that is
+    /// brought to each frame; `None` once released.
+    Hold(Option<(Grip, Vec2)>),
+}
+
+/// What the hand holds: one particle, or the whole block (its centroid,
+/// offset by where the hand took it).
+#[derive(Clone, Copy)]
+enum Grip {
+    Particle(usize),
+    Block(Vec2),
 }
 
 /// The physics thread: one step per 1/60 s deadline (no catch-up), each
 /// finished frame sent; `busy` holds the running step's start.
 fn physics(out: Sender<Snapshot>, commands: Receiver<Command>, busy: Arc<Mutex<Option<Instant>>>) {
-    let mut sim = scene();
+    let (mut sim, mut tag) = scene();
     let (mut index, mut paused, mut deadline) = (0u64, false, Instant::now());
+    let mut hand: Option<(Grip, Vec2)> = None;
     let budget = Duration::from_secs_f64(f64::from(FRAME_S));
     loop {
         for command in commands.try_iter() {
             match command {
                 Command::Pause(p) => paused = p,
                 Command::Reset => {
-                    sim = scene();
+                    (sim, tag) = scene();
                     index = 0;
                     deadline = Instant::now();
                 }
+                Command::Hold(target) => hand = target,
             }
         }
         let now = Instant::now();
         if paused || now < deadline {
             std::thread::sleep(Duration::from_millis(1));
             continue;
+        }
+        if let Some((grip, target)) = hand {
+            // The velocity that brings what is held to the hand over this
+            // frame, less its own: the hand's impulse.
+            let cell = f64::from(sim.config().dx_meters);
+            let frame = f64::from(FRAME_S);
+            let p = sim.particles();
+            match grip {
+                Grip::Particle(i) => {
+                    let wanted = (target - p.x[i]).as_dvec2() * cell / frame;
+                    let dv = wanted - p.v[i].as_dvec2() * cell;
+                    sim.kick_total_lagrangian_particles(&[i], dv);
+                }
+                Grip::Block(offset) => {
+                    let (mut mass, mut at, mut momentum) = (0.0f64, DVec2::ZERO, DVec2::ZERO);
+                    for i in 0..p.len() {
+                        let w = f64::from(p.mass[i]);
+                        mass += w;
+                        at += w * p.x[i].as_dvec2();
+                        momentum += w * p.v[i].as_dvec2();
+                    }
+                    let wanted = ((target - offset).as_dvec2() - at / mass) * cell / frame;
+                    sim.kick_total_lagrangian_body(tag, wanted - momentum / mass * cell);
+                }
+            }
         }
         *busy.lock().expect("the busy lock") = Some(now);
         sim.step();
@@ -157,7 +209,7 @@ fn physics(out: Sender<Snapshot>, commands: Receiver<Command>, busy: Arc<Mutex<O
 
 /// `--smoke N`: N frames without a window.
 fn smoke(frames: usize) {
-    let mut sim = scene();
+    let (mut sim, _) = scene();
     let config = *sim.config();
     println!(
         "tl_window_lawful smoke | forecast activation, controller throughout, tolerance {TOLERANCE:e} | {} particles | {} threads",
@@ -196,6 +248,8 @@ struct State {
     paused: bool,
     /// The cursor, window pixels.
     cursor_pos: [f32; 2],
+    /// The hold under way.
+    held: Option<Grip>,
 }
 
 fn grid_cells() -> u32 {
@@ -212,7 +266,7 @@ impl State {
     async fn new(window: Arc<Window>) -> Self {
         let gfx = gui_common::Gfx::new(&window).await;
         let size = window.inner_size();
-        let probe = scene();
+        let (probe, _) = scene();
         let config = *probe.config();
         let mut renderer = Renderer::new(&gfx.device, probe.particles().len(), gfx.format);
         renderer.set_camera(
@@ -245,6 +299,87 @@ impl State {
             walls: Vec::new(),
             paused: false,
             cursor_pos: [0.0; 2],
+            held: None,
+        }
+    }
+
+    /// The cursor in grid units.
+    fn cursor_grid(&self) -> Vec2 {
+        gui_common::cursor_to_grid(
+            self.cursor_pos,
+            self.gfx.surface_config.width,
+            self.gfx.surface_config.height,
+            grid_cells() as usize,
+        )
+    }
+
+    /// The block's mass-weighted centroid in the last frame, grid units.
+    fn centroid(&self) -> Option<Vec2> {
+        let last = self.last.as_ref()?;
+        let (mass, at) = last
+            .particles
+            .iter()
+            .fold((0.0f32, Vec2::ZERO), |(m, x), p| {
+                (m + p.mass, x + p.mass * p.x)
+            });
+        Some(at / mass)
+    }
+
+    /// A press: the hold starts when the cursor is on the block (within its
+    /// particles' extent), on the nearest particle (`whole` false) or on
+    /// the whole block.
+    fn press(&mut self, whole: bool) {
+        let at = self.cursor_grid();
+        let Some(last) = &self.last else {
+            return;
+        };
+        let (lo, hi) = last.particles.iter().fold(
+            (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY)),
+            |(lo, hi), p| (lo.min(p.x), hi.max(p.x)),
+        );
+        // Half a particle spacing beyond the outer particles' centres: the
+        // block's edge.
+        let edge = Vec2::splat(0.5 * SPACING);
+        if !(at.cmpge(lo - edge).all() && at.cmple(hi + edge).all()) {
+            return;
+        }
+        self.held = if whole {
+            self.centroid().map(|c| Grip::Block(at - c))
+        } else {
+            last.particles
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| {
+                    (a.x - at)
+                        .length_squared()
+                        .total_cmp(&(b.x - at).length_squared())
+                })
+                .map(|(i, _)| Grip::Particle(i))
+        };
+        self.send_hand();
+    }
+
+    /// The hand's target for the physics thread: the cursor.
+    fn send_hand(&self) {
+        if let Some(grip) = self.held {
+            let _ = self
+                .commands
+                .send(Command::Hold(Some((grip, self.cursor_grid()))));
+        }
+    }
+
+    /// Where the hand holds the material in the last frame, grid units.
+    fn held_point(&self) -> Option<Vec2> {
+        match self.held? {
+            Grip::Particle(i) => self.last.as_ref().map(|l| l.particles[i].x),
+            Grip::Block(offset) => self.centroid().map(|c| c + offset),
+        }
+    }
+
+    /// A release: what was held goes on with the velocity the hand gave it.
+    fn release(&mut self) {
+        if self.held.take().is_some() {
+            let _ = self.commands.send(Command::Hold(None));
         }
     }
 
@@ -311,6 +446,17 @@ impl State {
         } else {
             None
         };
+        // The hold's line, from the point held on the block to the cursor,
+        // in egui points.
+        let drag_line = self.held_point().map(|from| {
+            let (fx, fy) = self
+                .renderer
+                .grid_to_screen_points(from.x, from.y, w, h, ppp);
+            [
+                egui::pos2(fx, fy),
+                egui::pos2(self.cursor_pos[0] / ppp, self.cursor_pos[1] / ppp),
+            ]
+        });
         let mut paused = self.paused;
         let mut reset = false;
         // The cursor in cm from the floor line, through the renderer's own
@@ -325,6 +471,12 @@ impl State {
                 [egui::pos2(x0, y0), egui::pos2(x1, y1)],
                 egui::Stroke::new(2.0_f32, egui::Color32::from_gray(200)),
             );
+            if let Some(line) = drag_line {
+                ctx.layer_painter(egui::LayerId::background()).line_segment(
+                    line,
+                    egui::Stroke::new(2.0_f32, egui::Color32::from_gray(140)),
+                );
+            }
             egui::Window::new("Precise path: the lawful contact, live")
                 .default_pos([10.0, 10.0])
                 .default_width(400.0)
@@ -360,6 +512,7 @@ impl State {
                             f.steps, f.rejected, f.modal, f.contacts
                         ));
                         ui.label(format!("energy ledger balance {:+.2e} J/m", f.balance));
+                        ui.label(format!("work of the hand so far {:.3e} J/m (booked as energy put in)", f.external_total));
                     }
                     ui.label(format!("centroid height above the floor {height_mm:.3} mm (rest 20.000)"));
                     ui.separator();
@@ -374,6 +527,7 @@ impl State {
                         "cursor: x {:.1} cm from the domain's left, {:.1} cm above the floor",
                         cursor_cm.0, cursor_cm.1
                     ));
+                    ui.label("Mouse: left button pulls the particle under the cursor, right button carries the whole block; move fast and release to throw");
                     ui.label("Space pause  R reset  Q quit");
                 });
         });
@@ -420,7 +574,16 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::CursorMoved { position, .. } => {
                 s.cursor_pos = [position.x as f32, position.y as f32];
+                s.send_hand();
             }
+            WindowEvent::MouseInput {
+                state: button_state,
+                button: button @ (MouseButton::Left | MouseButton::Right),
+                ..
+            } => match button_state {
+                ElementState::Pressed => s.press(button == MouseButton::Right),
+                ElementState::Released => s.release(),
+            },
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {

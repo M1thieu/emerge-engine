@@ -129,6 +129,9 @@ pub(crate) struct TotalLagrangianState {
     heat: f64,
     /// The work the active fibers did since the start (`StepReport::active`).
     active_work: f64,
+    /// The work of the impulses given from outside since the start
+    /// (`kick_total_lagrangian_body`).
+    external_work: f64,
     start_energy: f64,
     /// The step tolerance's energy (`tolerance_energy`), fixed at the start.
     tolerance_energy: f64,
@@ -547,6 +550,7 @@ impl Simulation {
             heat_debt: vec![0.0; n],
             heat: 0.0,
             active_work: 0.0,
+            external_work: 0.0,
             start_energy: 0.0,
             tolerance_energy: 0.0,
             start_momentum: DVec2::ZERO,
@@ -901,7 +905,11 @@ impl Simulation {
         frame.modal_rest_refused = state.modal_rest_refused;
         frame.tolerance_energy = state.tolerance_energy;
         frame.active_total = state.active_work;
-        frame.balance = frame.energy + frame.heat - frame.start_energy - frame.active_total;
+        frame.external_total = state.external_work;
+        frame.balance = frame.energy + frame.heat
+            - frame.start_energy
+            - frame.active_total
+            - frame.external_total;
         state.frame = frame;
         // A kept probe (`EMERGE_PROBE_STATE_HASH`, experimental builds only):
         // the bit-identity gate of a change meant to be lossless, an FNV-1a
@@ -1089,6 +1097,65 @@ impl Simulation {
     }
 
     /// The last frame on the total Lagrangian solid path, when it is on.
+    /// Gives every particle of the body tagged `tag` the velocity change
+    /// `dv`, m/s, at once: an impulse from outside, as a hand's flick
+    /// (`kick_total_lagrangian_particles`).
+    pub fn kick_total_lagrangian_body(&mut self, tag: u32, dv: DVec2) {
+        let own: Vec<usize> = (0..self.particles.len())
+            .filter(|&p| self.particles.user_tag[p] == tag)
+            .collect();
+        self.kick_total_lagrangian_particles(&own, dv);
+    }
+
+    /// Gives the particles `which` the velocity change `dv`, m/s, at once:
+    /// an impulse from outside on that part of a body, as a hand pulling
+    /// one point (the rest of the body follows through its own stiffness).
+    /// Its work, the kinetic energy it adds, `sum_p m_p (v_p . dv + |dv|^2 /
+    /// 2)`, is booked as energy put in (`TotalLagrangianFrame::
+    /// external_total`), so the ledger still closes. A body's contact
+    /// points move with their host particle (`TotalLagrangianState::hosts`).
+    /// A modal flight or rest under way ends: the step carries the bodies
+    /// from their new velocity. Before the path's first frame the
+    /// particles' start velocity changes instead (the start energy then
+    /// holds it).
+    pub fn kick_total_lagrangian_particles(&mut self, which: &[usize], dv: DVec2) {
+        assert!(dv.is_finite(), "a kick must be finite, got {dv}");
+        assert!(
+            which.iter().all(|&p| p < self.particles.len()),
+            "a kicked particle must exist"
+        );
+        let Some(state) = self.total_lagrangian.as_mut() else {
+            let grid_dv = GridUnits::of(&self.config).velocity_to_grid(dv);
+            for &p in which {
+                self.particles.v[p] += grid_dv;
+            }
+            return;
+        };
+        let mut kicked = vec![false; state.particles];
+        let mut work = 0.0;
+        for &p in which {
+            if !kicked[p] {
+                kicked[p] = true;
+                work += state.mass[p] * (state.v[p].dot(dv) + 0.5 * dv.length_squared());
+                state.v[p] += dv;
+            }
+        }
+        // The contact points carry no mass: they move with their host.
+        for (k, &host) in state.hosts.iter().enumerate() {
+            if kicked[host] {
+                state.v[state.particles + k] += dv;
+            }
+        }
+        state.external_work += work;
+        if state.flight.take().is_some() {
+            state.hand_backs += 1;
+        }
+        if let Some(rest) = state.rest.take() {
+            state.rest_basis = Some(rest.basis);
+            state.rest_hand_backs += 1;
+        }
+    }
+
     pub fn total_lagrangian_frame(&self) -> Option<TotalLagrangianFrame> {
         self.total_lagrangian.as_ref().map(|s| s.frame)
     }
