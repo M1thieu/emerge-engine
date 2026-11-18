@@ -81,6 +81,12 @@ pub struct CorotatedMaterial {
     /// Lagrangian solid path only; the explicit path refuses a material that
     /// carries one rather than ignore it.
     pub relaxation: Option<crate::matter::materials::relaxation::RelaxationSpectrum>,
+    /// The measured active properties of a muscle fiber in this material
+    /// (`hill_muscle`): its particles' activations then drive a fiber stress
+    /// along their `activation_dir`. `None` (the default): passive. Read by
+    /// the total Lagrangian solid path only; the explicit path refuses a
+    /// material that carries one rather than ignore it.
+    pub muscle: Option<crate::matter::materials::solid::hill_muscle::HillMuscle>,
 }
 
 impl CorotatedMaterial {
@@ -99,6 +105,7 @@ impl CorotatedMaterial {
             elastic_bulk_viscosity: 0.0,
             specific_heat_j_kg_k: 0.0,
             relaxation: None,
+            muscle: None,
         }
     }
 

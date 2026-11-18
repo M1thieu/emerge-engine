@@ -123,6 +123,16 @@ impl Simulation {
                 !relaxing,
                 "material {id} carries a relaxation spectrum, which only the total Lagrangian solid path carries"
             );
+            let muscle = self
+                .materials
+                .get(id)
+                .as_any()
+                .downcast_ref::<crate::CorotatedMaterial>()
+                .is_some_and(|m| m.muscle.is_some());
+            assert!(
+                !muscle,
+                "material {id} carries a muscle record, which only the total Lagrangian solid path carries"
+            );
             let norton = self
                 .materials
                 .get(id)

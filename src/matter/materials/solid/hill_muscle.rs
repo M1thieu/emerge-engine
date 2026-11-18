@@ -126,6 +126,29 @@ impl HillMuscle {
         let tau = f.determinant() * sigma;
         DMat2::from_cols(tau * n.x * n, tau * n.y * n)
     }
+
+    /// The same stress pulled back to the reference configuration, the
+    /// second Piola-Kirchhoff `S = F^-1 tau F^-T = J sigma_f n_0 (x) n_0 /
+    /// lambda^2`, read from the right Cauchy-Green tensor `c = F^T F` alone:
+    /// `lambda^2 = n_0 . C n_0`, `J = sqrt(det C)`. What a solver stepping
+    /// on `C` adds to its stress.
+    pub fn active_second_pk(
+        &self,
+        c: DMat2,
+        fiber: DVec2,
+        activation: f64,
+        rate: f64,
+        curves: Curves,
+    ) -> DMat2 {
+        let stretch2 = fiber.dot(c * fiber);
+        let stretch = stretch2.sqrt();
+        let sigma = activation
+            * self.max_isometric_stress_pa
+            * (curves.force_length)(stretch)
+            * (curves.force_velocity)(rate);
+        let scale = c.determinant().sqrt() * sigma / stretch2;
+        DMat2::from_cols(scale * fiber.x * fiber, scale * fiber.y * fiber)
+    }
 }
 
 #[cfg(test)]
@@ -166,6 +189,28 @@ mod tests {
         assert!((turned - expected).abs_diff_eq(DMat2::ZERO, 1e-9));
         let off = m.active_kirchhoff_stress(r, fiber, 0.0, 0.0, Curves::PLATEAU_ISOMETRIC);
         assert_eq!(off, DMat2::ZERO);
+    }
+
+    /// The reference-frame stress is the current one pulled back: `F S F^T
+    /// = tau` for a stretched, sheared and turned fiber.
+    #[test]
+    fn the_reference_stress_pushes_forward_to_the_current_one() {
+        let m = muscle();
+        let fiber = DVec2::new(0.8, -0.6);
+        let f =
+            DMat2::from_angle(0.4) * DMat2::from_cols(DVec2::new(1.3, 0.2), DVec2::new(0.1, 0.9));
+        let tau = m.active_kirchhoff_stress(f, fiber, 0.7, 0.0, Curves::PLATEAU_ISOMETRIC);
+        let s = m.active_second_pk(
+            f.transpose() * f,
+            fiber,
+            0.7,
+            0.0,
+            Curves::PLATEAU_ISOMETRIC,
+        );
+        assert!(
+            (f * s * f.transpose() - tau)
+                .abs_diff_eq(DMat2::ZERO, 1e-6 * m.max_isometric_stress_pa)
+        );
     }
 
     /// Eqs. (1)-(3) at their ends: switching on from rest rises at

@@ -1928,6 +1928,18 @@ pub(crate) fn solve(
     } else {
         Vec::new()
     };
+    // The active fibers' work over the step, each particle's `V_0 1/2
+    // S_act(C_m) : dC` (`Elastic::active_work_over`): energy the muscles put
+    // in, which the ledger books beside the heat. None at rest.
+    if !statics && solids.iter().any(Elastic::is_active) {
+        report.active = (0..n)
+            .filter(|&p| solids[p].is_active() && v0[p] > 0.0)
+            .map(|p| {
+                let (f0, f1) = (f_now[p], deformation_at(&u, p));
+                v0[p] * solids[p].active_work_over(f0.transpose() * f0, f1.transpose() * f1)
+            })
+            .sum();
+    }
     // The measured error estimate of this converged step (`estimate`),
     // when a probe samples it; it changes nothing here.
     #[cfg(all(test, feature = "experimental"))]

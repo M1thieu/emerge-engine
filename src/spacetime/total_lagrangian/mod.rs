@@ -379,6 +379,10 @@ pub struct StepReport {
     /// step, turned into heat with friction's
     /// (`Elastic::viscous_dissipation_over`).
     pub viscous: f64,
+    /// The work the active muscle fibers did over the step
+    /// (`Elastic::active_work_over` times each particle's volume): energy
+    /// put in, not heat; the ledger adds it to the start.
+    pub active: f64,
     /// The energy the solids' plastic flow dissipated over the step (Love
     /// and Sulsky eq. 74 times each particle's volume), turned into heat with
     /// friction's (`Elastic::committed`).

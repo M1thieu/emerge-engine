@@ -13,9 +13,10 @@ extern crate emerge_engine as emerge;
 #[path = "common/cap.rs"]
 mod cap;
 
-use emerge::boundary::{FrictionBoundary, Surface};
+use emerge::boundary::{FrictionBoundary, SlipBoundary, Surface};
 use emerge::fields::LinearDragField;
 use emerge::materials::physical_props::Elastic;
+use emerge::materials::solid::hill_muscle::HillMuscle;
 use emerge::spacetime::solver::total_lagrangian_solids::TotalLagrangianConfig;
 use emerge::thermodynamics::{ThermalConfig, ThermalDiffusion};
 use emerge::{
@@ -943,6 +944,60 @@ fn a_pair_friction_replaces_the_walls_own_coefficient() {
     assert!(
         (travel / stopping - 1.0).abs() < 0.01,
         "travel {travel} m against {stopping} m"
+    );
+}
+
+/// A block of the measured plasticine carrying a muscle fiber along x,
+/// resting on a frictionless floor, its fiber activated at 0.4: the fiber
+/// pulls, the block shortens along it, and every joule is accounted for,
+/// the muscle's work booked as energy put in (`run`'s per-frame balance,
+/// to the solves' bound). The muscle's stress is a test value, not a
+/// measured muscle (no record for one is read yet): the checks are the
+/// ledger and the direction, which hold for any positive stress.
+#[test]
+fn a_muscle_fiber_shortens_its_block_and_its_work_is_booked() {
+    let config = config(1e-1);
+    let record =
+        emerge::materials::relaxation::ViscoelasticRecord::plasticine_crandall_1970_fresh();
+    let mut material = CorotatedMaterial::from_physical(&record.relaxed, &config);
+    material.relaxation = Some(record.spectrum);
+    material.muscle = Some(HillMuscle::new(2.5e5, 0.010, 0.040, 0.0));
+    let mut sim = Simulation::empty(config);
+    let id = sim.register_material(Box::new(material)).0;
+    let floor = config.boundary_thickness as f32;
+    let _block = sim.add_body(
+        SpawnRegion::for_sim(&config)
+            .box_of(IVec2::new(8, 4))
+            .at(Vec2::new(RES as f32 * 0.5, floor + 2.0))
+            .spacing(0.5)
+            .material(id)
+            .mass_from(&record.relaxed, &config),
+    );
+    sim.add_boundary_condition(Box::new(SlipBoundary::new(config.boundary_thickness)));
+    let width = |sim: &Simulation| -> f32 {
+        let xs = sim.particles().x.iter().map(|x| x.x);
+        xs.clone().fold(f32::MIN, f32::max) - xs.fold(f32::MAX, f32::min)
+    };
+    let before = width(&sim);
+    for p in 0..sim.particles().len() {
+        sim.particles_mut().activation[p] = 0.4;
+        sim.particles_mut().activation_dir[p] = Vec2::X;
+    }
+    let (worst, _) = run(&mut sim, 30);
+    let frame = sim.total_lagrangian_frame().expect("on");
+    let after = width(&sim);
+    println!(
+        "muscle: width {before:.4} -> {after:.4} cells, active work {:.6e} J/m, worst balance {worst:.2e}",
+        frame.active_total
+    );
+    assert!(
+        after < before,
+        "the block did not shorten: {before} -> {after}"
+    );
+    assert!(
+        frame.active_total > 0.0,
+        "no work put in: {}",
+        frame.active_total
     );
 }
 

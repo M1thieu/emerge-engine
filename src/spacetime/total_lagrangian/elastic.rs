@@ -7,7 +7,8 @@ use super::*;
 /// The solid: the shear modulus and the bulk modulus (`lambda + mu` in
 /// plane strain), which stored energy they enter, the Kelvin-Voigt dashpot
 /// in parallel (shear and bulk viscosity; zero, none), and the measured
-/// relaxation branches on the law's parts (`relaxation`; empty, none).
+/// relaxation branches on the law's parts (`relaxation`; empty, none), and
+/// an active muscle fiber (`active`; none, passive).
 #[derive(Clone, Copy, Debug)]
 pub struct Elastic {
     pub mu: f64,
@@ -16,6 +17,32 @@ pub struct Elastic {
     pub shear_viscosity: f64,
     pub bulk_viscosity: f64,
     pub relaxation: Relaxation,
+    pub active: Option<ActiveFiber>,
+}
+
+/// A muscle fiber in the solid: its measured record, its direction in the
+/// reference configuration (unit) and its activation in `[0, 1]`, the
+/// host's input (`matter`'s `HillMuscle`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ActiveFiber {
+    pub muscle: crate::matter::materials::solid::hill_muscle::HillMuscle,
+    pub fiber: DVec2,
+    pub activation: f64,
+}
+
+impl ActiveFiber {
+    /// The fiber's active second Piola-Kirchhoff stress at `c`, on the
+    /// curves' plateau at zero fiber speed, the only pair with read
+    /// numbers (`hill_muscle::Curves::PLATEAU_ISOMETRIC`, declared there).
+    pub(crate) fn second_pk(&self, c: DMat2) -> DMat2 {
+        self.muscle.active_second_pk(
+            c,
+            self.fiber,
+            self.activation,
+            0.0,
+            crate::matter::materials::solid::hill_muscle::Curves::PLATEAU_ISOMETRIC,
+        )
+    }
 }
 
 /// What a kept step did to a solid (`Elastic::committed`).
@@ -75,6 +102,7 @@ impl Elastic {
             shear_viscosity: 0.0,
             bulk_viscosity: 0.0,
             relaxation: Relaxation::none(),
+            active: None,
         }
     }
 
@@ -106,6 +134,7 @@ impl Elastic {
             shear_viscosity: 0.0,
             bulk_viscosity: 0.0,
             relaxation: Relaxation::none(),
+            active: None,
         }
     }
 
@@ -136,6 +165,7 @@ impl Elastic {
             shear_viscosity: 0.0,
             bulk_viscosity: 0.0,
             relaxation: Relaxation::none(),
+            active: None,
         }
     }
 
@@ -149,6 +179,7 @@ impl Elastic {
             shear_viscosity: 0.0,
             bulk_viscosity: 0.0,
             relaxation: Relaxation::none(),
+            active: None,
         }
     }
 
@@ -169,6 +200,7 @@ impl Elastic {
             shear_viscosity: 0.0,
             bulk_viscosity: 0.0,
             relaxation: Relaxation::none(),
+            active: None,
         }
     }
 
@@ -216,6 +248,30 @@ impl Elastic {
     /// Whether the solid has relaxation branches.
     pub(crate) fn is_relaxing(&self) -> bool {
         !self.relaxation.is_empty()
+    }
+
+    /// Whether the solid carries a fiber with a nonzero activation.
+    pub(crate) fn is_active(&self) -> bool {
+        self.active.is_some_and(|a| a.activation != 0.0)
+    }
+
+    /// The work per reference volume the active fiber does ON the body over
+    /// a step from `C_n` to `C_{n+1}`: its stress at the midpoint, the same
+    /// term the step's stress adds (`step_stress`), contracted as the step
+    /// contracts every stress, with the sign of work given rather than
+    /// absorbed: `-1/2 S(C_m) : (C_{n+1} - C_n)` (a passive stress's `1/2 S :
+    /// dC` is the energy the body stores; a fiber pulling while it shortens
+    /// gives energy). Not a stored energy: a power the muscle puts in,
+    /// booked by the ledger as such.
+    pub(crate) fn active_work_over(&self, c0: DMat2, c1: DMat2) -> f64 {
+        match self.active {
+            Some(fiber) if fiber.activation != 0.0 => {
+                let s = fiber.second_pk(0.5 * (c0 + c1));
+                let d = c1 - c0;
+                -0.5 * (s.x_axis.dot(d.x_axis) + s.y_axis.dot(d.y_axis))
+            }
+            _ => 0.0,
+        }
     }
 
     /// The relaxed Lame moduli the branches' parts take, `(lambda, mu)`.
@@ -596,6 +652,10 @@ impl Elastic {
         if self.is_relaxing() {
             s += self.relaxation.step_stress(c0, c1, dt, self.lame());
         }
+        // The active fiber's, at the step's midpoint (`active_work_over`).
+        if let Some(fiber) = self.active.filter(|a| a.activation != 0.0) {
+            s += fiber.second_pk(0.5 * (c0 + c1));
+        }
         s
     }
 
@@ -635,7 +695,9 @@ impl Elastic {
         if hooks::split() || hooks::trapezoid() {
             return dcs.map(|dc| self.step_stress_tangent_by_differences(c0, c1, dt, dc));
         }
-        if self.is_relaxing() {
+        // Declared scaffold (as for the branches): the active fiber's tangent
+        // by central differences of `step_stress` until its derived one.
+        if self.is_relaxing() || self.is_active() {
             return dcs.map(|dc| self.step_stress_tangent_by_differences(c0, c1, dt, dc));
         }
         let colon = |a: DMat2, b: DMat2| a.x_axis.dot(b.x_axis) + a.y_axis.dot(b.y_axis);

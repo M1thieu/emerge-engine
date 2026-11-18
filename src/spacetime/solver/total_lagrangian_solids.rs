@@ -35,8 +35,8 @@ use crate::matter::materials::solid::von_mises::VonMisesMaterial;
 use crate::spacetime::solver::config::SpawnRegion;
 use crate::spacetime::solver::config::SpawnShape;
 use crate::spacetime::total_lagrangian::{
-    ConservingSettings, ContactKey, ContactSet, Elastic, Estimator, Friction, GridLayout,
-    LagrangianCache, Modes, Particles, Plane, StepControl, body_modes, contact_grid,
+    ActiveFiber, ConservingSettings, ContactKey, ContactSet, Elastic, Estimator, Friction,
+    GridLayout, LagrangianCache, Modes, Particles, Plane, StepControl, body_modes, contact_grid,
     controlled_step, start_velocity_field, tolerance_energy,
 };
 use crate::spacetime::transfer::friction_heat::MIN_APPLIED_TEMPERATURE_RISE_K;
@@ -121,6 +121,8 @@ pub(crate) struct TotalLagrangianState {
     step_length: f64,
     heat_debt: Vec<f32>,
     heat: f64,
+    /// The work the active fibers did since the start (`StepReport::active`).
+    active_work: f64,
     start_energy: f64,
     /// The step tolerance's energy (`tolerance_energy`), fixed at the start.
     tolerance_energy: f64,
@@ -237,8 +239,15 @@ impl Simulation {
             refuse("sleeping particles");
         }
         // Checked every frame: a host writes activations while the run goes.
-        if self.particles.activation.iter().any(|&a| a != 0.0) {
-            refuse("muscle activation (no active stress on this path)");
+        if (0..self.particles.len()).any(|p| {
+            self.particles.activation[p] != 0.0
+                && self
+                    .total_lagrangian_muscle(self.particles.material_id[p])
+                    .is_none()
+        }) {
+            refuse(
+                "muscle activation on a material without a muscle record (CorotatedMaterial::muscle)",
+            );
         }
         if self.particles.pinned.iter().any(|&p| p != 0) {
             refuse("pinned particles");
@@ -251,6 +260,52 @@ impl Simulation {
                 "this boundary (only slip and Coulomb friction domain walls have a contact form)",
             );
         }
+    }
+
+    /// Material `id`'s muscle record, if it is a corotated material that
+    /// carries one.
+    fn total_lagrangian_muscle(
+        &self,
+        id: u32,
+    ) -> Option<crate::matter::materials::solid::hill_muscle::HillMuscle> {
+        self.materials
+            .get(id)
+            .as_any()
+            .downcast_ref::<CorotatedMaterial>()
+            .and_then(|m| m.muscle)
+    }
+
+    /// The host's activations into the step's solids, each frame: a fiber
+    /// along the particle's `activation_dir` (its reference direction) at
+    /// its `activation`, held over the frame (the host's value is the
+    /// activation itself; the excitation-to-activation dynamics of
+    /// `HillMuscle::activation_rate` is not integrated yet, declared).
+    /// Returns whether any fiber is active.
+    fn carry_total_lagrangian_activations(&self, state: &mut TotalLagrangianState) -> bool {
+        let mut any = false;
+        for p in 0..state.particles {
+            let activation = f64::from(self.particles.activation[p]);
+            state.solids[p].active = if activation == 0.0 {
+                None
+            } else {
+                let muscle = self
+                    .total_lagrangian_muscle(self.particles.material_id[p])
+                    .expect("refused above without a muscle record");
+                let dir = self.particles.activation_dir[p];
+                let fiber = DVec2::new(f64::from(dir.x), f64::from(dir.y));
+                assert!(
+                    fiber.length_squared() > 0.0 && (0.0..=1.0).contains(&activation),
+                    "particle {p}: an activation needs a fiber direction and lies in [0, 1], got {activation}"
+                );
+                any = true;
+                Some(ActiveFiber {
+                    muscle,
+                    fiber: fiber.normalize(),
+                    activation,
+                })
+            };
+        }
+        any
     }
 
     /// The elastic law of particle `p`'s material on this path.
@@ -445,6 +500,7 @@ impl Simulation {
             step_length: f64::from(self.config.dt),
             heat_debt: vec![0.0; n],
             heat: 0.0,
+            active_work: 0.0,
             start_energy: 0.0,
             tolerance_energy: 0.0,
             start_momentum: DVec2::ZERO,
@@ -555,11 +611,15 @@ impl Simulation {
         let gravity = self.total_lagrangian_gravity();
         let mut state = self.total_lagrangian.take().expect("built above");
         let friction = self.total_lagrangian_friction(&state);
+        // A muscle puts energy in: the modal flight and rest, which carry a
+        // free body's own modes, are left to the step while any fiber pulls.
+        let active = self.carry_total_lagrangian_activations(&mut state);
         let scale = state.tolerance_energy.max(f64::MIN_POSITIVE).sqrt();
         let mut frame = TotalLagrangianFrame::default();
         let framing = std::time::Instant::now();
         let length = f64::from(self.config.dt);
         frame.modal = config.modal_flight
+            && !active
             && Self::fly_total_lagrangian_frame(&mut state, (&planes, gravity), length);
         // A damped flight's heat (`Flight::carry_branches`), deposited like
         // the step's.
@@ -578,11 +638,12 @@ impl Simulation {
         // coefficient's; removal: each held contact's own coefficient in
         // the basis).
         let rest_friction = friction.uniform();
-        if config.modal_rest && !frame.modal && rest_friction.is_none() {
+        if config.modal_rest && !frame.modal && !active && rest_friction.is_none() {
             state.modal_rest_refused += 1;
         }
         frame.modal_rest = !frame.modal
             && config.modal_rest
+            && !active
             && rest_friction.is_some_and(|mu| {
                 rest::rest_frame(&mut state, (&planes, mu, gravity), (now, length))
             });
@@ -609,7 +670,7 @@ impl Simulation {
         };
         // A frame that is not flown whole: flown up to its contact
         // (`handoff`), the step from there.
-        let handoff = config.subframe_handoff && config.modal_flight;
+        let handoff = config.subframe_handoff && config.modal_flight && !active;
         let mut flown_change = 0.0;
         if frame.modal {
             state.held_since_flight = false;
@@ -683,6 +744,8 @@ impl Simulation {
                 frame.friction_work += kept.friction;
                 frame.contact_work += kept.work.0;
                 frame.dissipated += kept.viscous;
+                frame.active_work += kept.active;
+                state.active_work += kept.active;
                 frame.plastic_work += kept.plastic;
                 frame.relaxation_heat += kept.relaxation;
                 frame.relaxation_strain = frame.relaxation_strain.max(kept.relaxation_strain);
@@ -791,7 +854,8 @@ impl Simulation {
         frame.modal_check_failed = state.modal_check_failed;
         frame.modal_rest_refused = state.modal_rest_refused;
         frame.tolerance_energy = state.tolerance_energy;
-        frame.balance = frame.energy + frame.heat - frame.start_energy;
+        frame.active_total = state.active_work;
+        frame.balance = frame.energy + frame.heat - frame.start_energy - frame.active_total;
         state.frame = frame;
         // A kept probe (`EMERGE_PROBE_STATE_HASH`, experimental builds only):
         // the bit-identity gate of a change meant to be lossless, an FNV-1a
