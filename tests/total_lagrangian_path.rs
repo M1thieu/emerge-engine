@@ -34,7 +34,7 @@ const RES: usize = 40;
 /// energy missing from the heat.
 const SLIDE_START: f32 = 10.0;
 
-/// Medium clay's moduli at a 1 cm cell, the path on with the step
+/// A 1 cm cell, the path on with the step
 /// controller's tolerance `tolerance`.
 fn config(tolerance: f64) -> SimConfig {
     let mut config = SimConfig::earth(RES, CELL_M, 1.0 / 60.0);
@@ -42,15 +42,11 @@ fn config(tolerance: f64) -> SimConfig {
     config
 }
 
-fn clay() -> Elastic {
-    Elastic {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    }
+fn illustrative() -> Elastic {
+    Elastic::ILLUSTRATIVE
 }
 
-/// A `width` by `height` cell block of clay whose bottom sits `lift` cells
+/// A `width` by `height` cell block of the illustrative solid whose bottom sits `lift` cells
 /// above the floor.
 fn block(
     config: &SimConfig,
@@ -65,13 +61,16 @@ fn block(
         .at(Vec2::new(x, floor + lift + height as f32 * 0.5))
         .spacing(0.5)
         .material(material)
-        .mass_from(&clay(), config)
+        .mass_from(&illustrative(), config)
 }
 
 fn scene(config: SimConfig, lift: f32) -> Simulation {
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     let _block = sim.add_body(block(&config, id, (8, 4), RES as f32 * 0.5, lift));
     sim
@@ -413,7 +412,7 @@ fn a_dropped_block_bounces_with_its_energy_kept() {
 }
 
 /// The block's ledger closes and it comes to rest. The heat claim ("all the
-/// kinetic energy becomes heat") is not asserted here: this corotated clay has
+/// kinetic energy becomes heat") is not asserted here: this corotated solid has
 /// no material damping, so the vibration that the sliding and the settling
 /// excite stays in the block (measured: 6e-4 of `1/2 M v0^2` as kinetic and
 /// stored energy at the end, about 20 times what a block at rest can keep,
@@ -424,7 +423,10 @@ fn a_block_slides_to_rest_with_its_ledger_closed() {
     let config = config(1e-1);
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     let _block = sim.add_body(block(&config, id, (8, 4), SLIDE_START, 0.0));
     sim.add_boundary_condition(Box::new(FrictionBoundary::new(
@@ -554,7 +556,7 @@ fn a_damped_block_slides_to_rest_and_its_energy_becomes_heat() {
 fn a_stiff_block_slides_to_rest_with_its_ledger_closed() {
     let stiff = Elastic {
         e_pa: 1e9,
-        ..clay()
+        ..illustrative()
     };
     let config = config(1e-1);
     let mut sim = Simulation::empty(config);
@@ -598,7 +600,10 @@ fn two_blocks_collide_with_their_energy_and_momentum_kept() {
     let config = config(1e-1);
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     // 4 cells apart, closing at 0.25 m/s: they meet at 0.16 s. No body
     // outruns the moving one's speed over the 0.5 s run, so the right one
@@ -715,7 +720,10 @@ fn two_equal_bars_meet_push_and_separate() {
     config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     // Bars of 24 x 2 cells 6 cells apart, the striker at 0.25 m/s: they
     // meet after about 0.24 s (frame 15 of 1/60 s).
@@ -820,6 +828,26 @@ fn the_path_refuses_a_pin_it_would_ignore() {
 }
 
 #[test]
+#[should_panic(expected = "does not support internal pre-stress pressure")]
+fn the_path_refuses_a_pre_stress_it_would_ignore() {
+    let mut sim = scene(config(1e-1), 0.0);
+    sim.particles_mut().internal_pressure[0] = 1.0;
+    sim.step();
+}
+
+#[test]
+#[should_panic(expected = "does not support thermal expansion")]
+fn the_path_refuses_a_thermal_expansion_it_would_ignore() {
+    let config = config(1e-1);
+    let mut material = CorotatedMaterial::from_physical(&illustrative(), &config);
+    material.thermal_expansion = 1e-4;
+    let mut sim = Simulation::empty(config);
+    let id = sim.register_material(Box::new(material)).0;
+    let _ = sim.add_body(block(&config, id, (8, 4), RES as f32 * 0.5, 0.0));
+    sim.step();
+}
+
+#[test]
 #[should_panic(expected = "does not support muscle activation")]
 fn the_path_refuses_a_muscle_activation_it_would_ignore() {
     let mut sim = scene(config(1e-1), 0.0);
@@ -835,7 +863,10 @@ fn the_path_refuses_a_body_added_after_its_first_frame() {
     let mut sim = scene(config, 0.0);
     sim.step();
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     let _late = sim.add_body(block(&config, id, (4, 4), 8.0, 0.0));
     sim.step();
@@ -869,7 +900,10 @@ fn a_block_sliding_on_a_frictionless_floor_keeps_its_energy() {
     let config = config(1e-1);
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     let _block = sim.add_body(block(&config, id, (8, 4), SLIDE_START, 0.0));
     let speed = 0.5 / CELL_M;
@@ -1050,6 +1084,24 @@ fn the_path_refuses_a_pair_no_coefficient_names() {
     sim.step();
 }
 
+/// An illustrative ductile solid, J2 on Hencky elasticity: E 1 MPa, nu
+/// 0.3, 1700 kg/m^3, uniaxial yield 20 kPa, no hardening. NOT a measured
+/// material. Kind: assumed value; why: the ductile tests check the scheme
+/// (the ledger with plastic work as heat, J2's isochoric flow, the slide
+/// against its own converged answer), which holds for any J2 solid; the
+/// numbers have no source read; removal: a measured J2 record wherever a
+/// test states a material.
+fn illustrative_ductile() -> DuctileProps {
+    DuctileProps {
+        elastic: Elastic {
+            e_pa: 1.0e6,
+            nu: 0.3,
+            rho_kg_m3: 1700.0,
+        },
+        yield_stress_pa: 2.0e4,
+    }
+}
+
 /// The plasticine block of the slides at 1 m/s along +x on a Coulomb floor
 /// of coefficient 0.3, the block-floor pair then named by `name` (given the
 /// simulation and the block's material) so that the slide meets `mu`, run
@@ -1072,6 +1124,11 @@ fn plasticine_slide(mu: f64, name: impl FnOnce(&mut Simulation, u32), frames: us
             .material(id)
             .mass_from(&record.relaxed, &config),
     );
+    // A test parameter of the scheme, not a measured pair: no coefficient
+    // for Plasticine on a floor is read. Kind: assumed value; why: the
+    // slides check the stopping distance against `v0^2 / (2 mu g)`, which
+    // holds for any coefficient; removal: a measured Plasticine-on-floor
+    // coefficient named as a pair (`Simulation::set_surface_friction`).
     let walls = 0.3;
     sim.add_boundary_condition(Box::new(FrictionBoundary::new(
         config.boundary_thickness,
@@ -1123,14 +1180,7 @@ fn plasticine_slide(mu: f64, name: impl FnOnce(&mut Simulation, u32), frames: us
 #[test]
 fn a_ductile_block_slides_v0_squared_over_2_mu_g() {
     let config = config(1e-1);
-    let props = DuctileProps {
-        elastic: Elastic {
-            e_pa: 1.0e6,
-            nu: 0.3,
-            rho_kg_m3: 1700.0,
-        },
-        yield_stress_pa: 2.0e4,
-    };
+    let props = illustrative_ductile();
     let mut sim = Simulation::empty(config);
     let id = sim
         .register_material(Box::new(VonMisesMaterial::from_physical(&props, &config)))
@@ -1179,7 +1229,7 @@ fn a_ductile_block_slides_v0_squared_over_2_mu_g() {
     );
 }
 
-/// The first impact of a flat 8 by 4 cm clay block dropped flat from 10 cm
+/// The first impact of a flat 8 by 4 cm block dropped flat from 10 cm
 /// on a frictionless floor, 15 frames (the fall, the impact, the rebound's
 /// start), at `refine` times finer cells and the box's centre `centre`
 /// cells (in 1 cm cells; the same offset from the grid at every
@@ -1194,7 +1244,10 @@ fn first_impact_spin(centre: f32, refine: usize) -> (f64, f64, u32) {
     config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     let lift = 10.0 * k;
     let centre = 20.0 * k + (centre - 20.0);
@@ -1267,7 +1320,7 @@ fn first_impact_spin(centre: f32, refine: usize) -> (f64, f64, u32) {
 /// those at the cell (first order or better; measured 1.7 at 0.3 cell, 1.1e-2
 /// to 3.4e-3). Declared: the later bounces amplify the spin a first impact
 /// leaves (a tilted elastic block lands on a corner and turns; no damping
-/// in this clay), up to 0.4 of `I v / r` and tens of degrees over 0.75 s at
+/// in this solid), up to 0.4 of `I v / r` and tens of degrees over 0.75 s at
 /// 1 cm cells: a measured behaviour, not asserted here.
 #[test]
 fn a_flat_drop_does_not_turn_the_block() {
@@ -1329,7 +1382,10 @@ fn probe_corner_sink_at_two_cells() {
             config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
             let mut sim = Simulation::empty(config);
             let id = sim
-                .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+                .register_material(Box::new(CorotatedMaterial::from_physical(
+                    &illustrative(),
+                    &config,
+                )))
                 .0;
             let (w, h) = ((0.08 / cell).round() as i32, (0.04 / cell).round() as i32);
             let floor = config.boundary_thickness as f32;
@@ -1339,7 +1395,7 @@ fn probe_corner_sink_at_two_cells() {
                     .at(Vec2::new(res as f32 * 0.5, floor + h as f32 * 0.5))
                     .spacing(0.5)
                     .material(id)
-                    .mass_from(&clay(), &config),
+                    .mass_from(&illustrative(), &config),
             );
             let mut deepest = 0.0f32;
             for _ in 0..20 {
@@ -1392,7 +1448,10 @@ fn a_scene_moved_by_a_metre_steps_the_same() {
         config.boundary_thickness += offset;
         let mut sim = Simulation::empty(config);
         let id = sim
-            .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+            .register_material(Box::new(CorotatedMaterial::from_physical(
+                &illustrative(),
+                &config,
+            )))
             .0;
         let middle = config.grid_res as f32 * 0.5;
         let _block = sim.add_body(block(&config, id, (8, 4), middle, 4.0));
@@ -1431,8 +1490,8 @@ fn a_scene_moved_by_a_metre_steps_the_same() {
     }
 }
 
-/// A ductile block (J2 on Hencky elasticity, Love and Sulsky 2005: E 1 MPa,
-/// nu 0.3, uniaxial yield 20 kPa, no hardening, 1700 kg/m^3; impact stress
+/// A ductile block (J2 on Hencky elasticity, Love and Sulsky 2005; the
+/// illustrative ductile solid, `illustrative_ductile`; impact stress
 /// `rho c v` about 57 kPa, past yield) dropped 10 cm onto the frictionless
 /// floor: it deforms for good, and the energy it loses is exactly the
 /// plastic work, turned into heat (Love and Sulsky eq. 83: `1/2 S : dC =
@@ -1458,14 +1517,7 @@ fn a_scene_moved_by_a_metre_steps_the_same() {
 #[test]
 fn a_ductile_block_splats_and_its_plastic_work_becomes_heat() {
     let config = config(1e-1);
-    let props = DuctileProps {
-        elastic: Elastic {
-            e_pa: 1.0e6,
-            nu: 0.3,
-            rho_kg_m3: 1700.0,
-        },
-        yield_stress_pa: 2.0e4,
-    };
+    let props = illustrative_ductile();
     let mut sim = Simulation::empty(config);
     let id = sim
         .register_material(Box::new(VonMisesMaterial::from_physical(&props, &config)))

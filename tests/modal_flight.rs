@@ -1,5 +1,5 @@
 //! A lone body's flights between contacts carried by its modes
-//! (`TotalLagrangianConfig::with_modal_flight`): the clay block of
+//! (`TotalLagrangianConfig::with_modal_flight`): the block of
 //! `tests/realtime_profile.rs`'s E2 dropped on the floor, every contact
 //! stepped, every flight frame flown with no step.
 
@@ -18,19 +18,15 @@ use emerge::{
 };
 use glam::{IVec2, Vec2};
 
-/// Medium clay, as the path's tests use it.
-fn clay() -> Elastic {
-    Elastic {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    }
+/// The illustrative solid (`Elastic::ILLUSTRATIVE`), not a measured material.
+fn illustrative() -> Elastic {
+    Elastic::ILLUSTRATIVE
 }
 
 /// The 8 x 4 cm block dropped `lift` cells, its flights modal.
 fn drop(lift: f32) -> Simulation {
     drop_of(lift, &|config| {
-        Box::new(CorotatedMaterial::from_physical(&clay(), config))
+        Box::new(CorotatedMaterial::from_physical(&illustrative(), config))
     })
 }
 
@@ -47,7 +43,7 @@ fn drop_of(lift: f32, made: &dyn Fn(&SimConfig) -> Box<dyn MaterialModel>) -> Si
             .at(Vec2::new(20.0, floor + lift + 2.0))
             .spacing(0.5)
             .material(id)
-            .mass_from(&clay(), &config),
+            .mass_from(&illustrative(), &config),
     );
     sim
 }
@@ -171,13 +167,13 @@ fn flown(sim: &mut Simulation, frames: usize) -> Flown {
     }
 }
 
-/// The clay block as a J2 solid (`VonMisesMaterial`, on Hencky elasticity on
+/// The block as a J2 solid (`VonMisesMaterial`, on Hencky elasticity on
 /// this path) with the uniaxial yield stress `yield_pa`.
 fn ductile_drop(yield_pa: f32) -> Simulation {
     drop_of(10.0, &|config| {
         Box::new(VonMisesMaterial::from_physical(
             &DuctileProps {
-                elastic: clay(),
+                elastic: illustrative(),
                 yield_stress_pa: yield_pa,
             },
             config,
@@ -252,7 +248,10 @@ fn scene(lift: f32, modal: bool) -> Simulation {
         config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
         let mut stepped = Simulation::empty(config);
         let id = stepped
-            .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+            .register_material(Box::new(CorotatedMaterial::from_physical(
+                &illustrative(),
+                &config,
+            )))
             .0;
         let floor = config.boundary_thickness as f32;
         let _block = stepped.add_body(
@@ -261,7 +260,7 @@ fn scene(lift: f32, modal: bool) -> Simulation {
                 .at(Vec2::new(20.0, floor + lift + 2.0))
                 .spacing(0.5)
                 .material(id)
-                .mass_from(&clay(), &config),
+                .mass_from(&illustrative(), &config),
         );
         sim = stepped;
     }
@@ -398,7 +397,10 @@ fn resting(modal: bool) -> Simulation {
     config.total_lagrangian = Some(if modal { path.with_modal_rest() } else { path });
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     let floor = config.boundary_thickness as f32;
     let _block = sim.add_body(
@@ -407,7 +409,7 @@ fn resting(modal: bool) -> Simulation {
             .at(Vec2::new(20.0, floor + 2.0))
             .spacing(0.5)
             .material(id)
-            .mass_from(&clay(), &config),
+            .mass_from(&illustrative(), &config),
     );
     sim
 }

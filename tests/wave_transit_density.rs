@@ -45,7 +45,7 @@ const PROBE_CELLS: f32 = 10.0;
 
 fn solid(rho: f32, nu: f32) -> Elastic {
     Elastic {
-        e_pa: 1.125e7,
+        e_pa: Elastic::ILLUSTRATIVE.e_pa,
         nu,
         rho_kg_m3: rho,
     }

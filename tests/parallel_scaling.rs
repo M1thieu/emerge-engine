@@ -1,4 +1,4 @@
-//! The impact step on 1, 2, 4 and 8 threads: the clay drop's impact frames and a stepped Norton
+//! The impact step on 1, 2, 4 and 8 threads: the block drop's impact frames and a stepped Norton
 //! frame, each frame's wall, its `Timing` split and its counts per thread
 //! count. A probe: measurement, nothing held.
 
@@ -11,20 +11,19 @@ use glam::{IVec2, Vec2};
 
 const FRAME: f64 = 1.0 / 60.0;
 
-/// The clay drop's scene (`impact_local`'s `drop`): E2's clay block, tolerance
+/// The block drop's scene (`impact_local`'s `drop`): E2's block, tolerance
 /// 1e-2, the sub-frame handoff on.
 fn run_d() -> Simulation {
-    let clay = emerge::materials::physical_props::Elastic {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    };
+    let illustrative = emerge::materials::physical_props::Elastic::ILLUSTRATIVE;
     let mut config = SimConfig::earth(40, 0.01, FRAME as f32);
     config.min_dt = config.min_dt.min(FRAME as f32);
     config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-2).with_subframe_handoff());
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay, &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative,
+            &config,
+        )))
         .0;
     let floor = config.boundary_thickness as f32;
     let _block = sim.add_body(
@@ -33,7 +32,7 @@ fn run_d() -> Simulation {
             .at(Vec2::new(20.0, floor + 12.0))
             .spacing(0.5)
             .material(id)
-            .mass_from(&clay, &config),
+            .mass_from(&illustrative, &config),
     );
     sim
 }

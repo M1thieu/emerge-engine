@@ -7,15 +7,11 @@ use crate::materials::physical_props::Elastic as ElasticProps;
 use crate::{CorotatedMaterial, FromSI, SimConfig};
 use glam::IVec2;
 
-/// The 8 x 4 cm clay block on the floor, placed at its resting
+/// The 8 x 4 cm block on the floor, placed at its resting
 /// compression with its constrained modes (`rest::Rest::settle`), the
 /// loaded mode given `kick` of its offset as its rate.
 pub(super) fn settled_block(kick: f64) -> Simulation {
-    let props = ElasticProps {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    };
+    let props = ElasticProps::ILLUSTRATIVE;
     let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
     config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
     let mut sim = Simulation::empty(config);

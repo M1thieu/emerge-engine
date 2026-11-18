@@ -6,7 +6,7 @@
 //! (contact, the step controller), E3 a block sliding on a Coulomb floor
 //! (friction), E4 two blocks colliding (body-body contact), E5 a
 //! Kelvin-Voigt bar ringing down (the dashpot), E6 a J2 block splatting
-//! (plasticity), E7 a clay block landing on a stiff one (two materials in
+//! (plasticity), E7 a block landing on a stiff one (two materials in
 //! contact); E1 and E4 also at 2 and 4 times the particles and on 1, 4
 //! and 8 threads; E2 also under the step tolerance's earlier scale; E1
 //! with the modal rest and E2 with the modal flight.
@@ -42,13 +42,9 @@ const RES: usize = 40;
 /// The 60 Hz frame's budget, ms.
 const BUDGET_MS: f64 = 1000.0 / 60.0;
 
-/// Medium clay, as the path's tests use it.
-fn clay() -> Elastic {
-    Elastic {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    }
+/// The illustrative solid (`Elastic::ILLUSTRATIVE`), not a measured material.
+fn illustrative() -> Elastic {
+    Elastic::ILLUSTRATIVE
 }
 
 fn config(res: usize, tolerance: f64) -> SimConfig {
@@ -57,7 +53,7 @@ fn config(res: usize, tolerance: f64) -> SimConfig {
     config
 }
 
-/// A `width` by `height` cell clay block centred at `x`, its bottom `lift`
+/// A `width` by `height` cell block centred at `x`, its bottom `lift`
 /// cells above the floor.
 fn block(
     config: &SimConfig,
@@ -72,7 +68,7 @@ fn block(
         .at(Vec2::new(x, floor + lift + height as f32 * 0.5))
         .spacing(0.5)
         .material(material)
-        .mass_from(&clay(), config)
+        .mass_from(&illustrative(), config)
 }
 
 /// A frame's energies in J/m: the grid's mass unit times a cell's area.
@@ -357,7 +353,10 @@ fn e1_rest(scale: (i32, i32)) {
 fn e1_rest_with(config: SimConfig, scale: (i32, i32), label: &str) {
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     let middle = config.grid_res as f32 * 0.5;
     let _block = sim.add_body(block(&config, id, (8 * scale.0, 4 * scale.1), middle, 0.0));
@@ -378,7 +377,7 @@ fn e2_bounce(tolerance: f64, label: &str) {
     e2_bounce_damped(tolerance, 0.0, label);
 }
 
-/// E2 with the generic Newtonian dashpot in the clay (shear viscosity
+/// E2 with the generic Newtonian dashpot in the solid (shear viscosity
 /// `eta` Pa s, bulk `2 eta / 3`, as `tests/kelvin_voigt_bar.rs`): a scene
 /// parameter, the material's own damping, not a change of method. For
 /// scale: the block's first mode `omega = pi c / L` (c = sqrt(E / rho), L
@@ -388,10 +387,10 @@ fn e2_bounce_damped(tolerance: f64, eta_pa_s: f32, label: &str) {
     e2_bounce_with(config(RES, tolerance), eta_pa_s, label);
 }
 
-/// E2 under `config` (the path's options), the clay's viscosity `eta`.
+/// E2 under `config` (the path's options), the solid's viscosity `eta`.
 fn e2_bounce_with(config: SimConfig, eta_pa_s: f32, label: &str) {
     let mut sim = Simulation::empty(config);
-    let mut material = CorotatedMaterial::from_physical(&clay(), &config);
+    let mut material = CorotatedMaterial::from_physical(&illustrative(), &config);
     material.elastic_viscosity = config.visc_from_si(eta_pa_s);
     material.elastic_bulk_viscosity = config.visc_from_si(2.0 * eta_pa_s / 3.0);
     let id = sim.register_material(Box::new(material)).0;
@@ -418,7 +417,10 @@ fn e3_slide() {
     let config = config(RES, 1e-1);
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     let _block = sim.add_body(block(&config, id, (8, 4), 10.0, 0.0));
     sim.add_boundary_condition(Box::new(FrictionBoundary::new(
@@ -452,7 +454,10 @@ fn e4_collision(scale: (i32, i32)) {
     let config = config(RES * scale.0 as usize, 1e-1);
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     let size = (6 * scale.0, 4 * scale.1);
     let (left, right) = (8.0 * scale.0 as f32, 18.0 * scale.0 as f32);
@@ -486,20 +491,23 @@ fn e4_collision(scale: (i32, i32)) {
     frame_classes(&label, &t);
 }
 
-/// E7: two materials in contact, the 6 by 4 clay block dropped 6 cells onto
-/// an 8 by 4 block of the path's rigid stand-in (`E` 1 GPa, the clay's
+/// E7: two materials in contact, the 6 by 4 block dropped 6 cells onto
+/// an 8 by 4 block of the path's rigid stand-in (`E` 1 GPa, the solid's
 /// density and `nu`, as `tests/total_lagrangian_path.rs`'s stiff slide)
-/// resting on the floor, 45 frames. Gate: the clay's lowest particle above
+/// resting on the floor, 45 frames. Gate: the solid's lowest particle above
 /// the stiff block's highest at the end, cells (positive: no crossing).
 fn e7_two_materials() {
     let config = config(RES, 1e-1);
     let mut sim = Simulation::empty(config);
     let stiff = Elastic {
         e_pa: 1e9,
-        ..clay()
+        ..illustrative()
     };
     let clay_id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     let stiff_id = sim
         .register_material(Box::new(CorotatedMaterial::from_physical(&stiff, &config)))
@@ -686,7 +694,10 @@ fn profile_e2_bounce_at_the_earlier_scale() {
         let config = config(RES, 1e-1);
         let mut sim = Simulation::empty(config);
         let id = sim
-            .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+            .register_material(Box::new(CorotatedMaterial::from_physical(
+                &illustrative(),
+                &config,
+            )))
             .0;
         let _block = sim.add_body(block(&config, id, (8, 4), RES as f32 * 0.5, 10.0));
         sim.step();
@@ -708,7 +719,7 @@ fn profile_e2_bounce_tolerances() {
     });
 }
 
-/// E2 with the clay's own damping at three viscosities and two step
+/// E2 with the solid's own damping at three viscosities and two step
 /// tolerances: a scene parameter (real clay is not undamped), measured for
 /// the user's decision, not a method change.
 #[test]

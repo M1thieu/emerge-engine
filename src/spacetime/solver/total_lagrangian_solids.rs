@@ -258,6 +258,32 @@ impl Simulation {
         if self.particles.pinned.iter().any(|&p| p != 0) {
             refuse("pinned particles");
         }
+        // The explicit path scales a corotated material's moduli by its
+        // temperature (`CorotatedMaterial::thermal_expansion`) and adds a
+        // particle's pre-stress pressure (`MaterialModel::pressure_scale`);
+        // this path carries neither.
+        let mut used: Vec<u32> = self.particles.material_id.clone();
+        used.sort_unstable();
+        used.dedup();
+        if used.iter().any(|&id| {
+            self.materials
+                .get(id)
+                .as_any()
+                .downcast_ref::<CorotatedMaterial>()
+                .is_some_and(|m| m.thermal_expansion != 0.0)
+        }) {
+            refuse("thermal expansion (CorotatedMaterial::thermal_expansion)");
+        }
+        if (0..self.particles.len()).any(|p| {
+            self.particles.internal_pressure[p] != 0.0
+                && self
+                    .materials
+                    .get(self.particles.material_id[p])
+                    .pressure_scale()
+                    != 0.0
+        }) {
+            refuse("internal pre-stress pressure (Particle::internal_pressure)");
+        }
         if self.particles.contact_group.iter().any(|&g| g != 0) {
             refuse("contact groups (bodies meet through their outlines on this path)");
         }

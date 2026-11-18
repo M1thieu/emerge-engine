@@ -5,7 +5,7 @@ use super::*;
 
 /// The cost of the branches (report only, criteria none): Newton
 /// iterations, GMRES products and wall time per frame, with and without
-/// Plasticine's spectrum, on E2's drop (the clay block dropped 10 cells,
+/// Plasticine's spectrum, on E2's drop (the block dropped 10 cells,
 /// 45 frames) and on the settled slab's scene (30 frames). The spectrum on
 /// these scenes' moduli is a cost measurement, not a material: the record's
 /// relaxed moduli are not set (its declared gap). Wall times mean something
@@ -42,15 +42,11 @@ fn probe_relaxation_cost() {
         "| scene | Newton/frame | GMRES/frame | steps/frame | rejected/frame | ms/frame | slowest ms |"
     );
     println!("|---|---|---|---|---|---|---|");
-    let clay = Elastic {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    };
+    let illustrative = Elastic::ILLUSTRATIVE;
     for relaxed in [false, true] {
         let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
         config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
-        let mut material = CorotatedMaterial::from_physical(&clay, &config);
+        let mut material = CorotatedMaterial::from_physical(&illustrative, &config);
         if relaxed {
             material.relaxation = Some(RelaxationSpectrum::plasticine_crandall_1970());
         }
@@ -63,7 +59,7 @@ fn probe_relaxation_cost() {
                 .at(Vec2::new(20.0, floor + 12.0))
                 .spacing(0.5)
                 .material(id)
-                .mass_from(&clay, &config),
+                .mass_from(&illustrative, &config),
         );
         measure(
             if relaxed {

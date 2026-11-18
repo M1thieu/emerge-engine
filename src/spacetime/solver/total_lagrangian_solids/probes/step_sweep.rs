@@ -1,4 +1,4 @@
-//! What a fixed step buys on the path: the clay drop of
+//! What a fixed step buys on the path: the block drop of
 //! `tests/realtime_profile.rs` (E2) stepped at `k h/c`, `k` in 1 to 64, its
 //! contact observables against the `k = 1` run, and the share of its
 //! energy in the modes the step does not resolve. A probe: measurement,
@@ -9,7 +9,7 @@
 //! steps and caps the next at the frame, so frames of `2 k h/c` keep one
 //! pair of steps `k h/c` each (the discarded whole try is a cost, not a
 //! different step). A Newton failure still halves; it is counted. `h` is
-//! the cell, `c` the clay's P wave speed `sqrt((lambda + 2 mu) / rho)`.
+//! the cell, `c` the solid's P wave speed `sqrt((lambda + 2 mu) / rho)`.
 //!
 //! The unresolved band: the body's free elastic modes at its reference
 //! configuration (`vibration::modes`, modal flight's basis), the state
@@ -30,17 +30,13 @@ const CELL_M: f32 = 0.01;
 /// The run's length, s: the E2 scene's 45 frames of 1/60 s.
 const T_S: f64 = 0.75;
 
-fn clay() -> ElasticProps {
-    ElasticProps {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    }
+fn illustrative() -> ElasticProps {
+    ElasticProps::ILLUSTRATIVE
 }
 
 /// The clay's P wave speed, m/s.
 fn p_wave_speed() -> f64 {
-    let p = clay();
+    let p = illustrative();
     let (e, nu, rho) = (f64::from(p.e_pa), f64::from(p.nu), f64::from(p.rho_kg_m3));
     let lambda = e * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
     let mu = e / (2.0 * (1.0 + nu));
@@ -54,7 +50,10 @@ fn drop(frame_s: f32) -> Simulation {
     config.total_lagrangian = Some(TotalLagrangianConfig::new(f64::INFINITY));
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     let floor = config.boundary_thickness as f32;
     let _block = sim.add_body(
@@ -63,7 +62,7 @@ fn drop(frame_s: f32) -> Simulation {
             .at(Vec2::new(20.0, floor + 12.0))
             .spacing(0.5)
             .material(id)
-            .mass_from(&clay(), &config),
+            .mass_from(&illustrative(), &config),
     );
     sim
 }

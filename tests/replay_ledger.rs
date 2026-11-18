@@ -1,4 +1,4 @@
-//! Replays with their energy ledger, for viewing: the E2 clay block and the
+//! Replays with their energy ledger, for viewing: the E2 block and the
 //! Norton plasticine block dropped on the floor on the total Lagrangian
 //! path, every frame's positions, the energy's parts, the heat by origin,
 //! the walls' work, the balance against what the solves allow, and the wall
@@ -181,11 +181,7 @@ fn record(name: &str, mut sim: Simulation, frames: usize, labels: &Labels<'_>) {
 #[test]
 #[ignore = "replay export: run with --ignored --nocapture and EMERGE_REPLAY_DIR set"]
 fn export_clay_and_plasticine_drops() {
-    let clay = Elastic {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    };
+    let illustrative = Elastic::ILLUSTRATIVE;
     let record_np = ViscoplasticRecord::technical_plasticine_sapozhnikov_2014();
     let rho = 119.0 * 0.453_592_37 / (0.3048f64 * 0.3048 * 0.3048);
     let plasticine = Elastic {
@@ -209,8 +205,8 @@ fn export_clay_and_plasticine_drops() {
             block(
                 (clay_labels.tolerance, modal),
                 10.0,
-                &|config| Box::new(CorotatedMaterial::from_physical(&clay, config)),
-                &clay,
+                &|config| Box::new(CorotatedMaterial::from_physical(&illustrative, config)),
+                &illustrative,
             ),
             40,
             &clay_labels,

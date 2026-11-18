@@ -55,6 +55,22 @@ pub struct Elastic {
     pub rho_kg_m3: f32,
 }
 
+impl Elastic {
+    /// An illustrative elastic solid, E 11.25 MPa, nu 0.3, rho 1700 kg/m^3:
+    /// NOT a measured material. Kind: assumed value; why: the scheme's tests
+    /// (energy ledger, momentum, convergence, wave speed) hold for any
+    /// elastic solid and need one fixed solid to compare runs; E came from a
+    /// geotechnical correlation for a medium clay, nu has no source (that
+    /// correlation gives 0.45), rho is assumed; removal: a measured record
+    /// wherever a test states a material (Plasticine, Crandall, Kurzweil,
+    /// Nigam and Remington 1970, already in `relaxation`).
+    pub const ILLUSTRATIVE: Self = Self {
+        e_pa: 1.125e7,
+        nu: 0.3,
+        rho_kg_m3: 1700.0,
+    };
+}
+
 /// Elastoplastic solid: elastic skeleton + a plastic yield rule.
 ///
 /// Pick the yield criterion via [`PlasticityModel`].

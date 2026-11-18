@@ -1,5 +1,5 @@
 //! The explicit path (`Simulation::step` without `total_lagrangian`, the
-//! deprecated MLS-MPM solver) on `impact_local`'s clay drop: the same
+//! deprecated MLS-MPM solver) on `impact_local`'s block drop: the same
 //! material, block and frames. A probe:
 //! measurement only, the explicit solver unchanged.
 
@@ -8,12 +8,8 @@ use crate::materials::solid::corotated::stress::corotated_elastic_energy_density
 use crate::{CorotatedMaterial, FromSI, SimConfig, Simulation, SpawnRegion};
 use glam::{DMat2, IVec2, Vec2};
 
-fn clay() -> ElasticProps {
-    ElasticProps {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    }
+fn illustrative() -> ElasticProps {
+    ElasticProps::ILLUSTRATIVE
 }
 
 /// Per frame of the explicit path: its substeps, the simulated time it
@@ -39,7 +35,7 @@ fn probe_explicit_clay_drop() {
             config.max_substeps_per_step = budget;
         }
         let mut sim = Simulation::empty(config);
-        let material = CorotatedMaterial::from_physical(&clay(), &config);
+        let material = CorotatedMaterial::from_physical(&illustrative(), &config);
         let (lambda, mu) = (f64::from(material.lambda), f64::from(material.mu));
         let id = sim.register_material(Box::new(material)).0;
         let floor = config.boundary_thickness as f32;
@@ -49,7 +45,7 @@ fn probe_explicit_clay_drop() {
                 .at(Vec2::new(20.0, floor + 12.0))
                 .spacing(0.5)
                 .material(id)
-                .mass_from(&clay(), &config),
+                .mass_from(&illustrative(), &config),
         );
         let dx = f64::from(config.dx_meters);
         let unit = f64::from(config.grid_mass_unit_kg_per_m()) * dx * dx;

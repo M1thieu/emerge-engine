@@ -288,7 +288,7 @@ cargo run --example rod_blade_of_grass                    # rod solver, single b
 cargo run --example rod_blade_and_root --features render  # rod solver, two-blade buckling comparison + root, live + pushable
 ```
 
-Windowed examples (everything except `headless` and `validate_materials`) need `--features render` -- they draw via wgpu/winit directly, no Bevy.
+Windowed examples (everything except `headless` and `stability_harness`) need `--features render` -- they draw via wgpu/winit directly, no Bevy.
 
 ## Physics references
 

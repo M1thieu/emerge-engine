@@ -11,11 +11,7 @@ use glam::IVec2;
 fn a_body_spawned_moving_carries_its_contact_points() {
     let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
     config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-2));
-    let props = ElasticProps {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    };
+    let props = ElasticProps::ILLUSTRATIVE;
     let mut sim = Simulation::empty(config);
     let id = sim
         .register_material(Box::new(CorotatedMaterial::from_physical(&props, &config)))

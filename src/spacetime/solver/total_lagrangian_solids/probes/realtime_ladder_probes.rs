@@ -1,4 +1,4 @@
-//! The real-time ladder's harness: tests/replay_ledger.rs's clay block and replay writer, copied
+//! The real-time ladder's harness: tests/replay_ledger.rs's block and replay writer, copied
 //! unchanged except for the rung (`EMERGE_RT_CONFIG`: `stepped`, `modal` flight,
 //! `handoff` sub-frame) and the header's build label
 //! (`EMERGE_REPLAY_BUILD`). In-crate because its knobs exist only in the
@@ -516,11 +516,7 @@ fn rest_report() {
 fn ladder() {
     let rung = std::env::var("EMERGE_RT_CONFIG").expect("EMERGE_RT_CONFIG names the rung");
     println!("knob active: real-time ladder rung {rung}");
-    let clay = Elastic {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    };
+    let illustrative = Elastic::ILLUSTRATIVE;
     // The rung's step tolerance (`EMERGE_RT_TOLERANCE`,
     // default 1e-1, the ladder's own) for the damped reference.
     let tolerance = std::env::var("EMERGE_RT_TOLERANCE")
@@ -557,15 +553,15 @@ fn ladder() {
     // (m/s, default the fall's) by a start velocity.
     if std::env::var("EMERGE_RT_MATERIAL").as_deref() == Ok("rp1") {
         println!("knob active: Roma Plastilina record (Hernandez 2023)");
-        let mut clay = ViscoplasticRecord::roma_plastilina_hernandez_2023();
+        let mut illustrative = ViscoplasticRecord::roma_plastilina_hernandez_2023();
         if let Ok(nu) = std::env::var("EMERGE_RT_NU") {
             println!("knob active: nu {nu}");
-            clay.nu = nu.parse().expect("EMERGE_RT_NU: a number");
+            illustrative.nu = nu.parse().expect("EMERGE_RT_NU: a number");
         }
         let rho = 1529.0;
         let props = Elastic {
-            e_pa: clay.e_pa as f32,
-            nu: clay.nu as f32,
+            e_pa: illustrative.e_pa as f32,
+            nu: illustrative.nu as f32,
             rho_kg_m3: rho as f32,
         };
         let labels = Labels {
@@ -576,7 +572,7 @@ fn ladder() {
         let mut sim = block(
             (labels.tolerance, rung.as_str()),
             lift(),
-            &|config| Box::new(clay.material((clay.e_pa, rho), config)),
+            &|config| Box::new(illustrative.material((illustrative.e_pa, rho), config)),
             &props,
         );
         if let Ok(speed) = std::env::var("EMERGE_RT_IMPACT_SPEED") {
@@ -656,8 +652,8 @@ fn ladder() {
         block(
             (clay_labels.tolerance, rung.as_str()),
             lift(),
-            &|config| Box::new(CorotatedMaterial::from_physical(&clay, config)),
-            &clay,
+            &|config| Box::new(CorotatedMaterial::from_physical(&illustrative, config)),
+            &illustrative,
         ),
         frames,
         &clay_labels,

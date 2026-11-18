@@ -1,9 +1,9 @@
-//! Several bodies on one shared step: 1, 4 and 16 of E2's clay blocks far apart, each
+//! Several bodies on one shared step: 1, 4 and 16 of E2's blocks far apart, each
 //! flying, resting or impacting, 30 frames; per frame the step's counts,
 //! wall and ledger, per body its energy and largest velocity change. A
 //! probe: measurement, nothing held.
 
-use super::impact_local::{FRAME_S, clay};
+use super::impact_local::{FRAME_S, illustrative};
 use super::*;
 use crate::spacetime::total_lagrangian::hooks;
 use crate::{CorotatedMaterial, FromSI, SimConfig};
@@ -43,7 +43,10 @@ fn scene(roles: &[Role]) -> (Simulation, Vec<u32>) {
     config.total_lagrangian = Some(TotalLagrangianConfig::new(tolerance));
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     let floor = config.boundary_thickness as f32;
     // `EMERGE_PROBE_MULTI_REVERSE`
@@ -74,7 +77,7 @@ fn scene(roles: &[Role]) -> (Simulation, Vec<u32>) {
                     ))
                     .spacing(spacing)
                     .material(id)
-                    .mass_from(&clay(), &config),
+                    .mass_from(&illustrative(), &config),
             )
         })
         .collect();
@@ -106,7 +109,7 @@ fn energies(sim: &Simulation, owner: &[usize], bodies: usize) -> Vec<(f64, f64)>
         .collect()
 }
 
-/// E4 of `tests/realtime_profile.rs`: two 6 by 4 clay blocks on the floor
+/// E4 of `tests/realtime_profile.rs`: two 6 by 4 blocks on the floor
 /// (centres 8 and 18 cells), the left one closing at 0.25 m/s, tolerance
 /// 1e-1, grid 40; the profile's own scene, for its per-frame trace.
 fn e4_scene() -> (Simulation, Vec<u32>) {
@@ -114,7 +117,10 @@ fn e4_scene() -> (Simulation, Vec<u32>) {
     config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     let floor = config.boundary_thickness as f32;
     let tags: Vec<u32> = [8.0f32, 18.0]
@@ -126,7 +132,7 @@ fn e4_scene() -> (Simulation, Vec<u32>) {
                     .at(Vec2::new(x, floor + 2.0))
                     .spacing(0.5)
                     .material(id)
-                    .mass_from(&clay(), &config),
+                    .mass_from(&illustrative(), &config),
             )
         })
         .collect();

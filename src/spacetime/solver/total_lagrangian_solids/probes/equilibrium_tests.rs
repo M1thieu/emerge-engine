@@ -8,16 +8,12 @@ use glam::IVec2;
 
 const CELL_M: f32 = 0.01;
 
-/// The integration tests' clay (`tests/total_lagrangian_path.rs`).
-fn clay() -> Measured {
-    Measured {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    }
+/// The integration tests' illustrative solid (`tests/total_lagrangian_path.rs`).
+fn illustrative() -> Measured {
+    Measured::ILLUSTRATIVE
 }
 
-/// A clay block of `size` cells on the floor of a `res`-cell domain with
+/// A block of `size` cells on the floor of a `res`-cell domain with
 /// frictionless walls, its centre at `x` cells, its bottom `lift` cells
 /// above the floor; the path on, no modal rest.
 fn scene(res: usize, size: (i32, i32), x: f32, lift: f32) -> Simulation {
@@ -25,7 +21,10 @@ fn scene(res: usize, size: (i32, i32), x: f32, lift: f32) -> Simulation {
     config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     let floor = config.boundary_thickness as f32;
     let _block = sim.add_body(
@@ -34,7 +33,7 @@ fn scene(res: usize, size: (i32, i32), x: f32, lift: f32) -> Simulation {
             .at(Vec2::new(x, floor + lift + 0.5 * size.1 as f32))
             .spacing(0.5)
             .material(id)
-            .mass_from(&clay(), &config),
+            .mass_from(&illustrative(), &config),
     );
     sim
 }

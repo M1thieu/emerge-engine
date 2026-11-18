@@ -143,7 +143,7 @@ fn arrivals(run: &Run, props: &Elastic) -> Vec<Vec<f64>> {
 /// One run's V/4 slope over `c_bar`, printed with the other thresholds.
 fn measure(run: &Run) -> f64 {
     let props = Elastic {
-        e_pa: 1.125e7,
+        e_pa: Elastic::ILLUSTRATIVE.e_pa,
         nu: run.nu,
         rho_kg_m3: 1000.0,
     };

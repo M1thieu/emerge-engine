@@ -1,4 +1,4 @@
-//! Fine steps only where the impact is: E2's clay drop run three ways and
+//! Fine steps only where the impact is: E2's block drop run three ways and
 //! compared at the 1/60 s frames over the ring-down. A probe: measurement,
 //! nothing held.
 //! - A: fixed steps of about `h/(4c)` (frames of `1/60/315` s with an
@@ -21,16 +21,12 @@ pub(super) const FINE: usize = 315;
 /// 45 frames of 1/60 s.
 pub(super) const FRAMES: usize = 45;
 
-fn clay_record() -> ElasticProps {
-    ElasticProps {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    }
+fn illustrative_record() -> ElasticProps {
+    ElasticProps::ILLUSTRATIVE
 }
 
-pub(super) fn clay() -> ElasticProps {
-    super::pressure_wave_energy::series(clay_record())
+pub(super) fn illustrative() -> ElasticProps {
+    super::pressure_wave_energy::series(illustrative_record())
 }
 
 pub(super) fn drop(frame_s: f64, path: TotalLagrangianConfig) -> Simulation {
@@ -46,7 +42,10 @@ pub(super) fn drop(frame_s: f64, path: TotalLagrangianConfig) -> Simulation {
     config.total_lagrangian = Some(path);
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     let floor = config.boundary_thickness as f32;
     let r = r as f32;
@@ -68,7 +67,7 @@ pub(super) fn drop(frame_s: f64, path: TotalLagrangianConfig) -> Simulation {
             .at(centre)
             .spacing(spacing)
             .material(id)
-            .mass_from(&clay(), &config),
+            .mass_from(&illustrative(), &config),
     );
     if let Some(start) = start {
         // Velocities in cells per second. The
@@ -574,7 +573,7 @@ fn probe_flight_refusals() {
     });
 }
 
-/// The clay drop alone (the sub-frame handoff), each frame printed in the format of
+/// The block drop alone (the sub-frame handoff), each frame printed in the format of
 /// `probe_impact_local_stepping`, to set against that probe's logged A. A
 /// probe.
 #[test]
@@ -676,7 +675,7 @@ pub(super) fn ulp_perturb(sim: &mut Simulation) {
     println!("knob active: ulp perturbation {kind}");
 }
 
-/// The clay drop under the floor-collapse candidates' knobs, labelled
+/// The block drop under the floor-collapse candidates' knobs, labelled
 /// by `EMERGE_PROBE_CANDIDATE`: per frame the controlled steps, rejected
 /// tries, floor visits and wall time with the observables, for the
 /// comparison against the fixed-step reference's log. A probe.
@@ -707,7 +706,7 @@ fn probe_floor_candidates() {
         let reference = std::env::var_os("EMERGE_PROBE_FIXED_REFERENCE").is_some();
         let fine = (FINE as f64
             * refinement().0 as f64
-            * super::pressure_wave_energy::wave_ratio(&clay_record()))
+            * super::pressure_wave_energy::wave_ratio(&illustrative_record()))
         .ceil() as usize;
         let mut sim = if reference {
             println!(
@@ -747,7 +746,7 @@ fn probe_floor_candidates() {
     });
 }
 
-/// A dense solve on the clay drop's frame 8,
+/// A dense solve on the block drop's frame 8,
 /// its GMRES time and Jacobian products
 /// per Newton iteration over every solve, against a dense LU with partial
 /// pivoting (textbook Gaussian elimination, timing only, never used by the
@@ -854,7 +853,7 @@ fn probe_dense_solve() {
 }
 
 /// The singular dynamic mass on the block: the
-/// clay drop's grid after its first frame, the bottom side's outline points
+/// block drop's grid after its first frame, the bottom side's outline points
 /// as the contact rows (normal `+y`), each particle's `(mu, bulk - mu)`, the
 /// diagnostic Newton matrix at Courant 0.25 and 0.0475 by the P-wave
 /// speed. A probe.
@@ -882,7 +881,7 @@ fn probe_singular_mass_on_the_block() {
     let c = ((solid.bulk + solid.mu) * state.v0[p] / state.mass[p]).sqrt();
     let dt = |nu: f64| (nu, nu * grid.cell / c);
     crate::spacetime::grid::mac::singular_mass_probes::p0_core(
-        &format!("the clay block, h {} m, c {c:.2} m/s", grid.cell),
+        &format!("the block, h {} m, c {c:.2} m/s", grid.cell),
         grid,
         (&state.reference, &state.mass, &state.v0),
         &|q| {

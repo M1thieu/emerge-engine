@@ -1,6 +1,8 @@
 ﻿extern crate emerge_engine as emerge;
 
-/// Material validation harness -- headless, no Bevy, no window.
+/// Material stability harness -- headless, no Bevy, no window. It checks that
+/// each material runs without NaN, settles and keeps its volume ratio in range
+/// in dimensionless units; it validates nothing against a measurement.
 ///
 /// Modes (pass as first argument):
 ///   (none)     -- basic: all 9 materials, 500 steps, reports settle/J/NaN
@@ -8,10 +10,10 @@
 ///   perf       -- particle budget: wall-clock ms/step at 100->20k particles
 ///   scenario   -- LP gamedev scenarios: creature body, water pool, sand terrain
 ///
-///   cargo run --example validate_materials
-///   cargo run --example validate_materials -- sweep
-///   cargo run --example validate_materials -- perf
-///   cargo run --example validate_materials -- scenario
+///   cargo run --example stability_harness
+///   cargo run --example stability_harness -- sweep
+///   cargo run --example stability_harness -- perf
+///   cargo run --example stability_harness -- scenario
 ///
 /// Physical convention: dimensionless, same as all emerge examples.
 ///   GRID=64, DT=0.1, GRAVITY=-0.3 cell/step^2. Fall from y=48 to floor ~46 cells in ~55 steps.

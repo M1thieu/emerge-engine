@@ -1,7 +1,7 @@
 //! The exponential flight's trial measured. Probes: measurement, nothing held.
 
 use super::exponential_flight::{Exponential, Knob, Outcome, Record, set_knob};
-use super::impact_local::{FINE, FRAME_S, FRAMES, asymmetry, clay, drop, sample};
+use super::impact_local::{FINE, FRAME_S, FRAMES, asymmetry, drop, illustrative, sample};
 use super::modal_flight::split;
 use super::vibration::{Modes as Basis, modes};
 use super::*;
@@ -202,7 +202,7 @@ fn snapshot(sim: &Simulation) -> (Vec<DVec2>, Vec<DVec2>, Vec<DMat2>) {
     (s.x.clone(), s.v.clone(), s.f.clone())
 }
 
-/// The clay drop (the sub-frame handoff, tol 1e-2) with the trial off
+/// The block drop (the sub-frame handoff, tol 1e-2) with the trial off
 /// and with its truncated model on, every frame's state compared bit for
 /// bit; then from forced zero-spin starts (every velocity set to zero) the
 /// truncated flight against today's `Flight`, 30 frames each.
@@ -253,12 +253,12 @@ fn probe_exponential_identical_digits() {
         }
         let flown = today.iter().filter(|r| r.2).count();
         println!(
-            "the clay drop (tolerance {tolerance:e}), trial off against the truncated trial on: {} frames, {flown} flown whole, flown time {:.4} s; first frame differing: {first:?}; trial steps recorded {}",
+            "the block drop (tolerance {tolerance:e}), trial off against the truncated trial on: {} frames, {flown} flown whole, flown time {:.4} s; first frame differing: {first:?}; trial steps recorded {}",
             today.len(),
             today.iter().map(|r| r.3).sum::<f64>(),
             log.len()
         );
-        summary("truncated the clay drop", &log);
+        summary("truncated the block drop", &log);
         // Forced zero-spin starts.
         let state = sim.total_lagrangian.as_ref().expect("on");
         let Some(Some(modes)) = state.modes.clone() else {
@@ -313,7 +313,7 @@ fn distance(
     sum.sqrt()
 }
 
-/// E2's clay block in free space (no gravity, far from every wall), spun at
+/// E2's block in free space (no gravity, far from every wall), spun at
 /// `spin` rad/s about its centre and stretched along its long axis at 1/s.
 fn spun(frame_s: f64, path: TotalLagrangianConfig, spin: f64) -> Simulation {
     let mut config = SimConfig::earth(40, 0.01, frame_s as f32);
@@ -322,7 +322,10 @@ fn spun(frame_s: f64, path: TotalLagrangianConfig, spin: f64) -> Simulation {
     config.total_lagrangian = Some(path);
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     let _block = sim.add_body(
         SpawnRegion::for_sim(&config)
@@ -330,7 +333,7 @@ fn spun(frame_s: f64, path: TotalLagrangianConfig, spin: f64) -> Simulation {
             .at(Vec2::new(20.0, 20.0))
             .spacing(0.5)
             .material(id)
-            .mass_from(&clay(), &config),
+            .mass_from(&illustrative(), &config),
     );
     let units = GridUnits::of(&config);
     let n = sim.particles.len();
@@ -519,7 +522,7 @@ fn probe_exponential_spun_block() {
     });
 }
 
-/// The trial's measures on the clay drop (`EMERGE_PROBE_TOLERANCE`, 1e-2 by
+/// The trial's measures on the block drop (`EMERGE_PROBE_TOLERANCE`, 1e-2 by
 /// default; 1e-1 is E2's), the per-frame lines in
 /// `probe_floor_candidates`'s format for the comparison against reference
 /// A's log, then the records' summary.

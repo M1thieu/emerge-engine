@@ -12,7 +12,7 @@ use crate::materials::physical_props::Elastic as ElasticProps;
 use crate::{CorotatedMaterial, FromSI, SimConfig};
 use glam::IVec2;
 
-/// `tests/realtime_profile.rs`'s E2: the 8 x 4 cm clay block dropped 10
+/// `tests/realtime_profile.rs`'s E2: the 8 x 4 cm block dropped 10
 /// cells, frame 1/60 s, step tolerance 1e-1.
 pub(super) fn e2() -> Simulation {
     e2_lifted(0.0)
@@ -20,11 +20,7 @@ pub(super) fn e2() -> Simulation {
 
 /// E2 with its lift raised by `offset` cells.
 fn e2_lifted(offset: f32) -> Simulation {
-    let props = ElasticProps {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    };
+    let props = ElasticProps::ILLUSTRATIVE;
     let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
     config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
     let mut sim = Simulation::empty(config);
@@ -132,11 +128,7 @@ fn probe_e2_hard_frame_controller() {
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
 fn probe_rest_factorizations() {
     super::cap::capped("probe_rest_factorizations", 1800, || {
-        let props = ElasticProps {
-            e_pa: 1.125e7,
-            nu: 0.3,
-            rho_kg_m3: 1700.0,
-        };
+        let props = ElasticProps::ILLUSTRATIVE;
         let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
         config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
         let mut sim = Simulation::empty(config);
@@ -172,11 +164,7 @@ fn probe_rest_factorizations() {
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
 fn probe_rest_contact_persistence() {
     super::cap::capped("probe_rest_contact_persistence", 1800, || {
-        let props = ElasticProps {
-            e_pa: 1.125e7,
-            nu: 0.3,
-            rho_kg_m3: 1700.0,
-        };
+        let props = ElasticProps::ILLUSTRATIVE;
         let frame = (1.0 / 60.0 / 1024.0) as f32;
         let mut config = SimConfig::earth(40, 0.01, frame);
         config.min_dt = config.min_dt.min(frame);
@@ -235,11 +223,7 @@ fn settled_rest() {
         "resolution floor {}",
         std::env::var_os("EMERGE_PROBE_NO_RESOLUTION_FLOOR").is_none()
     );
-    let props = ElasticProps {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    };
+    let props = ElasticProps::ILLUSTRATIVE;
     let build_at = |modal: bool, kick: f64, tolerance: f64| -> Simulation {
         let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
         // Built at one tolerance, the placement is the same for every run;

@@ -10,12 +10,8 @@ use crate::spacetime::total_lagrangian::Timing;
 use crate::{CorotatedMaterial, FromSI, SimConfig};
 use glam::IVec2;
 
-fn clay() -> ElasticProps {
-    ElasticProps {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    }
+fn illustrative() -> ElasticProps {
+    ElasticProps::ILLUSTRATIVE
 }
 
 /// E2's drop with a `width` x `height` block, tolerance 1e-1.
@@ -24,7 +20,10 @@ fn drop((width, height): (i32, i32)) -> Simulation {
     config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
     let mut sim = Simulation::empty(config);
     let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .register_material(Box::new(CorotatedMaterial::from_physical(
+            &illustrative(),
+            &config,
+        )))
         .0;
     let floor = config.boundary_thickness as f32;
     let _block = sim.add_body(
@@ -33,7 +32,7 @@ fn drop((width, height): (i32, i32)) -> Simulation {
             .at(Vec2::new(24.0, floor + 10.0 + 0.5 * height as f32))
             .spacing(0.5)
             .material(id)
-            .mass_from(&clay(), &config),
+            .mass_from(&illustrative(), &config),
     );
     sim
 }

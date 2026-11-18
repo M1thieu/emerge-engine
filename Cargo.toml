@@ -462,5 +462,5 @@ name = "rod_y_branch"
 path = "examples/cpu/rod_y_branch.rs"
 
 [[example]]
-name = "validate_materials"
-path = "examples/cpu/validate_materials.rs"
+name = "stability_harness"
+path = "examples/cpu/stability_harness.rs"

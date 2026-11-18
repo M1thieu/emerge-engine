@@ -42,15 +42,11 @@ pub(super) const AUDIBLE: f64 = 2.0e4;
 /// release: a reporting threshold, no physics.
 const EXCITED: f64 = 1e-3;
 
-/// E2's 8 x 4 cm clay block (`tests/realtime_profile.rs`), its bottom half
+/// E2's 8 x 4 cm block (`tests/realtime_profile.rs`), its bottom half
 /// a cell above the floor and falling at E2's impact speed (`sqrt(2 g h)`
 /// after its 10-cell drop), frame `frame` s, step tolerance `tolerance`.
 pub(super) fn scene(frame: f32, tolerance: f64) -> Simulation {
-    let props = ElasticProps {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    };
+    let props = ElasticProps::ILLUSTRATIVE;
     let mut config = SimConfig::earth(40, 0.01, frame);
     // The explicit path's substep floor, which this path never reads; a
     // frame below it is refused by the config's checks.

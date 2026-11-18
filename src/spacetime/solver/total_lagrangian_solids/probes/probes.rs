@@ -14,11 +14,7 @@ fn probe_wired_slide_newton() {
     super::cap::capped("probe_wired_slide_newton", 1800, || {
         let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
         config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
-        let props = ElasticProps {
-            e_pa: 1.125e7,
-            nu: 0.3,
-            rho_kg_m3: 1700.0,
-        };
+        let props = ElasticProps::ILLUSTRATIVE;
         let mut sim = Simulation::empty(config);
         let id = sim
             .register_material(Box::new(CorotatedMaterial::from_physical(&props, &config)))
@@ -63,7 +59,7 @@ fn probe_wired_slide_newton() {
 /// rotation on the particles, `leak_i = sum_p m_p (X_p - C) x phi_i(X_p)`,
 /// against the angular momentum allowance modal flight checks
 /// (`Flight::keeps_angular_momentum`): the ringing bar of `tests/zener.rs`
-/// and the clay block of `tests/modal_flight.rs`, after one stepped frame.
+/// and the block of `tests/modal_flight.rs`, after one stepped frame.
 /// A probe.
 #[test]
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
@@ -103,11 +99,7 @@ fn probe_modes_rotation_leak() {
         let block = || {
             let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
             config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1).with_modal_flight());
-            let props = ElasticProps {
-                e_pa: 1.125e7,
-                nu: 0.3,
-                rho_kg_m3: 1700.0,
-            };
+            let props = ElasticProps::ILLUSTRATIVE;
             let mut sim = Simulation::empty(config);
             let id = sim
                 .register_material(Box::new(CorotatedMaterial::from_physical(&props, &config)))
@@ -264,11 +256,7 @@ fn probe_flown_frames_against_the_step() {
     super::cap::capped("probe_flown_frames_against_the_step", 1800, || {
         let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
         config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1).with_modal_flight());
-        let props = ElasticProps {
-            e_pa: 1.125e7,
-            nu: 0.3,
-            rho_kg_m3: 1700.0,
-        };
+        let props = ElasticProps::ILLUSTRATIVE;
         let mut sim = Simulation::empty(config);
         let id = sim
             .register_material(Box::new(CorotatedMaterial::from_physical(&props, &config)))
@@ -339,7 +327,7 @@ fn probe_flown_frames_against_the_step() {
 
 /// The condition numbers of the step's Newton Jacobian and of its consistent
 /// mass (`hooks::watch_condition`, infinity norm), per Newton iteration, on
-/// E2's drop (the clay block of `tests/modal_flight.rs` dropped 10 cells,
+/// E2's drop (the block of `tests/modal_flight.rs` dropped 10 cells,
 /// tolerance 1e-1, 45 frames) and on the settled slab of
 /// `tests/settled_slab.rs` (1 cm cells, 30 frames): their least, median and
 /// largest, and the iterations sampled. Whether an inner solve in f32 is
@@ -349,17 +337,16 @@ fn probe_flown_frames_against_the_step() {
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
 fn probe_tangent_condition_numbers() {
     super::cap::capped("probe_tangent_condition_numbers", 3000, || {
-        let clay = ElasticProps {
-            e_pa: 1.125e7,
-            nu: 0.3,
-            rho_kg_m3: 1700.0,
-        };
+        let illustrative = ElasticProps::ILLUSTRATIVE;
         let e2 = || {
             let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
             config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
             let mut sim = Simulation::empty(config);
             let id = sim
-                .register_material(Box::new(CorotatedMaterial::from_physical(&clay, &config)))
+                .register_material(Box::new(CorotatedMaterial::from_physical(
+                    &illustrative,
+                    &config,
+                )))
                 .0;
             let floor = config.boundary_thickness as f32;
             let _block = sim.add_body(
@@ -368,7 +355,7 @@ fn probe_tangent_condition_numbers() {
                     .at(Vec2::new(20.0, floor + 12.0))
                     .spacing(0.5)
                     .material(id)
-                    .mass_from(&clay, &config),
+                    .mass_from(&illustrative, &config),
             );
             (sim, 45)
         };
@@ -733,7 +720,7 @@ fn probe_factor_reuse_replay() {
 /// their own (`solve`'s reuse, measured by `probe_factor_reuse_replay`):
 /// `kappa_inf(P(c)^-1 A)` against `kappa_inf(P(c/4)^-1 A)` on the dense
 /// matrices, per Newton iteration, on the Norton block's impact and flight
-/// frames and on E2's clay drop. Report only.
+/// frames and on E2's block drop. Report only.
 #[test]
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
 fn probe_preconditioned_condition() {
@@ -759,15 +746,14 @@ fn probe_preconditioned_condition() {
                     },
                 )
             } else {
-                let clay = ElasticProps {
-                    e_pa: 1.125e7,
-                    nu: 0.3,
-                    rho_kg_m3: 1700.0,
-                };
+                let illustrative = ElasticProps::ILLUSTRATIVE;
                 let id = sim
-                    .register_material(Box::new(CorotatedMaterial::from_physical(&clay, &config)))
+                    .register_material(Box::new(CorotatedMaterial::from_physical(
+                        &illustrative,
+                        &config,
+                    )))
                     .0;
-                (id, clay)
+                (id, illustrative)
             };
             let floor = config.boundary_thickness as f32;
             let _block = sim.add_body(
@@ -780,7 +766,7 @@ fn probe_preconditioned_condition() {
             );
             sim
         };
-        for (name, norton) in [("Norton block", true), ("E2 clay", false)] {
+        for (name, norton) in [("Norton block", true), ("E2 block", false)] {
             let mut sim = block(norton);
             for _ in 0..9 {
                 sim.step();
@@ -867,11 +853,7 @@ fn probe_coulomb_slide_travel_and_heat() {
         const CELL_M: f32 = 0.01;
         let mut config = SimConfig::earth(40, CELL_M, 1.0 / 60.0);
         config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
-        let props = ElasticProps {
-            e_pa: 1.125e7,
-            nu: 0.3,
-            rho_kg_m3: 1700.0,
-        };
+        let props = ElasticProps::ILLUSTRATIVE;
         let mut sim = Simulation::empty(config);
         let id = sim
             .register_material(Box::new(CorotatedMaterial::from_physical(&props, &config)))

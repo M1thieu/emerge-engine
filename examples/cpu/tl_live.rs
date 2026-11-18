@@ -1,11 +1,11 @@
 //! The total Lagrangian solid path (`SimConfig::total_lagrangian`) run live:
-//! one clay block dropped on the floor, one `Simulation::step` per wall
+//! one block dropped on the floor, one `Simulation::step` per wall
 //! frame, paced to the frame rate, every frame's wall time recorded.
 //!
 //! The scene is the drop of `tests/total_lagrangian_path.rs`
 //! (`a_dropped_block_bounces_with_its_energy_kept`, the 10-cell lift) and of
 //! `tests/realtime_profile.rs` (`e2_bounce`): an 8 by 4 cell block of medium
-//! clay (E 11.25 MPa, nu 0.3, 1700 kg/m^3) on a 40-cell grid of 1 cm cells,
+//! illustrative solid (`Elastic::ILLUSTRATIVE`, not a measured material) on a 40-cell grid of 1 cm cells,
 //! 1/60 s frames, the step tolerance 1e-1, 45 frames. Every default below is
 //! that scene's value; every one is an argument (`--help`).
 //!
@@ -65,9 +65,11 @@ impl Default for Args {
             frame_hz: 60.0,
             frames: 45,
             tolerance: 1e-1,
-            e_pa: 1.125e7,
-            nu: 0.3,
-            rho_kg_m3: 1700.0,
+            // The engine's illustrative solid (`Elastic::ILLUSTRATIVE`), not a
+            // measured material.
+            e_pa: Elastic::ILLUSTRATIVE.e_pa,
+            nu: Elastic::ILLUSTRATIVE.nu,
+            rho_kg_m3: Elastic::ILLUSTRATIVE.rho_kg_m3,
             width: 8,
             height: 4,
             lift: 10.0,
