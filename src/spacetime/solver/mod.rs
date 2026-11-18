@@ -115,6 +115,10 @@ pub struct Simulation {
     /// Friction coefficients set per pair of surfaces
     /// (`set_surface_friction`), read by the total Lagrangian path.
     surface_friction: Vec<(crate::boundary::Surface, crate::boundary::Surface, f64)>,
+    /// Pairs whose friction depends on the sense of sliding along a
+    /// material's axis (`set_surface_setae`), read by the total Lagrangian
+    /// path.
+    surface_setae: Vec<SurfaceSetae>,
     force_fields: Vec<(String, Box<dyn Field>)>,
     thermal: Option<ThermalDiffusion>,
     /// Scalar diffusion fields (pheromone, nutrients, morphogen) -- run automatically each substep.
@@ -451,6 +455,17 @@ mod knot_gauss_tests {
             );
         }
     }
+}
+
+/// One pair set by `Simulation::set_surface_setae`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SurfaceSetae {
+    pub(crate) material: u32,
+    pub(crate) other: crate::boundary::Surface,
+    pub(crate) forward: f64,
+    pub(crate) backward: f64,
+    /// Unit, in the material's reference configuration.
+    pub(crate) axis: glam::DVec2,
 }
 
 #[derive(Debug)]

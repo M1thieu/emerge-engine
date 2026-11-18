@@ -36,8 +36,8 @@ use crate::spacetime::solver::config::SpawnRegion;
 use crate::spacetime::solver::config::SpawnShape;
 use crate::spacetime::total_lagrangian::{
     ActiveFiber, ConservingSettings, ContactKey, ContactSet, Elastic, Estimator, Friction,
-    GridLayout, LagrangianCache, Modes, Particles, Plane, StepControl, body_modes, contact_grid,
-    controlled_step, start_velocity_field, tolerance_energy,
+    GridLayout, LagrangianCache, Modes, Particles, Plane, Setae, StepControl, body_modes,
+    contact_grid, controlled_step, start_velocity_field, tolerance_energy,
 };
 use crate::spacetime::transfer::friction_heat::MIN_APPLIED_TEMPERATURE_RISE_K;
 

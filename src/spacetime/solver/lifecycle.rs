@@ -43,6 +43,7 @@ impl Simulation {
             boundaries_are_default: true,
             contact_grip: None,
             surface_friction: Vec::new(),
+            surface_setae: Vec::new(),
             force_fields: Vec::new(),
             thermal: None,
             scalar_fields: Vec::new(),
@@ -138,6 +139,7 @@ impl Simulation {
             boundaries_are_default: true,
             contact_grip: None,
             surface_friction: Vec::new(),
+            surface_setae: Vec::new(),
             force_fields: Vec::new(),
             thermal: None,
             scalar_fields: Vec::new(),
@@ -299,6 +301,45 @@ impl Simulation {
         self.surface_friction
             .retain(|&(x, y, _)| !((x, y) == (a, b) || (x, y) == (b, a)));
         self.surface_friction.push((a, b, mu));
+    }
+
+    /// Makes the friction between `material` and `other` depend on the sense
+    /// of sliding along an axis of the material (the setae of an earthworm,
+    /// the scales of a snake): `forward` while the material slides along
+    /// `axis`, `backward` against it (Hu, Nirody, Scott and Shelley 2009,
+    /// eq. 2; `CoulombBounds::directional`). `axis` is given in the
+    /// material's reference configuration and turns with it (`F axis`): the
+    /// setae ride on the body. Read by the total Lagrangian path, where it
+    /// replaces the pair's `set_surface_friction`; setting the pair again
+    /// replaces it.
+    pub fn set_surface_setae(
+        &mut self,
+        material: u32,
+        other: crate::boundary::Surface,
+        (forward, backward): (f64, f64),
+        axis: glam::DVec2,
+    ) {
+        assert!(
+            forward.is_finite() && forward >= 0.0 && backward.is_finite() && backward >= 0.0,
+            "setae friction must be finite Coulomb coefficients >= 0, got {forward} and {backward}"
+        );
+        assert!(
+            axis.is_finite() && axis != glam::DVec2::ZERO,
+            "the setae axis must be a finite nonzero direction, got {axis}"
+        );
+        assert!(
+            other != crate::boundary::Surface::Material(material),
+            "setae of a material against itself have no one sense of sliding"
+        );
+        self.surface_setae
+            .retain(|s| (s.material, s.other) != (material, other));
+        self.surface_setae.push(super::SurfaceSetae {
+            material,
+            other,
+            forward,
+            backward,
+            axis: axis.normalize(),
+        });
     }
 
     pub fn register_material(&mut self, material: Box<dyn MaterialModel>) -> MaterialHandle {

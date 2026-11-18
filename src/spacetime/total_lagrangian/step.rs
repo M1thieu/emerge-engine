@@ -680,8 +680,8 @@ pub(crate) fn contact_step(
             let (g, shares) = contact_geometry(grid, x, used, &solution.u, c);
             let scale = allowed(c, &shares);
             deepest = deepest.max(-g / scale);
-            let mu = friction.of(c, used);
-            let g_t = if mu > 0.0 {
+            let mu = friction.of(c, used, shares[0].normal.perp());
+            let g_t = if mu.frictional() {
                 contact_tangential_gap(grid, &solution.u, &shares)
             } else {
                 0.0
@@ -692,7 +692,7 @@ pub(crate) fn contact_step(
                 contact_force((c.multiplier, c.tangential), (g, g_t), ((k, k_t), mu), None);
             // A sticking contact must not slide (Hueber, Stadler and
             // Wohlmuth eq. 3.5a), to the same tolerance as the gap.
-            if mu > 0.0 && along.abs() < mu * size {
+            if mu.frictional() && mu.sticks(along, size) {
                 deepest = deepest.max(g_t.abs() / scale);
             }
             // And the multipliers the solve used are their own projection,
@@ -809,8 +809,8 @@ pub(crate) fn contact_step(
         if settled && std::env::var_os("EMERGE_PROBE_BRANCH_CHECK").is_some() {
             for (c, &(used_n, used_t)) in contacts.iter().zip(&before) {
                 let (g, shares) = contact_geometry(grid, x, used, &solution.u, c);
-                let friction = friction.of(c, used);
-                let g_t = if friction > 0.0 {
+                let friction = friction.of(c, used, shares[0].normal.perp());
+                let g_t = if friction.frictional() {
                     contact_tangential_gap(grid, &solution.u, &shares)
                 } else {
                     0.0
@@ -824,7 +824,7 @@ pub(crate) fn contact_step(
                     ((k, k_t), friction),
                 );
                 let held = branch.slip;
-                let applied = if friction > 0.0 {
+                let applied = if friction.frictional() {
                     contact_force(
                         (used_n, used_t),
                         (g, g_t),
@@ -848,18 +848,20 @@ pub(crate) fn contact_step(
                 let motion = contact_friction_motion(grid, x, &solution.u, &shares);
                 let booked = -c.tangential * motion;
                 let applied_work = -t_force * motion;
+                // The bound the applied force's sense reaches.
+                let mu_n = friction.on_slip(t_force.signum()).abs() * n_force;
                 println!(
                     "heat check: held {held}, booked {booked:+.6e}, applied work {applied_work:+.6e}, difference {:+.6e}, applied tangential {:+.6e}, mu N {:.6e}",
                     applied_work - booked,
                     t_force,
-                    friction * n_force
+                    mu_n
                 );
                 println!(
-                    "law check: friction {friction}, held {held}, normal {:.3e}, gap {:+.3e} of tol, pressed gap {:.3e} of tol, cone excess {:+.3e} of k tol, stick slip {:.3e} of tol, slip opposing {}",
+                    "law check: friction {friction:?}, held {held}, normal {:.3e}, gap {:+.3e} of tol, pressed gap {:.3e} of tol, cone excess {:+.3e} of k tol, stick slip {:.3e} of tol, slip opposing {}",
                     n_force,
                     g / tol,
                     if n_force > 0.0 { g.abs() / tol } else { 0.0 },
-                    (t_force.abs() - friction * n_force) / ftol,
+                    (t_force.abs() - mu_n) / ftol,
                     if held == 0.0 && n_force > 0.0 {
                         g_t.abs() / tol
                     } else {

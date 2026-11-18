@@ -31,6 +31,10 @@ enforces these laws on its discrete unknowns belongs to `spacetime`.
   `apply_anisotropic_coulomb_wall` (forward/backward coefficients, Hu et al.
   2009), shared by the walls and by `DirectionalContactGrip`, the directional
   law for body-to-body multi-field contact (resolved in `spacetime::grid::contact`).
+- `signorini_coulomb`: the contact law of the precise path, Signorini plus
+  Coulomb as one projection; `CoulombBounds` carries a bound per sense of
+  sliding, so the same law holds Hu et al.'s directional friction (setae,
+  scales), its axis riding on the body (`Simulation::set_surface_setae`).
 - `interphase`: momentum exchange between the phases of a mixture.
   `darcy_exchange_coefficient` (Tampubolon et al. 2017, eq. 13) from a soil's
   measured porosity and hydraulic conductivity;

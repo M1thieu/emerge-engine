@@ -44,7 +44,7 @@ pub(crate) fn newton_on_multipliers(
         let c = &contacts[r.contact];
         let (g, shares) = contact_geometry(grid, x, planes, u, c);
         if r.tangential {
-            if friction.of(c, planes) > 0.0 {
+            if friction.frictional(c, planes) {
                 contact_tangential_gap(grid, u, &shares)
             } else {
                 0.0

@@ -12,6 +12,8 @@ pub(super) enum ContactFriction {
         surfaces: usize,
         table: Vec<f64>,
         of_particle: Vec<u32>,
+        setae: Vec<Setae>,
+        axis_of_particle: Vec<DVec2>,
     },
 }
 
@@ -24,10 +26,14 @@ impl ContactFriction {
                 surfaces,
                 table,
                 of_particle,
+                setae,
+                axis_of_particle,
             } => Friction::Pairs {
                 surfaces: *surfaces,
                 table,
                 of_particle,
+                setae,
+                axis_of_particle,
             },
         }
     }
@@ -100,6 +106,12 @@ impl Simulation {
     /// kind: convention; why: a scene that names no pair keeps its result;
     /// removal: every scene names its pairs), refused otherwise.
     /// With no pair set and one wall coefficient, one coefficient for all.
+    /// A pair set by `set_surface_setae` replaces the table's entry, its
+    /// axis carried by each particle's deformation (`F axis`) at the
+    /// frame's start (kind: discretization; why: the table is built once
+    /// per frame, and only the axis's sense along the contact's tangent
+    /// enters the law, which turns only when the axis crosses the contact
+    /// normal; removal: the axis read at each step's start).
     pub(super) fn total_lagrangian_friction(
         &self,
         state: &TotalLagrangianState,
@@ -115,6 +127,7 @@ impl Simulation {
             .map(|&(_, mu)| mu)
             .filter(|&mu| walls.iter().all(|&(_, other)| other == mu));
         if self.surface_friction.is_empty()
+            && self.surface_setae.is_empty()
             && let Some(mu) = common.or(walls.is_empty().then_some(0.0))
         {
             return ContactFriction::Uniform(mu);
@@ -145,6 +158,31 @@ impl Simulation {
         for &(a, b, mu) in &self.surface_friction {
             set(index(a), index(b), mu);
         }
+        let setae: Vec<Setae> = self
+            .surface_setae
+            .iter()
+            .map(|s| {
+                assert!(
+                    !self.surface_setae.iter().any(|t| {
+                        t.other == Surface::Material(s.material)
+                            && s.other == Surface::Material(t.material)
+                    }),
+                    "materials {} and {:?} both carry setae against each other: the pair has no one sense of sliding",
+                    s.material,
+                    s.other
+                );
+                let (a, b) = (s.material as usize, index(s.other));
+                // The table's entry only marks the pair as named; the setae
+                // replace it (`Friction::of`).
+                set(a, b, s.forward.max(s.backward));
+                Setae {
+                    surface: a as u32,
+                    other: b as u32,
+                    forward: s.forward,
+                    backward: s.backward,
+                }
+            })
+            .collect();
         // The solids' particles, then the bodies' contact points, each of
         // its body's material (`TotalLagrangianState::outlines`, in the
         // order of `total_lagrangian_outlines`).
@@ -157,7 +195,7 @@ impl Simulation {
             let material = own.next().unwrap_or(0);
             assert!(
                 own.all(|m| m == material),
-                "body {} is made of several materials: its surface has no one friction                  coefficient per pair yet",
+                "body {} is made of several materials: its surface has no one friction coefficient per pair yet",
                 body.tag
             );
             for &q in points {
@@ -176,10 +214,63 @@ impl Simulation {
                 );
             }
         }
+        let axis_of_particle = self.total_lagrangian_setae_axes(state, &of_particle);
         ContactFriction::Pairs {
             surfaces,
             table,
             of_particle,
+            setae,
+            axis_of_particle,
         }
+    }
+
+    /// Each point's setae axis in the current configuration, `F axis` with
+    /// `F` its own deformation gradient, for the points of a material that
+    /// has setae (`set_surface_setae`); zero elsewhere. A body's contact
+    /// point beyond the particles takes the `F` of its body's particle
+    /// nearest in the reference configuration (kind: discretization; why:
+    /// the sense of the axis is what the law reads; removal: the contact
+    /// points' own deformation gradient).
+    fn total_lagrangian_setae_axes(
+        &self,
+        state: &TotalLagrangianState,
+        of_particle: &[u32],
+    ) -> Vec<DVec2> {
+        if self.surface_setae.is_empty() {
+            return Vec::new();
+        }
+        let axis_of = |material: u32| {
+            self.surface_setae
+                .iter()
+                .find(|s| s.material == material)
+                .map(|s| s.axis)
+        };
+        let mut axes = vec![DVec2::ZERO; state.x.len()];
+        for q in 0..state.x.len() {
+            let Some(axis) = axis_of(of_particle[q]) else {
+                continue;
+            };
+            let p = if q < state.particles {
+                q
+            } else {
+                let body = self
+                    .total_lagrangian_outlines
+                    .iter()
+                    .zip(&state.outlines)
+                    .find(|(_, points)| points.contains(&q))
+                    .map(|(body, _)| body.tag)
+                    .expect("a contact point beyond the particles belongs to a body");
+                (0..state.particles)
+                    .filter(|&p| self.particles.user_tag[p] == body)
+                    .min_by(|&a, &b| {
+                        let d =
+                            |p: usize| (state.reference[p] - state.reference[q]).length_squared();
+                        d(a).total_cmp(&d(b))
+                    })
+                    .expect("a body has particles")
+            };
+            axes[q] = state.f[p] * axis;
+        }
+        axes
     }
 }

@@ -49,7 +49,9 @@
 //!   bounce blow up on both grids (measured), and the two steps
 //!   discretized one balance twice.
 
-use crate::forces::boundary::signorini_coulomb::{ContactBranch, contact_branch, contact_force};
+use crate::forces::boundary::signorini_coulomb::{
+    ContactBranch, CoulombBounds, contact_branch, contact_force,
+};
 use crate::matter::materials::solid::j2_hencky::{HenckyJ2, PlasticMetric};
 use crate::matter::materials::viscous_stress::{newtonian_dissipation, newtonian_viscous_stress};
 use glam::{DMat2, DVec2};

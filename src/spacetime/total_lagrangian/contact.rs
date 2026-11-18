@@ -637,44 +637,92 @@ pub enum Friction<'a> {
         table: &'a [f64],
         /// Each particle's surface (the planes carry theirs, `Plane::surface`).
         of_particle: &'a [u32],
+        /// The pairs whose friction depends on the sense of sliding along
+        /// one surface's axis (`Setae`); they replace the table's entry.
+        setae: &'a [Setae],
+        /// Each particle's setae axis in the current configuration, for
+        /// the particles of a surface that has setae (zero elsewhere).
+        axis_of_particle: &'a [DVec2],
     },
 }
 
+/// A pair of surfaces whose friction depends on the sense of sliding along
+/// the axis of the first (`surface`): `forward` when it slides along its
+/// axis, `backward` against (`CoulombBounds::directional`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Setae {
+    pub surface: u32,
+    pub other: u32,
+    pub forward: f64,
+    pub backward: f64,
+}
+
 impl Friction<'_> {
-    /// The coefficient of contact `c`, read at its first point: a contact's
-    /// points belong to one body and face one obstacle (a plane, or one
-    /// other body), so they share one pair of surfaces.
+    /// The friction bounds of contact `c` along `tangent`, the direction its
+    /// tangential force acts along (its first point's normal turned a
+    /// quarter counter-clockwise, `contact_force`), read at its first point:
+    /// a contact's points belong to one body and face one obstacle (a plane,
+    /// or one other body), so they share one pair of surfaces.
     /// `planes`: the planes the contact's points index (`ContactPoint::plane`).
-    pub(crate) fn of(&self, c: &Contact, planes: &[Plane]) -> f64 {
+    pub(crate) fn of(&self, c: &Contact, planes: &[Plane], tangent: DVec2) -> CoulombBounds {
         match *self {
-            Self::Uniform(mu) => mu,
+            Self::Uniform(mu) => CoulombBounds::isotropic(mu),
             Self::Pairs {
                 surfaces,
                 table,
                 of_particle,
+                setae,
+                axis_of_particle,
             } => {
                 let pair = |p: &ContactPoint| {
                     let other = match (p.partner, p.segment) {
-                        (Some(q), _) | (None, Some((q, _))) => of_particle[q],
-                        (None, None) => planes[p.plane].surface,
+                        (Some(q), _) | (None, Some((q, _))) => (of_particle[q], Some(q)),
+                        (None, None) => (planes[p.plane].surface, None),
                     };
-                    of_particle[p.particle] as usize * surfaces + other as usize
+                    (of_particle[p.particle], other)
                 };
-                let first = pair(&c.points[0].0);
+                let first = &c.points[0].0;
+                let (own, (other, across)) = pair(first);
                 debug_assert!(
-                    c.points.iter().all(|(p, _)| pair(p) == first),
+                    c.points
+                        .iter()
+                        .all(|(p, _)| { pair(p).0 == own && pair(p).1.0 == other }),
                     "a contact's points share one pair of surfaces"
                 );
-                table[first]
+                for s in setae {
+                    if (s.surface, s.other) == (own, other) {
+                        // The point's own surface has the setae: its slide
+                        // along `tangent` is the one `T` resists negative.
+                        let along = axis_of_particle[first.particle].dot(tangent);
+                        return CoulombBounds::directional(s.forward, s.backward, along);
+                    }
+                    if (s.surface, s.other) == (other, own)
+                        && let Some(q) = across
+                    {
+                        // The other body has them: its slide relative to the
+                        // point is the opposite one, and so is its force.
+                        let along = axis_of_particle[q].dot(tangent);
+                        return CoulombBounds::directional(s.forward, s.backward, along).reversed();
+                    }
+                }
+                CoulombBounds::isotropic(table[own as usize * surfaces + other as usize])
             }
         }
+    }
+
+    /// Whether contact `c` has friction in either sense.
+    pub(crate) fn frictional(&self, c: &Contact, planes: &[Plane]) -> bool {
+        self.of(c, planes, DVec2::X).frictional()
     }
 
     /// Whether any pair has friction.
     pub(crate) fn any(&self) -> bool {
         match *self {
             Self::Uniform(mu) => mu > 0.0,
-            Self::Pairs { table, .. } => table.iter().any(|&mu| mu > 0.0),
+            Self::Pairs { table, setae, .. } => {
+                table.iter().any(|&mu| mu > 0.0)
+                    || setae.iter().any(|s| s.forward > 0.0 || s.backward > 0.0)
+            }
         }
     }
 }

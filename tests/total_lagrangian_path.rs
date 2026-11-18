@@ -22,7 +22,7 @@ use emerge::thermodynamics::{ThermalConfig, ThermalDiffusion};
 use emerge::{
     CorotatedMaterial, DuctileProps, FromSI, SimConfig, Simulation, SpawnRegion, VonMisesMaterial,
 };
-use glam::{IVec2, Vec2};
+use glam::{DVec2, IVec2, Vec2};
 
 const CELL_M: f32 = 0.01;
 const RES: usize = 40;
@@ -924,7 +924,7 @@ fn a_falling_block_gains_g_t_in_si() {
 /// of the step ends; the plasticine 0.99998 at both).
 #[test]
 fn a_sliding_block_stops_after_v0_squared_over_2_mu_g() {
-    let (travel, stopping) = plasticine_slide(None, 30);
+    let (travel, stopping) = plasticine_slide(0.3, |_, _| {}, 30);
     println!("slide: travel {travel:.5} m, v0^2 / (2 mu g) {stopping:.5} m");
     assert!(
         (travel / stopping - 1.0).abs() < 0.01,
@@ -939,12 +939,42 @@ fn a_sliding_block_stops_after_v0_squared_over_2_mu_g() {
 /// same 1 percent.
 #[test]
 fn a_pair_friction_replaces_the_walls_own_coefficient() {
-    let (travel, stopping) = plasticine_slide(Some(0.6), 30);
+    let (travel, stopping) = plasticine_slide(
+        0.6,
+        |sim, id| sim.set_surface_friction(Surface::Material(id), Surface::Boundary(0), 0.6),
+        30,
+    );
     println!("pair slide: travel {travel:.5} m, v0^2 / (2 mu g) {stopping:.5} m");
     assert!(
         (travel / stopping - 1.0).abs() < 0.01,
         "travel {travel} m against {stopping} m"
     );
+}
+
+/// The same block with setae against the floor, easy along their axis
+/// (0.3), resisting against it (0.6), as an earthworm's
+/// (`Simulation::set_surface_setae`; test values, no worm measurement read
+/// yet): launched along its axis it slides the distance of 0.3, launched
+/// against it (the axis turned) the distance of 0.6, each within the same 1
+/// percent as the isotropic slides.
+#[test]
+fn setae_let_a_block_slide_further_along_their_axis() {
+    let setae = |axis: f64| {
+        move |sim: &mut Simulation, id: u32| {
+            sim.set_surface_setae(id, Surface::Boundary(0), (0.3, 0.6), DVec2::new(axis, 0.0))
+        }
+    };
+    let (along, along_stopping) = plasticine_slide(0.3, setae(1.0), 30);
+    let (against, against_stopping) = plasticine_slide(0.6, setae(-1.0), 30);
+    println!(
+        "setae slide: along {along:.5} m (rigid {along_stopping:.5}), against {against:.5} m (rigid {against_stopping:.5})"
+    );
+    for (travel, stopping) in [(along, along_stopping), (against, against_stopping)] {
+        assert!(
+            (travel / stopping - 1.0).abs() < 0.01,
+            "travel {travel} m against {stopping} m"
+        );
+    }
 }
 
 /// A block of the measured plasticine carrying a muscle fiber along x,
@@ -1020,11 +1050,12 @@ fn the_path_refuses_a_pair_no_coefficient_names() {
     sim.step();
 }
 
-/// The plasticine block of the slides at 1 m/s on a Coulomb floor of
-/// coefficient 0.3, the block-floor pair set to `pair` when given, run
+/// The plasticine block of the slides at 1 m/s along +x on a Coulomb floor
+/// of coefficient 0.3, the block-floor pair then named by `name` (given the
+/// simulation and the block's material) so that the slide meets `mu`, run
 /// `frames` frames: its centre's travel and the rigid distance
 /// `v0^2 / (2 mu g)`, both in metres.
-fn plasticine_slide(pair: Option<f64>, frames: usize) -> (f64, f64) {
+fn plasticine_slide(mu: f64, name: impl FnOnce(&mut Simulation, u32), frames: usize) -> (f64, f64) {
     let config = config(1e-1);
     let record =
         emerge::materials::relaxation::ViscoelasticRecord::plasticine_crandall_1970_fresh();
@@ -1046,10 +1077,8 @@ fn plasticine_slide(pair: Option<f64>, frames: usize) -> (f64, f64) {
         config.boundary_thickness,
         walls,
     )));
-    if let Some(mu) = pair {
-        sim.set_surface_friction(Surface::Material(id), Surface::Boundary(0), mu);
-    }
-    let (v0, mu, g) = (1.0f64, pair.unwrap_or(f64::from(walls)), 9.81f64);
+    name(&mut sim, id);
+    let (v0, g) = (1.0f64, 9.81f64);
     let stopping = v0 * v0 / (2.0 * mu * g);
     assert_clear_of_side_walls(
         &config,
