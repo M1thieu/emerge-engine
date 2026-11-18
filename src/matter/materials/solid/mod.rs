@@ -3,7 +3,8 @@
 //! damage response. Hyperelastic (`elastic` NeoHookean, `corotated`),
 //! viscoelastic (`viscoelastic`, Kelvin-Voigt), yield and fracture
 //! (`von_mises`, `rankine`), tension-only (`no_compression`), cap plasticity
-//! (`nacc`, Cam-Clay) and hardening-cohesion snow (`snow`, Stomakhin).
+//! (`nacc`, Cam-Clay), hardening-cohesion snow (`snow`, Stomakhin), and a
+//! muscle fiber's active stress (`hill_muscle`, Millard et al. 2013).
 //!
 //! Grouped by what the model computes, not by the everyday name of the
 //! substance: snow and Cam-Clay soils are solids here because their laws are
@@ -12,6 +13,7 @@
 
 pub mod corotated;
 pub mod elastic;
+pub mod hill_muscle;
 pub(crate) mod j2_hencky;
 pub mod nacc;
 pub(crate) mod neo_hookean;
