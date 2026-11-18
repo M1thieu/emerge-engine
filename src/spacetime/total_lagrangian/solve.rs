@@ -111,8 +111,8 @@ pub(crate) struct Inputs<'a> {
     /// midpoint, in place of the uniform `gravity` (the probes'
     /// manufactured solutions); `None`, the gravity.
     pub(crate) body: Option<&'a [DVec2]>,
-    /// The contacts' Coulomb friction coefficient (`contact_force`).
-    pub(crate) friction: f64,
+    /// The contacts' Coulomb friction coefficients (`contact_force`).
+    pub(crate) friction: Friction<'a>,
     /// Whether the converged solve also returns its `Response`s.
     pub(crate) responses: bool,
     /// The friction's augmentation parameter held below Alart's bound
@@ -378,7 +378,7 @@ pub(crate) fn solve(
         !(statics && bounded_friction),
         "the static mode takes each contact's own friction penalty (the bound is inertial)"
     );
-    let tangential = if bounded_friction && friction > 0.0 && !contacts.is_empty() {
+    let tangential = if bounded_friction && friction.any() && !contacts.is_empty() {
         tangential_penalty(grid, x, planes, contacts, factor, dt, inertia)
     } else {
         None
@@ -650,7 +650,8 @@ pub(crate) fn solve(
                 _ => {}
             }
             let (g, shares) = contact_geometry(grid, x, planes, u, c);
-            let g_t = if friction > 0.0 {
+            let mu = friction.of(c, planes);
+            let g_t = if mu > 0.0 {
                 contact_tangential_gap(grid, u, &shares)
             } else {
                 0.0
@@ -659,7 +660,7 @@ pub(crate) fn solve(
             let (size, along) = contact_force(
                 (multiplier, tangential),
                 (g, g_t),
-                ((k, k_t_of(c)), friction),
+                ((k, k_t_of(c)), mu),
                 frozen.map(|set| set[i]),
             );
             if size == 0.0 && along == 0.0 {
@@ -754,6 +755,7 @@ pub(crate) fn solve(
         .iter()
         .flat_map(|c| -> Vec<Spring> {
             let (k, k_t) = (contact_penalty(c, penalty), k_t_of(c));
+            let frictional = friction.of(c, planes) > 0.0;
             c.points
                 .iter()
                 .flat_map(|&(point, weight)| -> Vec<Spring> {
@@ -786,7 +788,7 @@ pub(crate) fn solve(
                                     )
                                 };
                             let mut held = vec![couple(along.perp(), k, ground)];
-                            if friction > 0.0 {
+                            if frictional {
                                 held.push(couple(along, k_t, Vec::new()));
                             }
                             held
@@ -794,7 +796,7 @@ pub(crate) fn solve(
                         // With friction both components are held: the
                         // plane's axis by the normal penalty, the other by
                         // the tangential one.
-                        None if friction > 0.0 => {
+                        None if frictional => {
                             let axis = planes[point.plane].axis;
                             std::iter::once(point.particle)
                                 .chain(point.partner)
@@ -1226,7 +1228,8 @@ pub(crate) fn solve(
             .iter()
             .map(|c| {
                 let (g, shares) = contact_geometry(grid, x, planes, u, c);
-                let g_t = if friction > 0.0 {
+                let mu = friction.of(c, planes);
+                let g_t = if mu > 0.0 {
                     contact_tangential_gap(grid, u, &shares)
                 } else {
                     0.0
@@ -1248,11 +1251,7 @@ pub(crate) fn solve(
                         slip: 0.0,
                     };
                 }
-                contact_branch(
-                    (c.multiplier, c.tangential),
-                    (g, g_t),
-                    ((k, k_t_of(c)), friction),
-                )
+                contact_branch((c.multiplier, c.tangential), (g, g_t), ((k, k_t_of(c)), mu))
             })
             .collect()
     };
@@ -1421,12 +1420,13 @@ pub(crate) fn solve(
                 dg_t += weight * normal.perp().dot(*relative);
             }
             let d_size = -k * dg;
-            let d_along = if friction <= 0.0 {
+            let mu = friction.of(c, planes);
+            let d_along = if mu <= 0.0 {
                 0.0
             } else if branch.slip == 0.0 {
                 -k_t_of(c) * dg_t
             } else {
-                branch.slip * friction * d_size
+                branch.slip * mu * d_size
             };
             for (weight, normal, spread, _) in &shares {
                 let force = *weight * (d_size * *normal + d_along * normal.perp());
@@ -1862,7 +1862,7 @@ pub(crate) fn solve(
             if !branch.pressed {
                 continue;
             }
-            let sticking = friction > 0.0 && branch.slip == 0.0;
+            let sticking = friction.of(&contacts[i], planes) > 0.0 && branch.slip == 0.0;
             for tangential in [false, true] {
                 if tangential && !sticking {
                     continue;

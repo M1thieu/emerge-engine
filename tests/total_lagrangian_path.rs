@@ -13,7 +13,7 @@ extern crate emerge_engine as emerge;
 #[path = "common/cap.rs"]
 mod cap;
 
-use emerge::boundary::FrictionBoundary;
+use emerge::boundary::{FrictionBoundary, Surface};
 use emerge::fields::LinearDragField;
 use emerge::materials::physical_props::Elastic;
 use emerge::spacetime::solver::total_lagrangian_solids::TotalLagrangianConfig;
@@ -458,8 +458,8 @@ fn a_block_slides_to_rest_with_its_ledger_closed() {
 
 /// The slide of `a_block_slides_to_rest_with_its_ledger_closed` in a damped
 /// material: Harbutt's Plasticine, freshly formed, its relaxed elasticity and
-/// three Zener mechanisms measured by Crandall, Ehrlich and Wenk 1970
-/// (`ViscoelasticRecord::plasticine_crandall_1970_fresh`). Damped, the
+/// three Zener mechanisms measured by Crandall, Kurzweil, Nigam and
+/// Remington 1970 (`ViscoelasticRecord::plasticine_crandall_1970_fresh`). Damped, the
 /// vibration the sliding and the settling excite is dissipated into heat, so
 /// at the end the block keeps no more than a block at rest can, derived here
 /// (first law plus statics; no source beyond the record):
@@ -811,6 +811,14 @@ fn the_path_refuses_heat_conduction_it_does_not_carry() {
 }
 
 #[test]
+#[should_panic(expected = "does not support pinned particles")]
+fn the_path_refuses_a_pin_it_would_ignore() {
+    let mut sim = scene(config(1e-1), 0.0);
+    sim.particles_mut().pinned[0] = 1;
+    sim.step();
+}
+
+#[test]
 #[should_panic(expected = "does not support muscle activation")]
 fn the_path_refuses_a_muscle_activation_it_would_ignore() {
     let mut sim = scene(config(1e-1), 0.0);
@@ -905,8 +913,8 @@ fn a_falling_block_gains_g_t_in_si() {
 /// A block sliding on a Coulomb floor stops after `v0^2 / (2 mu g)`, in
 /// metres (rigid-body Coulomb, the block's centre of mass): within 1
 /// percent, the heat criterion's own tolerance, stated before measuring.
-/// The block is the measured plasticine (Crandall, Ehrlich and Wenk 1970,
-/// its three relaxation mechanisms): a body that dissipates its vibration.
+/// The block is the measured plasticine (Crandall, Kurzweil, Nigam and
+/// Remington 1970, its three relaxation mechanisms): a body that dissipates its vibration.
 /// The rigid distance is the limit of such a body, not of a lossless one:
 /// an undamped elastic block, released unstressed, keeps vibrating, its base
 /// leaves the floor and its slip reverses, and it slides further (measured,
@@ -915,6 +923,53 @@ fn a_falling_block_gains_g_t_in_si() {
 /// of the step ends; the plasticine 0.99998 at both).
 #[test]
 fn a_sliding_block_stops_after_v0_squared_over_2_mu_g() {
+    let (travel, stopping) = plasticine_slide(None, 30);
+    println!("slide: travel {travel:.5} m, v0^2 / (2 mu g) {stopping:.5} m");
+    assert!(
+        (travel / stopping - 1.0).abs() < 0.01,
+        "travel {travel} m against {stopping} m"
+    );
+}
+
+/// The same block on the same floor (its walls' coefficient 0.3), the
+/// friction between the block and the floor set as a pair to twice it
+/// (`Simulation::set_surface_friction`): the pair's coefficient, not the
+/// wall's, sets the distance, `v0^2 / (2 mu g)` with `mu` 0.6, within the
+/// same 1 percent.
+#[test]
+fn a_pair_friction_replaces_the_walls_own_coefficient() {
+    let (travel, stopping) = plasticine_slide(Some(0.6), 30);
+    println!("pair slide: travel {travel:.5} m, v0^2 / (2 mu g) {stopping:.5} m");
+    assert!(
+        (travel / stopping - 1.0).abs() < 0.01,
+        "travel {travel} m against {stopping} m"
+    );
+}
+
+/// Two walls of different coefficients leave the friction between two
+/// pieces of one material undefined: the path refuses it until the pair is
+/// named, instead of picking one.
+#[test]
+#[should_panic(expected = "no friction coefficient for materials")]
+fn the_path_refuses_a_pair_no_coefficient_names() {
+    let config = config(1e-1);
+    let mut sim = scene(config, 0.0);
+    sim.add_boundary_condition(Box::new(FrictionBoundary::new(
+        config.boundary_thickness,
+        0.3,
+    )));
+    sim.add_boundary_condition(Box::new(FrictionBoundary::new(
+        config.boundary_thickness,
+        0.5,
+    )));
+    sim.step();
+}
+
+/// The plasticine block of the slides at 1 m/s on a Coulomb floor of
+/// coefficient 0.3, the block-floor pair set to `pair` when given, run
+/// `frames` frames: its centre's travel and the rigid distance
+/// `v0^2 / (2 mu g)`, both in metres.
+fn plasticine_slide(pair: Option<f64>, frames: usize) -> (f64, f64) {
     let config = config(1e-1);
     let record =
         emerge::materials::relaxation::ViscoelasticRecord::plasticine_crandall_1970_fresh();
@@ -931,11 +986,15 @@ fn a_sliding_block_stops_after_v0_squared_over_2_mu_g() {
             .material(id)
             .mass_from(&record.relaxed, &config),
     );
+    let walls = 0.3;
     sim.add_boundary_condition(Box::new(FrictionBoundary::new(
         config.boundary_thickness,
-        0.3,
+        walls,
     )));
-    let (v0, mu, g) = (1.0f64, 0.3f64, 9.81f64);
+    if let Some(mu) = pair {
+        sim.set_surface_friction(Surface::Material(id), Surface::Boundary(0), mu);
+    }
+    let (v0, mu, g) = (1.0f64, pair.unwrap_or(f64::from(walls)), 9.81f64);
     let stopping = v0 * v0 / (2.0 * mu * g);
     assert_clear_of_side_walls(
         &config,
@@ -957,14 +1016,9 @@ fn a_sliding_block_stops_after_v0_squared_over_2_mu_g() {
             * f64::from(CELL_M)
     };
     let start = centre(&sim);
-    // 0.34 s to stop; 30 frames is 0.5 s.
-    let _ = run(&mut sim, 30);
-    let travel = centre(&sim) - start;
-    println!("slide: travel {travel:.5} m, v0^2 / (2 mu g) {stopping:.5} m");
-    assert!(
-        (travel / stopping - 1.0).abs() < 0.01,
-        "travel {travel} m against {stopping} m"
-    );
+    // 0.34 s to stop at 0.3, 0.17 s at 0.6; 30 frames is 0.5 s.
+    let _ = run(&mut sim, frames);
+    (centre(&sim) - start, stopping)
 }
 
 /// The sliding block of `a_sliding_block_stops_after_v0_squared_over_2_mu_g`

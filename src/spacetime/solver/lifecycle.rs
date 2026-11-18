@@ -42,6 +42,7 @@ impl Simulation {
             boundaries: vec![default_boundary],
             boundaries_are_default: true,
             contact_grip: None,
+            surface_friction: Vec::new(),
             force_fields: Vec::new(),
             thermal: None,
             scalar_fields: Vec::new(),
@@ -136,6 +137,7 @@ impl Simulation {
             boundaries: vec![default_boundary],
             boundaries_are_default: true,
             contact_grip: None,
+            surface_friction: Vec::new(),
             force_fields: Vec::new(),
             thermal: None,
             scalar_fields: Vec::new(),
@@ -280,6 +282,25 @@ impl Simulation {
     /// let water = solver.register_material(Box::new(NewtonianFluidMaterial::low_viscosity(1000.0, 1e4)));
     /// // use water.id() in SpawnRegion or phase_transition
     /// ```
+    /// Coulomb's friction coefficient between two surfaces, a property of
+    /// the pair (a wall's own coefficient applies to every material unless
+    /// a pair replaces it). Read by the total Lagrangian path; the explicit
+    /// path keeps its walls' coefficients. Setting a pair again replaces it.
+    pub fn set_surface_friction(
+        &mut self,
+        a: crate::boundary::Surface,
+        b: crate::boundary::Surface,
+        mu: f64,
+    ) {
+        assert!(
+            mu.is_finite() && mu >= 0.0,
+            "a pair's friction must be a finite Coulomb coefficient >= 0, got {mu}"
+        );
+        self.surface_friction
+            .retain(|&(x, y, _)| !((x, y) == (a, b) || (x, y) == (b, a)));
+        self.surface_friction.push((a, b, mu));
+    }
+
     pub fn register_material(&mut self, material: Box<dyn MaterialModel>) -> MaterialHandle {
         let id = self.materials.next_id();
         self.materials.insert(id, material);

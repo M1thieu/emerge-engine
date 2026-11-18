@@ -39,8 +39,8 @@ use glam::{DMat2, DVec2};
 
 use super::{Simulation, TotalLagrangianState};
 use crate::spacetime::total_lagrangian::{
-    ContactMode, ContactSet, Estimator, JACOBI_TOLERANCE, Particles, StepControl, contact_step,
-    tolerance_energy,
+    ContactMode, ContactSet, Estimator, Friction, JACOBI_TOLERANCE, Particles, StepControl,
+    contact_step, tolerance_energy,
 };
 use crate::tensor_algebra::symmetric_eigen::jacobi_eigen_symmetric_definite;
 
@@ -170,7 +170,7 @@ impl Simulation {
                                 pairs: &[],
                                 outlines: &s.outlines,
                                 corners: &s.corners,
-                                friction,
+                                friction: Friction::Uniform(friction),
                             },
                             &s.penalty,
                             &path.settings,

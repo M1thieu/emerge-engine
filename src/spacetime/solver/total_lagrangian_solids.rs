@@ -35,9 +35,9 @@ use crate::matter::materials::solid::von_mises::VonMisesMaterial;
 use crate::spacetime::solver::config::SpawnRegion;
 use crate::spacetime::solver::config::SpawnShape;
 use crate::spacetime::total_lagrangian::{
-    ConservingSettings, ContactKey, ContactSet, Elastic, Estimator, GridLayout, LagrangianCache,
-    Modes, Particles, Plane, StepControl, body_modes, contact_grid, controlled_step,
-    start_velocity_field, tolerance_energy,
+    ConservingSettings, ContactKey, ContactSet, Elastic, Estimator, Friction, GridLayout,
+    LagrangianCache, Modes, Particles, Plane, StepControl, body_modes, contact_grid,
+    controlled_step, start_velocity_field, tolerance_energy,
 };
 use crate::spacetime::transfer::friction_heat::MIN_APPLIED_TEMPERATURE_RISE_K;
 
@@ -239,6 +239,12 @@ impl Simulation {
         // Checked every frame: a host writes activations while the run goes.
         if self.particles.activation.iter().any(|&a| a != 0.0) {
             refuse("muscle activation (no active stress on this path)");
+        }
+        if self.particles.pinned.iter().any(|&p| p != 0) {
+            refuse("pinned particles");
+        }
+        if self.particles.contact_group.iter().any(|&g| g != 0) {
+            refuse("contact groups (bodies meet through their outlines on this path)");
         }
         if self.boundaries.iter().any(|b| b.domain_walls().is_none()) {
             refuse(
@@ -539,7 +545,7 @@ impl Simulation {
                 "the total Lagrangian solid path does not support adding bodies after its first frame (its reference configuration is the bodies' start)"
             ),
         }
-        let (planes, friction) = self.total_lagrangian_walls();
+        let planes = self.total_lagrangian_planes();
         let layout = self.total_lagrangian_layout();
         let control = StepControl::klapproth(
             config.tolerance,
@@ -548,6 +554,7 @@ impl Simulation {
         );
         let gravity = self.total_lagrangian_gravity();
         let mut state = self.total_lagrangian.take().expect("built above");
+        let friction = self.total_lagrangian_friction(&state);
         let scale = state.tolerance_energy.max(f64::MIN_POSITIVE).sqrt();
         let mut frame = TotalLagrangianFrame::default();
         let framing = std::time::Instant::now();
@@ -565,9 +572,20 @@ impl Simulation {
             self.deposit_total_lagrangian_heat(&mut state, &made);
         }
         let now = state.time;
+        // The rest basis takes one friction coefficient for its cone
+        // (`rest::Basis`): with a coefficient per pair the rest is not
+        // carried, and counted (kind: scope; why: the basis's cone is one
+        // coefficient's; removal: each held contact's own coefficient in
+        // the basis).
+        let rest_friction = friction.uniform();
+        if config.modal_rest && !frame.modal && rest_friction.is_none() {
+            state.modal_rest_refused += 1;
+        }
         frame.modal_rest = !frame.modal
             && config.modal_rest
-            && rest::rest_frame(&mut state, (&planes, friction, gravity), (now, length));
+            && rest_friction.is_some_and(|mu| {
+                rest::rest_frame(&mut state, (&planes, mu, gravity), (now, length))
+            });
         // A damped rest's heat (`Rest::carry_branches`), deposited like the
         // step's.
         if frame.modal_rest
@@ -635,7 +653,7 @@ impl Simulation {
                             pairs: &[],
                             outlines: &state.outlines,
                             corners: &state.corners,
-                            friction,
+                            friction: friction.view(),
                         },
                         &state.penalty,
                         settings,

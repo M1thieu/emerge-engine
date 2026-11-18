@@ -18,6 +18,9 @@ pub struct Plane {
     /// Signorini conditions on the relative motion, and the push's work is
     /// the press's.
     pub speed: f64,
+    /// The surface the plane belongs to, for a friction coefficient per
+    /// pair of surfaces (`Friction::Pairs`); kept by the plane's copies.
+    pub surface: u32,
 }
 
 impl Plane {
@@ -615,7 +618,63 @@ pub struct ContactSet<'a> {
     /// Per outline, the indices (into it) of its corners, where the exact
     /// shape's normal jumps (`weighted_gap`); none given, none.
     pub corners: &'a [Vec<usize>],
-    /// Coulomb's friction coefficient between every pair of surfaces in
-    /// contact (`contact_force`); 0, frictionless.
-    pub friction: f64,
+    /// Coulomb's friction coefficient of each contact, by the pair of
+    /// surfaces it joins (`contact_force`).
+    pub friction: Friction<'a>,
+}
+
+/// Coulomb's friction coefficient of a contact, a property of the PAIR of
+/// surfaces in contact, not of either alone.
+#[derive(Clone, Copy, Debug)]
+pub enum Friction<'a> {
+    /// One coefficient for every pair; 0, frictionless.
+    Uniform(f64),
+    /// A coefficient per pair of surfaces: `table[a * surfaces + b]`
+    /// (symmetric), `a` the surface of a contact point's particle, `b` that
+    /// of what it touches (a wall's plane, or the other body's particle).
+    Pairs {
+        surfaces: usize,
+        table: &'a [f64],
+        /// Each particle's surface (the planes carry theirs, `Plane::surface`).
+        of_particle: &'a [u32],
+    },
+}
+
+impl Friction<'_> {
+    /// The coefficient of contact `c`, read at its first point: a contact's
+    /// points belong to one body and face one obstacle (a plane, or one
+    /// other body), so they share one pair of surfaces.
+    /// `planes`: the planes the contact's points index (`ContactPoint::plane`).
+    pub(crate) fn of(&self, c: &Contact, planes: &[Plane]) -> f64 {
+        match *self {
+            Self::Uniform(mu) => mu,
+            Self::Pairs {
+                surfaces,
+                table,
+                of_particle,
+            } => {
+                let pair = |p: &ContactPoint| {
+                    let other = match (p.partner, p.segment) {
+                        (Some(q), _) | (None, Some((q, _))) => of_particle[q],
+                        (None, None) => planes[p.plane].surface,
+                    };
+                    of_particle[p.particle] as usize * surfaces + other as usize
+                };
+                let first = pair(&c.points[0].0);
+                debug_assert!(
+                    c.points.iter().all(|(p, _)| pair(p) == first),
+                    "a contact's points share one pair of surfaces"
+                );
+                table[first]
+            }
+        }
+    }
+
+    /// Whether any pair has friction.
+    pub(crate) fn any(&self) -> bool {
+        match *self {
+            Self::Uniform(mu) => mu > 0.0,
+            Self::Pairs { table, .. } => table.iter().any(|&mu| mu > 0.0),
+        }
+    }
 }

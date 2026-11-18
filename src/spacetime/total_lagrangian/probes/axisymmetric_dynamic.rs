@@ -206,7 +206,7 @@ impl<'a> Stepper<'a> {
                     pairs: &[],
                     outlines: &[],
                     corners: &[],
-                    friction: 0.0,
+                    friction: crate::spacetime::total_lagrangian::Friction::Uniform(0.0),
                 };
                 let step = controlled_step(
                     &self.layout,
@@ -678,6 +678,7 @@ pub(super) fn rod_on_a_wall(
         at: bottom - v0 * touch,
         inward: 1.0,
         speed: 0.0,
+        surface: 0,
     }];
     let massive = body.massive;
     let mut x = body.reference.clone();
@@ -746,7 +747,7 @@ pub(super) fn rod_on_a_wall(
                     pairs: &[],
                     outlines: &outlines,
                     corners: &corners,
-                    friction: 0.0,
+                    friction: crate::spacetime::total_lagrangian::Friction::Uniform(0.0),
                 },
                 &penalty,
                 &settings,
@@ -980,6 +981,7 @@ fn pressed_cylinder(
         at: base + length0,
         inward: -1.0,
         speed: 0.0,
+        surface: 0,
     };
     let mut tau = control.largest;
     let mut cache: Option<LagrangianCache> = None;
@@ -1006,7 +1008,7 @@ fn pressed_cylinder(
                     pairs: &[],
                     outlines: &outlines,
                     corners: &corners,
-                    friction: 0.0,
+                    friction: crate::spacetime::total_lagrangian::Friction::Uniform(0.0),
                 },
                 &penalty,
                 &settings,

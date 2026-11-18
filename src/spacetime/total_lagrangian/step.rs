@@ -124,7 +124,7 @@ pub(crate) fn step_total_lagrangian(
         penalty: &[],
         lagrangian: true,
         body,
-        friction: 0.0,
+        friction: Friction::Uniform(0.0),
         responses: false,
         bounded_friction: false,
         statics: false,
@@ -342,7 +342,7 @@ pub(crate) fn contact_step(
         friction,
     } = set;
     assert!(
-        friction == 0.0 || mode == ContactMode::Velocity,
+        !friction.any() || mode == ContactMode::Velocity,
         "friction is held in velocity only"
     );
     let Particles { x, v, f, mass, v0 } = particles;
@@ -623,7 +623,7 @@ pub(crate) fn contact_step(
         // augmented Lagrangian's converged state does not depend on the
         // parameter, only its iterations do. The failed solve's Newton
         // iterations stay counted.
-        if friction > 0.0
+        if friction.any()
             && !statics
             && !contacts.is_empty()
             && !solution.report.converged
@@ -680,22 +680,19 @@ pub(crate) fn contact_step(
             let (g, shares) = contact_geometry(grid, x, used, &solution.u, c);
             let scale = allowed(c, &shares);
             deepest = deepest.max(-g / scale);
-            let g_t = if friction > 0.0 {
+            let mu = friction.of(c, used);
+            let g_t = if mu > 0.0 {
                 contact_tangential_gap(grid, &solution.u, &shares)
             } else {
                 0.0
             };
             let k = contact_penalty(c, penalty);
             let k_t = solution.tangential_penalty.unwrap_or(k);
-            let (size, along) = contact_force(
-                (c.multiplier, c.tangential),
-                (g, g_t),
-                ((k, k_t), friction),
-                None,
-            );
+            let (size, along) =
+                contact_force((c.multiplier, c.tangential), (g, g_t), ((k, k_t), mu), None);
             // A sticking contact must not slide (Hueber, Stadler and
             // Wohlmuth eq. 3.5a), to the same tolerance as the gap.
-            if friction > 0.0 && along.abs() < friction * size {
+            if mu > 0.0 && along.abs() < mu * size {
                 deepest = deepest.max(g_t.abs() / scale);
             }
             // And the multipliers the solve used are their own projection,
@@ -812,6 +809,7 @@ pub(crate) fn contact_step(
         if settled && std::env::var_os("EMERGE_PROBE_BRANCH_CHECK").is_some() {
             for (c, &(used_n, used_t)) in contacts.iter().zip(&before) {
                 let (g, shares) = contact_geometry(grid, x, used, &solution.u, c);
+                let friction = friction.of(c, used);
                 let g_t = if friction > 0.0 {
                     contact_tangential_gap(grid, &solution.u, &shares)
                 } else {
@@ -952,7 +950,7 @@ pub(crate) fn contact_step(
     // contact; a point against another body's segment heats its own body,
     // every outline point being in turn the point against the other's
     // segments.
-    if friction > 0.0 && report.friction != 0.0 {
+    if friction.any() && report.friction != 0.0 {
         let faces = {
             let l = grid.lattices[1];
             l.start + l.ni * l.nj

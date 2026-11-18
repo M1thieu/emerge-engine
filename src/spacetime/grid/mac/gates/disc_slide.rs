@@ -199,7 +199,7 @@ fn disc_impact_run(courant: Option<f64>) -> String {
                     pairs: &[],
                     outlines: &outlines,
                     corners: &[],
-                    friction,
+                    friction: crate::spacetime::total_lagrangian::Friction::Uniform(friction),
                 },
                 &penalty,
                 &settings,
@@ -462,6 +462,7 @@ fn block_slide_run(per_frame: usize) -> String {
         at: if drop > 0.0 { floor } else { bottom + 1e-9 },
         inward: 1.0,
         speed: 0.0,
+        surface: 0,
     }];
     let penalty: Vec<f64> = (0..n)
         .map(|p| if p < body { 0.0 } else { factor * c_p * c_p })
@@ -555,7 +556,7 @@ fn block_slide_run(per_frame: usize) -> String {
         pairs: &[],
         outlines: &[],
         corners: &[],
-        friction,
+        friction: crate::spacetime::total_lagrangian::Friction::Uniform(friction),
     };
     while t < end - 1e-12 {
         if watched == Some(steps + 1) {

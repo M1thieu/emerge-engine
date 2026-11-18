@@ -682,6 +682,7 @@ impl Scene {
             at,
             inward,
             speed: 0.0,
+            surface: 0,
         };
         let planes = [
             plane(0, lo.x, 1.0),
@@ -717,7 +718,7 @@ impl Scene {
                     pairs: &[],
                     outlines: &[],
                     corners: &[],
-                    friction: 0.0,
+                    friction: crate::spacetime::total_lagrangian::Friction::Uniform(0.0),
                 },
                 &penalty,
                 &settings,

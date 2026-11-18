@@ -28,7 +28,7 @@ use super::*;
 /// derivative is singular.
 pub(crate) fn newton_on_multipliers(
     grid: &Grid,
-    (x, planes, friction): (&[DVec2], &[Plane], f64),
+    (x, planes, friction): (&[DVec2], &[Plane], Friction<'_>),
     solution: &Solution,
     contacts: &mut [Contact],
     before: &[(f64, f64)],
@@ -44,7 +44,7 @@ pub(crate) fn newton_on_multipliers(
         let c = &contacts[r.contact];
         let (g, shares) = contact_geometry(grid, x, planes, u, c);
         if r.tangential {
-            if friction > 0.0 {
+            if friction.of(c, planes) > 0.0 {
                 contact_tangential_gap(grid, u, &shares)
             } else {
                 0.0

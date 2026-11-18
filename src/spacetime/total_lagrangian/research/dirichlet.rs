@@ -39,7 +39,7 @@ pub(crate) fn step_dirichlet(
         penalty: &[],
         lagrangian: false,
         body: Some(body),
-        friction: 0.0,
+        friction: crate::spacetime::total_lagrangian::Friction::Uniform(0.0),
         responses: false,
         bounded_friction: false,
         statics: false,

@@ -213,6 +213,7 @@ fn bar_impact_run(courant: Option<f64>, cells: usize) -> String {
         at: floor,
         inward: 1.0,
         speed: 0.0,
+        surface: 0,
     }];
     // The augmented Lagrangian's penalty on the contact points, an
     // iteration parameter: `EMERGE_PROBE_BARS_PENALTY` (default 100) times
@@ -294,7 +295,7 @@ fn bar_impact_run(courant: Option<f64>, cells: usize) -> String {
         pairs: &[],
         outlines: &[],
         corners: &[],
-        friction: 0.0,
+        friction: crate::spacetime::total_lagrangian::Friction::Uniform(0.0),
     };
     let (mut step_length, mut accepted, mut rejected, mut solves) = (dt, 0u32, 0u32, 0u32);
     let (mut after_release, mut shortest, mut solved, mut push_time) =
@@ -666,6 +667,7 @@ fn two_bar_impact_run(courant: Option<f64>, cells: usize) -> String {
                     at: 0.0,
                     inward: 1.0,
                     speed: 0.0,
+                    surface: 0,
                 },
             )
         })
@@ -730,7 +732,7 @@ fn two_bar_impact_run(courant: Option<f64>, cells: usize) -> String {
                     pairs: &pairs,
                     outlines: &[],
                     corners: &[],
-                    friction: 0.0,
+                    friction: crate::spacetime::total_lagrangian::Friction::Uniform(0.0),
                 },
                 &penalty,
                 &settings,

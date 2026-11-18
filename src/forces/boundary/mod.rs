@@ -28,6 +28,16 @@ pub struct DomainWalls {
     pub friction: f32,
 }
 
+/// One side of a pair of surfaces in contact, for a friction coefficient
+/// that belongs to the pair (`Simulation::set_surface_friction`): a
+/// material's surface, or a boundary's (its index in the order the
+/// boundaries were added).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Surface {
+    Material(u32),
+    Boundary(usize),
+}
+
 mod friction;
 mod heightmap;
 mod kinematic_obstacle;

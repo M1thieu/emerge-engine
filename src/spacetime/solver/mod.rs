@@ -112,6 +112,9 @@ pub struct Simulation {
     /// the existing plain symmetric `contact_friction` behavior; every scene that
     /// never opts in is completely unaffected.
     contact_grip: Option<std::sync::Arc<crate::boundary::DirectionalContactGrip>>,
+    /// Friction coefficients set per pair of surfaces
+    /// (`set_surface_friction`), read by the total Lagrangian path.
+    surface_friction: Vec<(crate::boundary::Surface, crate::boundary::Surface, f64)>,
     force_fields: Vec<(String, Box<dyn Field>)>,
     thermal: Option<ThermalDiffusion>,
     /// Scalar diffusion fields (pheromone, nutrients, morphogen) -- run automatically each substep.
