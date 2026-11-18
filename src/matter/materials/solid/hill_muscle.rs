@@ -50,6 +50,9 @@ pub struct HillMuscle {
 #[derive(Clone, Copy, Debug)]
 pub struct Curves {
     pub force_length: fn(f64) -> f64,
+    /// `d f_L / d lambda`, for the stress's exact derivative
+    /// (`HillMuscle::active_second_pk_tangent`).
+    pub force_length_slope: fn(f64) -> f64,
     pub force_velocity: fn(f64) -> f64,
 }
 
@@ -58,6 +61,7 @@ impl Curves {
     /// there (module doc).
     pub const PLATEAU_ISOMETRIC: Self = Self {
         force_length: |_| 1.0,
+        force_length_slope: |_| 0.0,
         force_velocity: |_| 1.0,
     };
 }
@@ -149,6 +153,35 @@ impl HillMuscle {
         let scale = c.determinant().sqrt() * sigma / stretch2;
         DMat2::from_cols(scale * fiber.x * fiber, scale * fiber.y * fiber)
     }
+
+    /// The derivative of `active_second_pk` at `c` along `d` (the fiber
+    /// speed held), derived from `S = a sigma_o f_L(lambda) f_V J / lambda^2
+    /// N`, `N = n_0 (x) n_0`, `lambda^2 = N : C`, `J = sqrt(det C)`:
+    /// `dJ = J C^-1 : d / 2`, `d lambda^2 = N : d`, so `dS = a sigma_o f_V N
+    /// [f_L' J / lambda^2 d lambda + f_L (dJ / lambda^2 - J d lambda^2 /
+    /// lambda^4)]`, `d lambda = d lambda^2 / (2 lambda)`.
+    pub fn active_second_pk_tangent(
+        &self,
+        c: DMat2,
+        d: DMat2,
+        fiber: DVec2,
+        activation: f64,
+        rate: f64,
+        curves: Curves,
+    ) -> DMat2 {
+        let colon = |a: DMat2, b: DMat2| a.x_axis.dot(b.x_axis) + a.y_axis.dot(b.y_axis);
+        let stretch2 = fiber.dot(c * fiber);
+        let stretch = stretch2.sqrt();
+        let j = c.determinant().sqrt();
+        let d_stretch2 = fiber.dot(d * fiber);
+        let d_j = 0.5 * j * colon(c.inverse(), d);
+        let scale = activation * self.max_isometric_stress_pa * (curves.force_velocity)(rate);
+        let size = scale
+            * ((curves.force_length_slope)(stretch) * j / stretch2 * d_stretch2 / (2.0 * stretch)
+                + (curves.force_length)(stretch)
+                    * (d_j / stretch2 - j * d_stretch2 / (stretch2 * stretch2)));
+        DMat2::from_cols(size * fiber.x * fiber, size * fiber.y * fiber)
+    }
 }
 
 #[cfg(test)]
@@ -222,5 +255,30 @@ mod tests {
         assert!((m.activation_rate(1.0, 0.0) - 1.0 / (0.5 * 0.010)).abs() < 1e-9);
         assert!((m.activation_rate(0.0, 1.0) + 2.0 / 0.040).abs() < 1e-9);
         assert_eq!(m.activation_rate(0.3, 0.3), 0.0);
+    }
+
+    /// The derived tangent against central differences of the stress, with
+    /// a force-length curve that has a slope (a test curve, not a measured
+    /// one: the check is the derivative, for any smooth curve).
+    #[test]
+    fn the_stress_tangent_matches_its_differences() {
+        let m = muscle();
+        let curves = Curves {
+            force_length: |l| 1.0 - 2.0 * (l - 1.0) * (l - 1.0),
+            force_length_slope: |l| -4.0 * (l - 1.0),
+            force_velocity: |_| 1.0,
+        };
+        let fiber = DVec2::new(0.6, 0.8);
+        let f = DMat2::from_cols(DVec2::new(1.1, 0.05), DVec2::new(-0.1, 0.95));
+        let c = f.transpose() * f;
+        let d = DMat2::from_cols(DVec2::new(0.3, -0.2), DVec2::new(-0.2, 0.7));
+        let h = 1e-6;
+        let s = |c: DMat2| m.active_second_pk(c, fiber, 0.6, 0.0, curves);
+        let differences = (s(c + d * h) - s(c - d * h)) * (0.5 / h);
+        let derived = m.active_second_pk_tangent(c, d, fiber, 0.6, 0.0, curves);
+        assert!(
+            (derived - differences).abs_diff_eq(DMat2::ZERO, 1e-6 * m.max_isometric_stress_pa),
+            "derived {derived:?} against differences {differences:?}"
+        );
     }
 }

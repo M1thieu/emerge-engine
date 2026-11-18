@@ -184,24 +184,9 @@ impl Simulation {
             })
             .collect();
         // The solids' particles, then the bodies' contact points, each of
-        // its body's material (`TotalLagrangianState::outlines`, in the
-        // order of `total_lagrangian_outlines`).
+        // its host particle's material (`TotalLagrangianState::hosts`).
         let mut of_particle = self.particles.material_id.clone();
-        of_particle.resize(state.x.len(), 0);
-        for (body, points) in self.total_lagrangian_outlines.iter().zip(&state.outlines) {
-            let mut own = (0..state.particles)
-                .filter(|&q| self.particles.user_tag[q] == body.tag)
-                .map(|q| self.particles.material_id[q]);
-            let material = own.next().unwrap_or(0);
-            assert!(
-                own.all(|m| m == material),
-                "body {} is made of several materials: its surface has no one friction coefficient per pair yet",
-                body.tag
-            );
-            for &q in points {
-                of_particle[q] = material;
-            }
-        }
+        of_particle.extend(state.hosts.iter().map(|&p| self.particles.material_id[p]));
         let mut present = of_particle.clone();
         present.sort_unstable();
         present.dedup();
@@ -225,12 +210,12 @@ impl Simulation {
     }
 
     /// Each point's setae axis in the current configuration, `F axis` with
-    /// `F` its own deformation gradient, for the points of a material that
-    /// has setae (`set_surface_setae`); zero elsewhere. A body's contact
-    /// point beyond the particles takes the `F` of its body's particle
-    /// nearest in the reference configuration (kind: discretization; why:
-    /// the sense of the axis is what the law reads; removal: the contact
-    /// points' own deformation gradient).
+    /// `F` its own deformation gradient, a contact point's its host's
+    /// (`TotalLagrangianState::hosts`; kind: discretization; why: the sense
+    /// of the axis is what the law reads, and a modal flight or rest carries
+    /// the particles' deformation alone; removal: the contact points'
+    /// deformation carried by every mode), for the points of a material
+    /// that has setae (`set_surface_setae`); zero elsewhere.
     fn total_lagrangian_setae_axes(
         &self,
         state: &TotalLagrangianState,
@@ -239,38 +224,18 @@ impl Simulation {
         if self.surface_setae.is_empty() {
             return Vec::new();
         }
-        let axis_of = |material: u32| {
-            self.surface_setae
-                .iter()
-                .find(|s| s.material == material)
-                .map(|s| s.axis)
-        };
-        let mut axes = vec![DVec2::ZERO; state.x.len()];
-        for q in 0..state.x.len() {
-            let Some(axis) = axis_of(of_particle[q]) else {
-                continue;
-            };
-            let p = if q < state.particles {
-                q
-            } else {
-                let body = self
-                    .total_lagrangian_outlines
+        (0..state.x.len())
+            .map(|q| {
+                let host = if q < state.particles {
+                    q
+                } else {
+                    state.hosts[q - state.particles]
+                };
+                self.surface_setae
                     .iter()
-                    .zip(&state.outlines)
-                    .find(|(_, points)| points.contains(&q))
-                    .map(|(body, _)| body.tag)
-                    .expect("a contact point beyond the particles belongs to a body");
-                (0..state.particles)
-                    .filter(|&p| self.particles.user_tag[p] == body)
-                    .min_by(|&a, &b| {
-                        let d =
-                            |p: usize| (state.reference[p] - state.reference[q]).length_squared();
-                        d(a).total_cmp(&d(b))
-                    })
-                    .expect("a body has particles")
-            };
-            axes[q] = state.f[p] * axis;
-        }
-        axes
+                    .find(|s| s.material == of_particle[q])
+                    .map_or(DVec2::ZERO, |s| state.f[host] * s.axis)
+            })
+            .collect()
     }
 }

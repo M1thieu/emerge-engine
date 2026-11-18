@@ -43,6 +43,19 @@ impl ActiveFiber {
             crate::matter::materials::solid::hill_muscle::Curves::PLATEAU_ISOMETRIC,
         )
     }
+
+    /// `second_pk`'s derivative at `c` along `d` (`HillMuscle::
+    /// active_second_pk_tangent`).
+    pub(crate) fn second_pk_tangent(&self, c: DMat2, d: DMat2) -> DMat2 {
+        self.muscle.active_second_pk_tangent(
+            c,
+            d,
+            self.fiber,
+            self.activation,
+            0.0,
+            crate::matter::materials::solid::hill_muscle::Curves::PLATEAU_ISOMETRIC,
+        )
+    }
 }
 
 /// What a kept step did to a solid (`Elastic::committed`).
@@ -671,6 +684,9 @@ impl Elastic {
     /// `corotated_second_pk_tangent`. The dashpot's is exact, it being linear
     /// in `C_{n+1}`.
     ///
+    /// An active fiber's is its tangent at the midpoint along `dc / 2`
+    /// (`ActiveFiber::second_pk_tangent`).
+    ///
     /// Declared scaffold, to be replaced by each law's derived tangent: the
     /// plastic law, the research law, a solid with relaxation branches (Liu
     /// and Guan's derived tangent, their App. B eq. B.10, not built) and the
@@ -695,11 +711,12 @@ impl Elastic {
         if hooks::split() || hooks::trapezoid() {
             return dcs.map(|dc| self.step_stress_tangent_by_differences(c0, c1, dt, dc));
         }
-        // Declared scaffold (as for the branches): the active fiber's tangent
-        // by central differences of `step_stress` until its derived one.
-        if self.is_relaxing() || self.is_active() {
+        if self.is_relaxing() {
             return dcs.map(|dc| self.step_stress_tangent_by_differences(c0, c1, dt, dc));
         }
+        // The active fiber's stress is taken at the midpoint (`step_stress`):
+        // its derivative in `C_{n+1}` is its tangent there along `dc / 2`.
+        let fiber = self.active.filter(|a| a.activation != 0.0);
         let colon = |a: DMat2, b: DMat2| a.x_axis.dot(b.x_axis) + a.y_axis.dot(b.y_axis);
         let mid = 0.5 * (c0 + c1);
         let d = c1 - c0;
@@ -716,8 +733,10 @@ impl Elastic {
         };
         dcs.map(|dc| {
             let Some(d_mid) = self.second_pk_tangent(mid, 0.5 * dc) else {
+                // Differences of the whole step stress, the fiber's with it.
                 return self.step_stress_tangent_by_differences(c0, c1, dt, dc);
             };
+            let active = fiber.map_or(DMat2::ZERO, |f| f.second_pk_tangent(mid, 0.5 * dc));
             let law = if norm2 <= 1e-28 {
                 d_mid
             } else {
@@ -727,6 +746,7 @@ impl Elastic {
                     + d * (2.0 * dg / norm2 - 4.0 * g * colon(d, dc) / (norm2 * norm2))
                     + dc * (2.0 * g / norm2)
             };
+            let law = if fiber.is_some() { law + active } else { law };
             if self.is_viscous() {
                 law + newtonian_viscous_stress(
                     dc * (0.5 / dt),
@@ -1045,7 +1065,7 @@ mod step_stress_tangent_tests {
     use super::*;
 
     /// The derived tangent of the corotated step stress (the discrete
-    /// gradient's quotient and the dashpot included) against central
+    /// gradient's quotient, the dashpot and an active fiber included) against central
     /// differences of the same stress: steps large and small (the quotient
     /// formed), and one too small for it (the midpoint's tangent alone).
     #[test]
@@ -1054,6 +1074,17 @@ mod step_stress_tangent_tests {
         let solids = [
             Elastic::corotated(lambda, mu),
             Elastic::corotated(lambda, mu).with_viscosity(50.0, 100.0 / 3.0),
+            // An active fiber (a test stress, the check being the derivative).
+            Elastic {
+                active: Some(ActiveFiber {
+                    muscle: crate::matter::materials::solid::hill_muscle::HillMuscle::new(
+                        3.0e5, 0.010, 0.040, 0.0,
+                    ),
+                    fiber: DVec2::new(0.8, 0.6),
+                    activation: 0.7,
+                }),
+                ..Elastic::corotated(lambda, mu)
+            },
         ];
         let c0 = DMat2::from_cols(DVec2::new(1.1, 0.04), DVec2::new(0.04, 0.93));
         let steps = [

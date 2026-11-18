@@ -117,6 +117,12 @@ pub(crate) struct TotalLagrangianState {
     corners: Vec<Vec<usize>>,
     /// How many of the entries are the solids' particles.
     particles: usize,
+    /// Each contact point's host, the particle of its body nearest to it in
+    /// the reference configuration, in the order of the points after the
+    /// particles: the point's surface is its host's material, and its
+    /// deformation, where the point's own is not carried (a modal flight or
+    /// rest advances the particles' alone), its host's.
+    hosts: Vec<usize>,
     cache: Option<LagrangianCache>,
     step_length: f64,
     heat_debt: Vec<f32>,
@@ -444,7 +450,7 @@ impl Simulation {
             .collect();
         let mut solids: Vec<Elastic> = (0..n).map(|p| self.total_lagrangian_solid(p)).collect();
         let mut penalty = vec![0.0; n];
-        let (mut outlines, mut corners) = (Vec::new(), Vec::new());
+        let (mut outlines, mut corners, mut hosts) = (Vec::new(), Vec::new(), Vec::new());
         // Each body's mass (its tagged particles') and its outline's
         // reference points, for the tolerance's energy.
         let mut bodies = Vec::new();
@@ -453,8 +459,21 @@ impl Simulation {
             corners.push(at.clone());
             let stiffness = &self.total_lagrangian_material(body.material);
             let start = reference.len();
+            let own: Vec<usize> = (0..n)
+                .filter(|&p| self.particles.user_tag[p] == body.tag)
+                .collect();
             for &q in points {
-                reference.push(units.position(q));
+                let at = units.position(q);
+                hosts.push(
+                    own.iter()
+                        .copied()
+                        .min_by(|&a, &b| {
+                            let d = |p: usize| (reference[p] - at).length_squared();
+                            d(a).total_cmp(&d(b))
+                        })
+                        .expect("a body has particles"),
+                );
+                reference.push(at);
                 v.push(DVec2::ZERO);
                 f.push(DMat2::IDENTITY);
                 mass.push(0.0);
@@ -496,6 +515,7 @@ impl Simulation {
             outlines,
             corners,
             particles: n,
+            hosts,
             cache: None,
             step_length: f64::from(self.config.dt),
             heat_debt: vec![0.0; n],
